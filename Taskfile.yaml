@@ -1,0 +1,19 @@
+version: "3"
+
+tasks:
+  default:
+    cmds:
+      - task: fmt
+      - task: check
+      - task: test
+  fmt:
+    cmds:
+      - go tool golangci-lint fmt
+      - go mod tidy
+  check:
+    cmds:
+      - go vet -all ./...
+      - go tool golangci-lint run
+  test:
+    cmds:
+      - go test -race ./...

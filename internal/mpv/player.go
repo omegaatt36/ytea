@@ -90,8 +90,8 @@ func Start(ctx context.Context, cfg Config) (*Player, error) {
 		args = append(args, "--log-file="+cfg.LogFile)
 	}
 
-	// Not CommandContext: mpv must outlive the startup context and is stopped via Quit.
-	cmd := exec.Command(cfg.Bin, args...)
+	// WithoutCancel: mpv must outlive the startup context and is stopped via Quit.
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), cfg.Bin, args...)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start mpv: %w", err)
 	}
