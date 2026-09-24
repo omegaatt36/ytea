@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,10 +11,12 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/urfave/cli/v3"
 
 	"github.com/omegaatt36/ytea/internal/mpris"
 	"github.com/omegaatt36/ytea/internal/mpv"
@@ -37,18 +38,67 @@ type options struct {
 	device     string
 	mpvBin     string
 	ytdlpBin   string
+	// cookies and cookiesFromBrowser sign yt-dlp in so Premium audio formats are offered.
+	cookies            string
+	cookiesFromBrowser string
 }
 
 func main() {
-	if err := run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+	err := newCommand(run).Run(ctx, os.Args)
+	stop()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "ytea:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	opts := parseFlags()
+// newCommand parses the command line into options and hands them to action.
+func newCommand(action func(context.Context, options) error) *cli.Command {
+	var opts options
+	return &cli.Command{
+		Name:  appName,
+		Usage: "terminal YouTube music player for PipeWire",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "config", Usage: "TOML config whose keys are these flag names (default: $XDG_CONFIG_HOME/ytea/config.toml)", TakesFile: true, Sources: env("config")},
+			&cli.IntFlag{Name: "volume", Value: 80, Usage: "initial volume in percent", Sources: env("volume"), Destination: &opts.volume},
+			&cli.BoolWithInverseFlag{Name: "normalize", Value: true, Usage: "even out loudness between tracks (toggle with N)", Sources: env("normalize"), Destination: &opts.normalize},
+			&cli.BoolWithInverseFlag{Name: "thumbnails", Value: true, Usage: "show cover thumbnails (kitty graphics when available, else half-block art)", Sources: env("thumbnails"), Destination: &opts.thumbnails},
+			&cli.BoolWithInverseFlag{Name: "visualizer", Value: true, Usage: "show a spectrum tapped from the PipeWire stream", Sources: env("visualizer"), Destination: &opts.visualizer},
+			&cli.BoolWithInverseFlag{Name: "mpris", Value: true, Usage: "register as an MPRIS player for media keys", Sources: env("mpris"), Destination: &opts.mpris},
+			&cli.StringFlag{Name: "audio-device", Usage: `mpv audio device, e.g. "pipewire/<sink node.name>" (default: system default)`, Sources: env("audio-device"), Destination: &opts.device},
+			&cli.StringFlag{Name: "mpv", Value: "mpv", Usage: "mpv binary", Sources: env("mpv"), Destination: &opts.mpvBin},
+			&cli.StringFlag{Name: "yt-dlp", Value: "yt-dlp", Usage: "yt-dlp binary", Sources: env("yt-dlp"), Destination: &opts.ytdlpBin},
+		},
+		MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{{
+			Flags: [][]cli.Flag{
+				{&cli.StringFlag{Name: "cookies", Usage: "Netscape cookies.txt for yt-dlp; a Premium account unlocks 256k audio", TakesFile: true, Sources: env("cookies"), Destination: &opts.cookies}},
+				{&cli.StringFlag{Name: "cookies-from-browser", Usage: `read yt-dlp cookies from a browser, e.g. "firefox" or "chrome:Profile 1"`, Sources: env("cookies-from-browser"), Destination: &opts.cookiesFromBrowser}},
+			},
+		}},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			path, required := cmd.String("config"), true
+			if path == "" {
+				dir, err := configDir()
+				if err != nil {
+					return err
+				}
+				path, required = filepath.Join(dir, "config.toml"), false
+			}
+			if err := loadConfig(cmd, path, required); err != nil {
+				return err
+			}
+			return action(ctx, opts)
+		},
+	}
+}
 
+// env is the environment variable for a flag: --audio-device reads YTEA_AUDIO_DEVICE.
+func env(flag string) cli.ValueSourceChain {
+	return cli.EnvVars(strings.ToUpper(appName + "_" + strings.ReplaceAll(flag, "-", "_")))
+}
+
+func run(ctx context.Context, opts options) error {
 	stateDir, err := stateDir()
 	if err != nil {
 		return err
@@ -60,6 +110,15 @@ func run() error {
 	defer logFile.Close()
 	// The TUI owns stdout/stderr, so logs go to a file.
 	slog.SetDefault(slog.New(slog.NewTextHandler(logFile, nil)))
+
+	if opts.cookiesFromBrowser == "" {
+		if opts.cookies, err = cookiesFile(opts.cookies); err != nil {
+			return err
+		}
+	}
+	if opts.cookies != "" || opts.cookiesFromBrowser != "" {
+		slog.Info("playback signed in", "cookies", opts.cookies, "cookies_from_browser", opts.cookiesFromBrowser)
+	}
 
 	for _, bin := range []string{opts.mpvBin, opts.ytdlpBin} {
 		if _, err := exec.LookPath(bin); err != nil {
@@ -77,9 +136,6 @@ func run() error {
 	// running instances from tapping each other.
 	streamName := fmt.Sprintf("%s-%d", appName, os.Getpid())
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
-	defer stop()
-
 	player, err := mpv.Start(ctx, mpv.Config{
 		Bin:         opts.mpvBin,
 		Socket:      socketPath(),
@@ -88,6 +144,9 @@ func run() error {
 		Volume:      opts.volume,
 		Normalize:   opts.normalize,
 		LogFile:     filepath.Join(stateDir, "mpv.log"),
+		// Search stays anonymous; only playback needs the account.
+		Cookies:            opts.cookies,
+		CookiesFromBrowser: opts.cookiesFromBrowser,
 	})
 	if err != nil {
 		return err
@@ -128,20 +187,6 @@ func run() error {
 		return fmt.Errorf("run ui: %w", err)
 	}
 	return nil
-}
-
-func parseFlags() options {
-	var opts options
-	flag.IntVar(&opts.volume, "volume", 80, "initial volume in percent")
-	flag.BoolVar(&opts.normalize, "normalize", true, "even out loudness between tracks (toggle with N)")
-	flag.BoolVar(&opts.thumbnails, "thumbnails", true, "show cover thumbnails (kitty graphics when available, else half-block art)")
-	flag.BoolVar(&opts.visualizer, "visualizer", true, "show a spectrum tapped from the PipeWire stream")
-	flag.BoolVar(&opts.mpris, "mpris", true, "register as an MPRIS player for media keys")
-	flag.StringVar(&opts.device, "audio-device", "", `mpv audio device, e.g. "pipewire/<sink node.name>" (default: system default)`)
-	flag.StringVar(&opts.mpvBin, "mpv", "mpv", "mpv binary")
-	flag.StringVar(&opts.ytdlpBin, "yt-dlp", "yt-dlp", "yt-dlp binary")
-	flag.Parse()
-	return opts
 }
 
 func stateDir() (string, error) {

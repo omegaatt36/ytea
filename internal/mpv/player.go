@@ -46,11 +46,15 @@ type Config struct {
 	// ClientName becomes the PipeWire node.name of the playback stream.
 	ClientName string
 	// AudioDevice is an mpv device name such as "pipewire/<node.name>"; empty means the default sink.
-	AudioDevice string
-	Volume      int
-	Normalize   bool
-	LogFile     string
+	AudioDevice        string
+	Volume             int
+	Normalize          bool
+	LogFile            string
+	Cookies            string
+	CookiesFromBrowser string
 }
+
+const premiumClients = "youtube:player_client=default,web_music"
 
 // Player owns an mpv process and its IPC connection.
 type Player struct {
@@ -66,32 +70,8 @@ func Start(ctx context.Context, cfg Config) (*Player, error) {
 		return nil, fmt.Errorf("remove stale mpv socket %s: %w", cfg.Socket, err)
 	}
 
-	args := []string{
-		"--idle=yes",
-		"--no-video",
-		"--no-terminal",
-		"--ao=pipewire",
-		"--audio-client-name=" + cfg.ClientName,
-		"--input-ipc-server=" + cfg.Socket,
-		"--ytdl-format=bestaudio/best",
-		// Resolves the next entry while the current one plays so track changes are near-gapless.
-		"--prefetch-playlist=yes",
-		"--gapless-audio=weak",
-		"--cache=yes",
-		fmt.Sprintf("--volume=%d", cfg.Volume),
-	}
-	if cfg.AudioDevice != "" {
-		args = append(args, "--audio-device="+cfg.AudioDevice)
-	}
-	if cfg.Normalize {
-		args = append(args, "--af="+normalizeFilter)
-	}
-	if cfg.LogFile != "" {
-		args = append(args, "--log-file="+cfg.LogFile)
-	}
-
 	// WithoutCancel: mpv must outlive the startup context and is stopped via Quit.
-	cmd := exec.CommandContext(context.WithoutCancel(ctx), cfg.Bin, args...)
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), cfg.Bin, cfg.args()...)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start mpv: %w", err)
 	}
@@ -115,6 +95,46 @@ func Start(ctx context.Context, cfg Config) (*Player, error) {
 		}
 	}
 	return p, nil
+}
+
+// args is the mpv command line for cfg.
+func (cfg Config) args() []string {
+	args := []string{
+		"--idle=yes",
+		"--no-video",
+		"--no-terminal",
+		"--ao=pipewire",
+		"--audio-client-name=" + cfg.ClientName,
+		"--input-ipc-server=" + cfg.Socket,
+		"--ytdl-format=bestaudio/best",
+		"--prefetch-playlist=yes",
+		"--gapless-audio=weak",
+		"--cache=yes",
+		fmt.Sprintf("--volume=%d", cfg.Volume),
+	}
+	if cfg.AudioDevice != "" {
+		args = append(args, "--audio-device="+cfg.AudioDevice)
+	}
+	if cfg.Normalize {
+		args = append(args, "--af="+normalizeFilter)
+	}
+	if cfg.LogFile != "" {
+		args = append(args, "--log-file="+cfg.LogFile)
+	}
+	var cookies string
+	switch {
+	case cfg.Cookies != "":
+		cookies = "cookies=" + cfg.Cookies
+	case cfg.CookiesFromBrowser != "":
+		cookies = "cookies-from-browser=" + cfg.CookiesFromBrowser
+	}
+	if cookies != "" {
+		args = append(args,
+			"--ytdl-raw-options-append="+cookies,
+			"--ytdl-raw-options-append=extractor-args="+premiumClients,
+		)
+	}
+	return args
 }
 
 // dialWithRetry waits for mpv to create its socket, which happens shortly after exec.
