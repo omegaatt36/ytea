@@ -4,17 +4,21 @@ package tui
 import (
 	"context"
 	"image"
+	"log/slog"
 	"net/http"
 	"slices"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/omegaatt36/ytea/internal/mpris"
 	"github.com/omegaatt36/ytea/internal/mpv"
 	"github.com/omegaatt36/ytea/internal/pipewire"
+	"github.com/omegaatt36/ytea/internal/thumbnail"
 	"github.com/omegaatt36/ytea/internal/youtube"
 )
 
@@ -92,9 +96,51 @@ type Model struct {
 	status    string
 	statusErr bool
 
-	thumbID    int
-	thumbVideo string
+	graphics         graphicsSupport
+	probeKitty       bool
+	probePlaceholder bool
+	thumbID          int    // kitty image id in placeholder or direct mode
+	thumbArt         string // half-block rendering otherwise
+	thumbVideo       string
+	// placedAt is where the direct-mode image was last put; placed is false
+	// when it must be (re)placed.
+	placedAt image.Point
+	placed   bool
 }
+
+// graphicsSupport is how thumbnails are drawn, decided by probing the terminal.
+type graphicsSupport int
+
+const (
+	graphicsUnknown graphicsSupport = iota
+	// graphicsPlaceholder uses kitty Unicode placeholders, which the cell
+	// renderer treats as text (Ghostty, kitty).
+	graphicsPlaceholder
+	// graphicsDirect puts the image at a cursor position, for kitty graphics
+	// implementations without placeholders (Zellij >= 0.45).
+	graphicsDirect
+	// graphicsNone falls back to half-block art (Zellij < 0.45, tmux).
+	graphicsNone
+)
+
+func (g graphicsSupport) String() string {
+	switch g {
+	case graphicsPlaceholder:
+		return "kitty placeholders"
+	case graphicsDirect:
+		return "kitty direct placement"
+	case graphicsNone:
+		return "half-blocks"
+	default:
+		return "unknown"
+	}
+}
+
+// pasteKeys read the OS clipboard directly. ctrl+shift+v and shift+insert are
+// normally consumed by the terminal as its own paste, but under a multiplexer
+// speaking the kitty keyboard protocol (Zellij) they can arrive as plain key
+// events instead, so treat them as paste requests too.
+var pasteKeys = key.NewBinding(key.WithKeys("ctrl+v", "ctrl+shift+v", "shift+insert"))
 
 // New builds the root model.
 func New(deps Deps) Model {
@@ -102,6 +148,7 @@ func New(deps Deps) Model {
 	in.Placeholder = "search YouTube…"
 	in.Prompt = " / "
 	in.CharLimit = 200
+	in.KeyMap.Paste = pasteKeys
 	// Focus here, not in Init: Init has a value receiver, so focusing there
 	// would only change a copy and keystrokes would be ignored.
 	in.Focus()
@@ -133,6 +180,9 @@ func (m Model) Init() tea.Cmd {
 	if m.deps.Tap != nil {
 		cmds = append(cmds, waitLevels(m.deps.Tap.Levels()))
 	}
+	if m.deps.Thumbnails {
+		cmds = append(cmds, tea.Raw(thumbnail.Query()))
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -156,18 +206,100 @@ type (
 		img     image.Image
 		err     error
 	}
+	placeMsg struct {
+		id int
+		at image.Point
+	}
 )
+
+// placeDelay lets the renderer finish the frame (including any post-resize
+// screen clear) before the image is put on top of it.
+const placeDelay = 100 * time.Millisecond
+
+// syncPlacement schedules a direct-mode placement when the image is new, the
+// screen was cleared, or the now-playing box moved.
+func (m *Model) syncPlacement() tea.Cmd {
+	if m.graphics != graphicsDirect || m.thumbID == 0 {
+		return nil
+	}
+	if _, _, ok := m.current(); !ok {
+		return nil
+	}
+	at := m.thumbOrigin()
+	if m.placed && at == m.placedAt {
+		return nil
+	}
+	m.placed, m.placedAt = true, at
+	id := m.thumbID
+	return tea.Tick(placeDelay, func(time.Time) tea.Msg { return placeMsg{id: id, at: at} })
+}
 
 // Update handles a message.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	nm := next.(Model)
+	// Any message can shift the layout under a directly placed image, so the
+	// placement is reconciled after every update rather than at each call site.
+	// Called before the return: Go leaves unspecified whether a return operand
+	// reading nm is evaluated before or after a call that mutates it.
+	placeCmd := nm.syncPlacement()
+	return nm, tea.Batch(cmd, placeCmd)
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.input.SetWidth(max(10, m.width/2))
+		// The renderer clears the screen after a resize, which drops placements.
+		m.placed = false
 		return m, nil
+
+	case placeMsg:
+		if m.graphics != graphicsDirect || msg.id != m.thumbID || msg.at != m.placedAt {
+			return m, nil
+		}
+		return m, tea.Raw(thumbnail.Put(msg.id, msg.at.X, msg.at.Y, thumbCols, thumbRows))
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case tea.PasteMsg:
+		// Terminal paste (ctrl+shift+v, cmd+v) always lands in the search box;
+		// there is nothing else to paste into.
+		cmd := m.focusSearch()
+		var inputCmd tea.Cmd
+		m.input, inputCmd = m.input.Update(msg)
+		return m, tea.Batch(cmd, inputCmd)
+
+	case uv.KittyGraphicsEvent:
+		if m.graphics != graphicsUnknown {
+			return m, nil
+		}
+		ok := string(msg.Payload) == "OK"
+		switch msg.Options.ID {
+		case thumbnail.QueryID:
+			m.probeKitty = ok
+		case thumbnail.PlaceholderQueryID:
+			m.probePlaceholder = ok
+		}
+		return m, nil
+
+	case uv.PrimaryDeviceAttributesEvent:
+		// DA1 is answered after both probes, so every kitty reply is in by now.
+		if !m.deps.Thumbnails || m.graphics != graphicsUnknown {
+			return m, nil
+		}
+		switch {
+		case m.probePlaceholder:
+			m.graphics = graphicsPlaceholder
+		case m.probeKitty:
+			m.graphics = graphicsDirect
+		default:
+			m.graphics = graphicsNone
+		}
+		slog.Info("thumbnail rendering", "mode", m.graphics.String())
+		return m, m.refreshThumb()
 
 	case spinner.TickMsg:
 		if !m.searching {
@@ -222,7 +354,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setError(msg.err.Error())
 		return m, nil
 	}
+
+	// The text input has private messages of its own: cursor blinks and the
+	// clipboard contents read by its ctrl+v binding.
+	if m.focus == focusSearch {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
 	return m, nil
+}
+
+func (m *Model) focusSearch() tea.Cmd {
+	m.focus = focusSearch
+	return m.input.Focus()
 }
 
 func (m *Model) setStatus(s string) {

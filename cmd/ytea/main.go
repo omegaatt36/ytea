@@ -20,7 +20,6 @@ import (
 	"github.com/omegaatt36/ytea/internal/mpris"
 	"github.com/omegaatt36/ytea/internal/mpv"
 	"github.com/omegaatt36/ytea/internal/pipewire"
-	"github.com/omegaatt36/ytea/internal/thumbnail"
 	"github.com/omegaatt36/ytea/internal/tui"
 	"github.com/omegaatt36/ytea/internal/youtube"
 )
@@ -102,7 +101,7 @@ func run() error {
 	deps := tui.Deps{
 		Searcher:   youtube.NewSearcher(opts.ytdlpBin),
 		Player:     player,
-		Thumbnails: opts.thumbnails && thumbnail.Supported(),
+		Thumbnails: opts.thumbnails,
 		HTTP:       &http.Client{Timeout: 10 * time.Second},
 		Normalize:  opts.normalize,
 	}
@@ -135,7 +134,7 @@ func parseFlags() options {
 	var opts options
 	flag.IntVar(&opts.volume, "volume", 80, "initial volume in percent")
 	flag.BoolVar(&opts.normalize, "normalize", true, "even out loudness between tracks (toggle with N)")
-	flag.BoolVar(&opts.thumbnails, "thumbnails", true, "show thumbnails via the kitty graphics protocol (Ghostty, kitty)")
+	flag.BoolVar(&opts.thumbnails, "thumbnails", true, "show cover thumbnails (kitty graphics when available, else half-block art)")
 	flag.BoolVar(&opts.visualizer, "visualizer", true, "show a spectrum tapped from the PipeWire stream")
 	flag.BoolVar(&opts.mpris, "mpris", true, "register as an MPRIS player for media keys")
 	flag.StringVar(&opts.device, "audio-device", "", `mpv audio device, e.g. "pipewire/<sink node.name>" (default: system default)`)

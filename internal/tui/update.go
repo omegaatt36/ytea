@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/omegaatt36/ytea/internal/mpv"
@@ -15,28 +17,32 @@ import (
 )
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	key := msg.String()
-	if key == "ctrl+c" {
+	pressed := msg.String()
+	if pressed == "ctrl+c" {
 		return m.quit()
+	}
+
+	if key.Matches(msg, pasteKeys) && m.focus != focusSearch {
+		// Pasting from a list pane goes to the search box, like terminal paste does.
+		return m, tea.Batch(m.focusSearch(), textinput.Paste)
 	}
 
 	switch m.focus {
 	case focusSearch:
 		return m.handleSearchKey(msg)
 	case focusSinks:
-		return m.handleSinkKey(key)
+		return m.handleSinkKey(pressed)
 	}
 
-	if cmd, ok := m.handlePlaybackKey(key); ok {
+	if cmd, ok := m.handlePlaybackKey(pressed); ok {
 		return m, cmd
 	}
 
-	switch key {
+	switch pressed {
 	case "q":
 		return m.quit()
 	case "/":
-		m.focus = focusSearch
-		return m, m.input.Focus()
+		return m, m.focusSearch()
 	case "tab", "shift+tab":
 		if m.focus == focusResults {
 			m.focus = focusQueue
@@ -54,9 +60,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.focus == focusQueue {
-		return m.handleQueueKey(key)
+		return m.handleQueueKey(pressed)
 	}
-	return m.handleResultKey(key)
+	return m.handleResultKey(pressed)
 }
 
 func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -272,15 +278,17 @@ func (m *Model) applyProperty(ev mpv.Event) tea.Cmd {
 }
 
 // refreshThumb fetches the current track's thumbnail when it changed.
+// It waits for the graphics probe so it knows which rendering to produce.
 func (m *Model) refreshThumb() tea.Cmd {
-	if !m.deps.Thumbnails {
+	if !m.deps.Thumbnails || m.graphics == graphicsUnknown {
 		return nil
 	}
 	_, t, ok := m.current()
 	if !ok || t.ID == "" {
+		m.thumbArt, m.thumbVideo, m.placed = "", "", false
 		if m.thumbID != 0 {
 			id := m.thumbID
-			m.thumbID, m.thumbVideo = 0, ""
+			m.thumbID = 0
 			return tea.Raw(thumbnail.Delete(id))
 		}
 		return nil
@@ -308,9 +316,24 @@ func (m Model) applyThumb(msg thumbMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.graphics == graphicsNone {
+		m.thumbArt = thumbnail.HalfBlocks(msg.img, thumbCols, thumbRows)
+		return m, nil
+	}
+
 	prev := m.thumbID
 	m.thumbID = nextThumbID(prev)
-	seq, err := thumbnail.Transmit(msg.img, m.thumbID, thumbCols, thumbRows)
+	var (
+		seq string
+		err error
+	)
+	if m.graphics == graphicsPlaceholder {
+		seq, err = thumbnail.TransmitVirtual(msg.img, m.thumbID, thumbCols, thumbRows)
+	} else {
+		// Direct mode: upload only; syncPlacement puts it once the layout is known.
+		seq, err = thumbnail.Transmit(msg.img, m.thumbID)
+		m.placed = false
+	}
 	if err != nil {
 		m.thumbID = prev
 		m.setError(err.Error())

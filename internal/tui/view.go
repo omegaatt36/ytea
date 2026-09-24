@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"image"
 	"strings"
 	"time"
 
@@ -58,20 +59,12 @@ func (m Model) render() string {
 		return ""
 	}
 
-	header := m.renderHeader()
-	now := m.renderNowPlaying()
-	footer := m.renderFooter()
+	header, now, footer, bodyHeight := m.layout()
 
 	var viz string
 	if m.showViz {
 		viz = m.renderSpectrum(m.width, vizRows)
 	}
-
-	used := lipgloss.Height(header) + lipgloss.Height(now) + lipgloss.Height(footer)
-	if viz != "" {
-		used += lipgloss.Height(viz)
-	}
-	bodyHeight := max(3, m.height-used)
 
 	var body string
 	if m.focus == focusSinks {
@@ -86,6 +79,25 @@ func (m Model) render() string {
 	}
 	parts = append(parts, footer)
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// layout renders the fixed-height sections and returns the height left for the
+// list panes. thumbOrigin relies on it too, so the two cannot disagree about
+// where the now-playing box sits.
+func (m Model) layout() (header, now, footer string, bodyHeight int) {
+	header, now, footer = m.renderHeader(), m.renderNowPlaying(), m.renderFooter()
+	used := lipgloss.Height(header) + lipgloss.Height(now) + lipgloss.Height(footer)
+	if m.showViz {
+		used += vizRows
+	}
+	return header, now, footer, max(3, m.height-used)
+}
+
+// thumbOrigin is the 0-based cell of the thumbnail's top-left corner: just
+// inside the now-playing box, which sits below the header and the list panes.
+func (m Model) thumbOrigin() image.Point {
+	header, _, _, bodyHeight := m.layout()
+	return image.Pt(paneStyle.GetBorderLeftSize(), lipgloss.Height(header)+bodyHeight+paneStyle.GetBorderTopSize())
 }
 
 func (m Model) renderHeader() string {
@@ -189,8 +201,18 @@ func (m Model) renderNowPlaying() string {
 
 	textW := innerW
 	var thumb string
-	if m.thumbID != 0 && ok {
-		thumb = thumbnail.Placeholder(m.thumbID, thumbCols, thumbRows) + " "
+	switch {
+	case !ok:
+	case m.thumbID != 0 && m.graphics == graphicsPlaceholder:
+		thumb = thumbnail.Placeholder(m.thumbID, thumbCols, thumbRows)
+	case m.thumbID != 0:
+		// Direct placement draws the image on top; reserve blank cells under it.
+		thumb = strings.TrimSuffix(strings.Repeat(strings.Repeat(" ", thumbCols)+"\n", thumbRows), "\n")
+	case m.thumbArt != "":
+		thumb = m.thumbArt
+	}
+	if thumb != "" {
+		thumb += " "
 		textW -= thumbCols + 1
 	}
 	info = append(info, m.progressLine(t.Live, textW))
