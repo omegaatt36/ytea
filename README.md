@@ -19,7 +19,8 @@ and cover art in the terminal, including inside Zellij.
 ## Features
 
 - **Search while you listen.** Queue results with `a`, or play one right after the current track with `enter`. The queue is mpv's own playlist, so the next track is resolved ahead of time and track changes are near-gapless.
-- **Paste a link.** A playlist URL pasted into search imports all of its tracks straight into the queue, a mix queues its first 25 with the seed playing first, and a single video URL queues just that video. `r` queues a mix seeded by the track playing now.
+- **Paste a link.** A playlist URL pasted into search imports its first 200 tracks straight into the queue, a mix queues its first 25 with the seed playing first, and a single video URL queues just that video. `r` queues a mix seeded by the track playing now.
+- **Resume your session.** On exit, ytea saves the queue, selected track, and volume locally. On the next launch it restores them with playback paused.
 - **Audio-only, best quality.** Streams `bestaudio` (usually Opus, ~130 kbps; 256 kbps with [YouTube Premium](#youtube-premium-audio)) to the audio output mpv picked: PipeWire on Linux, Core Audio on macOS. No video is fetched.
 - **Loudness leveling.** An on/off `dynaudnorm` filter (`N`) evens out volume between uploads.
 - **Output switching.** Pick any device mpv can output to with `o` — PipeWire sinks on Linux, Core Audio devices on macOS. The choice applies only to ytea, not to the system default.
@@ -80,6 +81,7 @@ go install github.com/omegaatt36/ytea/cmd/ytea@latest
 | `j` `k` / `↑` `↓`, `g` `G` | move, jump to top / bottom |
 | `enter` | jump to this track |
 | `d` / `x` / `delete` | remove |
+| `C` | clear the entire queue and stop playback |
 | `J` `K` / `shift+↓` `shift+↑` | move track down / up |
 
 ## Flags
@@ -103,6 +105,7 @@ go install github.com/omegaatt36/ytea/cmd/ytea@latest
 Every flag can also come from an environment variable (`--audio-device` reads `YTEA_AUDIO_DEVICE`) or from the config file. A flag wins over the environment, which wins over the config file.
 
 Logs go to `$XDG_STATE_HOME/ytea/` (`ytea.log`, `mpv.log`), since the TUI owns the terminal.
+The previous queue, known song titles and artists, selected track, and volume are stored in `session.json` in the same directory. Playback resumes paused from the start of the selected track.
 
 ## Config
 

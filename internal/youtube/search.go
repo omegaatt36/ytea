@@ -15,6 +15,9 @@ import (
 // ErrEmptyQuery is returned when a search is requested without any keywords.
 var ErrEmptyQuery = errors.New("empty search query")
 
+// MaxPlaylistItems is the default number of videos to import from a playlist.
+const MaxPlaylistItems = 200
+
 // Track is a single playable YouTube entry.
 type Track struct {
 	ID       string
@@ -51,9 +54,20 @@ func (s *Searcher) Search(ctx context.Context, query string, limit int) ([]Track
 	return s.extract(ctx, "search", fmt.Sprintf("ytsearch%d:%s", limit, query), 0)
 }
 
-// Lookup returns the videos behind a URL from RefOf; a positive limit stops the listing there.
+// Lookup returns the videos behind a URL from RefOf. Non-positive limits use
+// MaxPlaylistItems; positive limits stop the listing at the requested count.
 func (s *Searcher) Lookup(ctx context.Context, url string, limit int) ([]Track, error) {
-	return s.extract(ctx, "url", url, limit)
+	if limit <= 0 {
+		limit = MaxPlaylistItems
+	}
+	tracks, err := s.extract(ctx, "url", url, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(tracks) > limit {
+		tracks = tracks[:limit]
+	}
+	return tracks, nil
 }
 
 func (s *Searcher) extract(ctx context.Context, what, target string, items int) ([]Track, error) {

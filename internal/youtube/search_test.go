@@ -2,6 +2,7 @@ package youtube
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -71,11 +72,19 @@ func TestSearchEmptyQuery(t *testing.T) {
 	}
 }
 
-// fakeYtDlp is a yt-dlp stand-in that records its arguments and dumps empty listings.
-func fakeYtDlp(t *testing.T, argsFile string) *Searcher {
+// fakeYtDlp is a yt-dlp stand-in that records its arguments and dumps a listing.
+func fakeYtDlp(t *testing.T, argsFile string, entryCount int) *Searcher {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "yt-dlp")
-	script := "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done > " + argsFile + "\nprintf '{\"entries\":[]}'\n"
+	entries := make([]flatEntry, entryCount)
+	for i := range entries {
+		entries[i] = flatEntry{ID: fmt.Sprint(i), IEKey: "Youtube"}
+	}
+	dump, err := json.Marshal(flatDump{Entries: entries})
+	if err != nil {
+		t.Fatalf("marshal fake yt-dlp output: %v", err)
+	}
+	script := "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done > " + argsFile + "\nprintf '%s' '" + string(dump) + "'\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake yt-dlp: %v", err)
 	}
@@ -85,32 +94,34 @@ func fakeYtDlp(t *testing.T, argsFile string) *Searcher {
 func TestLookupCapsListing(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
-	s := fakeYtDlp(t, argsFile)
+	s := fakeYtDlp(t, argsFile, MaxPlaylistItems+5)
 	ctx := context.Background()
 
 	for _, tt := range []struct {
-		name       string
-		limit      int
-		wantCapped bool
+		name      string
+		limit     int
+		wantLimit int
 	}{
-		{name: "capped", limit: 25, wantCapped: true},
-		{name: "uncapped", limit: 0},
+		{name: "explicit limit", limit: 25, wantLimit: 25},
+		{name: "zero uses default", limit: 0, wantLimit: MaxPlaylistItems},
+		{name: "negative uses default", limit: -1, wantLimit: MaxPlaylistItems},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := s.Lookup(ctx, "https://www.youtube.com/playlist?list=PLx", tt.limit); err != nil {
+			tracks, err := s.Lookup(ctx, "https://www.youtube.com/playlist?list=PLx", tt.limit)
+			if err != nil {
 				t.Fatalf("Lookup() error = %v", err)
+			}
+			if len(tracks) != tt.wantLimit {
+				t.Errorf("Lookup() returned %d tracks, want %d", len(tracks), tt.wantLimit)
 			}
 			args, err := os.ReadFile(argsFile)
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := string(args)
-			capped := strings.Contains(got, "--playlist-items")
-			if capped != tt.wantCapped {
-				t.Errorf("args = %q, want playlist-items: %v", got, tt.wantCapped)
-			}
-			if capped && !strings.Contains(got, "1:"+fmt.Sprint(tt.limit)) {
-				t.Errorf("args = %q, want the cap %d applied", got, tt.limit)
+			got := strings.Split(strings.TrimSpace(string(args)), "\n")
+			want := []string{"https://www.youtube.com/playlist?list=PLx", "--flat-playlist", "--dump-single-json", "--no-warnings", "--playlist-items", fmt.Sprintf("1:%d", tt.wantLimit)}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("yt-dlp args = %q, want %q", got, want)
 			}
 		})
 	}

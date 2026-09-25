@@ -21,6 +21,7 @@ import (
 	"github.com/omegaatt36/ytea/internal/mpris"
 	"github.com/omegaatt36/ytea/internal/mpv"
 	"github.com/omegaatt36/ytea/internal/pipewire"
+	"github.com/omegaatt36/ytea/internal/session"
 	"github.com/omegaatt36/ytea/internal/tui"
 	"github.com/omegaatt36/ytea/internal/youtube"
 )
@@ -126,7 +127,7 @@ func run(ctx context.Context, opts options) error {
 		}
 	}
 	if opts.visualizer {
-		if _, err := exec.LookPath("pw-cat"); err != nil {
+		if err := checkVisualizerTools(exec.LookPath); err != nil {
 			slog.Warn("visualizer disabled", "error", err)
 			opts.visualizer = false
 		}
@@ -156,13 +157,34 @@ func run(ctx context.Context, opts options) error {
 			slog.Error("stop mpv", "error", err)
 		}
 	}()
+	sessionHealthy := true
+	saved, err := session.Load(stateDir)
+	if err != nil {
+		slog.Warn("load previous session", "error", err)
+	} else if saved.Version != 0 {
+		restoreCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := player.Restore(restoreCtx, mpv.PlaybackState{
+			URLs: saved.URLs, Index: saved.Index, Volume: saved.Volume,
+		})
+		cancel()
+		if err != nil {
+			slog.Warn("restore previous session", "error", err)
+			sessionHealthy = false
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if stopErr := player.Stop(stopCtx); stopErr != nil {
+				slog.Warn("stop partially restored session", "error", stopErr)
+			}
+			stopCancel()
+		}
+	}
 
 	deps := tui.Deps{
-		Searcher:   youtube.NewSearcher(opts.ytdlpBin),
-		Player:     player,
-		Thumbnails: opts.thumbnails,
-		HTTP:       &http.Client{Timeout: 10 * time.Second},
-		Normalize:  opts.normalize,
+		Searcher:      youtube.NewSearcher(opts.ytdlpBin),
+		Player:        player,
+		Thumbnails:    opts.thumbnails,
+		HTTP:          &http.Client{Timeout: 10 * time.Second},
+		Normalize:     opts.normalize,
+		InitialTracks: tracksFromSession(saved),
 	}
 
 	if opts.visualizer {
@@ -183,8 +205,60 @@ func run(ctx context.Context, opts options) error {
 	}
 
 	program := tea.NewProgram(tui.New(deps), tea.WithContext(ctx))
-	if _, err := program.Run(); err != nil && !errors.Is(err, tea.ErrProgramKilled) {
-		return fmt.Errorf("run ui: %w", err)
+	final, runErr := program.Run()
+	if sessionHealthy {
+		snapshotCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if snapshot, err := player.Snapshot(snapshotCtx); err != nil {
+			slog.Warn("snapshot playback", "error", err)
+		} else {
+			model, ok := final.(tui.Model)
+			if !ok {
+				model = tui.New(deps)
+			}
+			if err := session.Save(stateDir, sessionFromSnapshot(snapshot, model)); err != nil {
+				slog.Warn("save session", "error", err)
+			}
+		}
+		cancel()
+	}
+	if runErr != nil && !errors.Is(runErr, tea.ErrProgramKilled) {
+		return fmt.Errorf("run ui: %w", runErr)
+	}
+	return nil
+}
+
+func tracksFromSession(saved session.State) map[string]youtube.Track {
+	tracks := make(map[string]youtube.Track, len(saved.Metadata))
+	for url, info := range saved.Metadata {
+		tracks[url] = youtube.Track{URL: url, ID: info.ID, Title: info.Title, Channel: info.Channel, Live: info.Live}
+	}
+	return tracks
+}
+
+func sessionFromSnapshot(snapshot mpv.PlaybackState, model tui.Model) session.State {
+	state := session.State{URLs: snapshot.URLs, Index: snapshot.Index, Volume: snapshot.Volume}
+	for i, url := range snapshot.URLs {
+		track := model.KnownTrack(url)
+		info := session.Metadata{ID: track.ID, Title: track.Title, Channel: track.Channel, Live: track.Live}
+		if info.Title == "" && i < len(snapshot.Entries) {
+			info.Title = snapshot.Entries[i].Title
+		}
+		if info != (session.Metadata{}) {
+			if state.Metadata == nil {
+				state.Metadata = make(map[string]session.Metadata)
+			}
+			state.Metadata[url] = info
+		}
+	}
+	return state
+}
+
+// Both tools are needed by the PipeWire tap after the TUI starts.
+func checkVisualizerTools(lookPath func(string) (string, error)) error {
+	for _, bin := range []string{"pw-cat", "pw-dump"} {
+		if _, err := lookPath(bin); err != nil {
+			return fmt.Errorf("find %s in PATH: %w", bin, err)
+		}
 	}
 	return nil
 }

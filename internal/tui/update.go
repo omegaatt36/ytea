@@ -74,15 +74,21 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if query == "" {
 			return m, nil
 		}
+		requestID := m.nextRequest()
+		m.spinnerRequest = requestID
 		m.searching = true
 		m.focus = focusResults
 		m.input.Blur()
 		if link, ok := youtube.RefOf(query); ok {
+			task := m.reserveQueue()
 			m.setStatus("importing " + quote(link.URL) + "…")
-			return m, tea.Batch(m.spinner.Tick, fetchQueue(m.deps.Searcher, link))
+			return m, tea.Batch(m.spinner.Tick, fetchQueue(m.deps.Searcher, func(tracks []youtube.Track) error {
+				return appendTracks(m.deps.Player, tracks)
+			}, link, requestID, task))
 		}
 		m.setStatus("searching " + quote(query) + "…")
-		return m, tea.Batch(m.spinner.Tick, search(m.deps.Searcher, query))
+		m.searchRequest = requestID
+		return m, tea.Batch(m.spinner.Tick, search(m.deps.Searcher, query, requestID))
 	case "esc":
 		m.focus = focusResults
 		m.input.Blur()
@@ -134,14 +140,20 @@ func (m Model) handleResultKey(key string) (tea.Model, tea.Cmd) {
 		m.resultCur = max(0, len(m.results)-1)
 	case "enter":
 		if t, ok := m.selectedResult(); ok {
-			m.setStatus("playing " + quote(t.Title))
-			return m, do(func(ctx context.Context) error { return m.deps.Player.PlayNow(ctx, t.URL) })
+			requestID, task := m.nextRequest(), m.reserveQueue()
+			// insert-next-play shifts playlist indices. Keep index-based queue
+			// actions paused until the insertion has been read back from mpv.
+			m.expectQueue()
+			m.queueInsertPending = true
+			m.setStatus("playing " + quote(t.Title) + "…")
+			return m, projectedQueueAction(task, requestID, "playing "+quote(t.Title), func(ctx context.Context) error { return m.deps.Player.PlayNow(ctx, t.URL) })
 		}
 	case "a":
 		if t, ok := m.selectedResult(); ok {
-			m.setStatus("queued " + quote(t.Title))
+			requestID, task := m.nextRequest(), m.reserveQueue()
+			m.setStatus("queueing " + quote(t.Title) + "…")
 			m.resultCur = min(len(m.results)-1, m.resultCur+1)
-			return m, do(func(ctx context.Context) error { return m.deps.Player.Append(ctx, t.URL) })
+			return m, queueAction(task, requestID, "queued "+quote(t.Title), func(ctx context.Context) error { return m.deps.Player.Append(ctx, t.URL) })
 		}
 	}
 	return m, nil
@@ -154,28 +166,53 @@ func (m Model) handleQueueKey(key string) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		m.queueCur = max(0, i-1)
 	case "down", "j":
-		m.queueCur = min(len(m.queue)-1, i+1)
+		m.queueCur = min(max(0, len(m.queue)-1), i+1)
 	case "g", "home":
 		m.queueCur = 0
 	case "G", "end":
 		m.queueCur = max(0, len(m.queue)-1)
 	case "enter":
-		if i < len(m.queue) {
-			return m, do(func(ctx context.Context) error { return p.PlayIndex(ctx, i) })
+		if !m.queueInsertPending && i >= 0 && i < len(m.queue) {
+			return m, queueAction(m.reserveQueue(), m.nextRequest(), "playing selected track", func(ctx context.Context) error { return p.PlayIndex(ctx, i) })
 		}
 	case "d", "x", "delete":
-		if i < len(m.queue) {
-			return m, do(func(ctx context.Context) error { return p.Remove(ctx, i) })
+		if !m.queueInsertPending && i >= 0 && i < len(m.queue) {
+			cmd := m.queueWrite(func(ctx context.Context) error { return p.Remove(ctx, i) })
+			m.queue = slices.Delete(slices.Clone(m.queue), i, i+1)
+			m.queueCur = min(i, max(0, len(m.queue)-1))
+			m.expectQueue()
+			return m, cmd
 		}
+	case "C":
+		// Clear follows any in-flight import or edit, even when the displayed
+		// queue is already empty. The authoritative refresh settles its result.
+		cmd := projectedQueueAction(m.reserveQueue(), m.nextRequest(), "queue cleared", p.Stop)
+		m.queue = nil
+		m.queueCur = 0
+		m.pos = -1
+		m.idle = true
+		m.timePos, m.duration = 0, 0
+		m.expectQueue()
+		m.setStatus("clearing queue…")
+		m.syncMPRIS()
+		return m, tea.Batch(cmd, m.refreshThumb())
 	case "K", "shift+up":
-		if i > 0 && i < len(m.queue) {
+		if !m.queueInsertPending && i > 0 && i < len(m.queue) {
+			cmd := m.queueWrite(func(ctx context.Context) error { return p.Move(ctx, i, i-1) })
+			m.queue = slices.Clone(m.queue)
+			m.queue[i], m.queue[i-1] = m.queue[i-1], m.queue[i]
 			m.queueCur--
-			return m, do(func(ctx context.Context) error { return p.Move(ctx, i, i-1) })
+			m.expectQueue()
+			return m, cmd
 		}
 	case "J", "shift+down":
-		if i < len(m.queue)-1 {
+		if !m.queueInsertPending && i >= 0 && i < len(m.queue)-1 {
+			cmd := m.queueWrite(func(ctx context.Context) error { return p.Move(ctx, i, i+1) })
+			m.queue = slices.Clone(m.queue)
+			m.queue[i], m.queue[i+1] = m.queue[i+1], m.queue[i]
 			m.queueCur++
-			return m, do(func(ctx context.Context) error { return p.Move(ctx, i, i+1) })
+			m.expectQueue()
+			return m, cmd
 		}
 	}
 	return m, nil
@@ -267,7 +304,14 @@ func (m *Model) applyProperty(ev mpv.Event) tea.Cmd {
 			}
 		}
 	case mpv.PropPlaylist:
-		m.queue = mpv.Decode[[]mpv.PlaylistEntry](ev.Data)
+		queue := mpv.Decode[[]mpv.PlaylistEntry](ev.Data)
+		if m.queueProjection != nil || m.queueAuthoritative {
+			// Event delivery can lag behind queued commands, and an older
+			// playlist can equal the final projection after opposing edits.
+			m.queueEventVersion++
+			return m.scheduleQueueDebounce()
+		}
+		m.queue = queue
 		m.queueCur = min(max(0, m.queueCur), max(0, len(m.queue)-1))
 		return m.refreshThumb()
 	case mpv.PropPlaylistPos:
@@ -371,12 +415,108 @@ func do(fn func(ctx context.Context) error) tea.Cmd {
 	}
 }
 
-func search(s Searcher, query string) tea.Cmd {
+func (m *Model) nextRequest() uint64 {
+	m.requestID++
+	m.activeRequest = m.requestID
+	return m.requestID
+}
+
+// queueTask links writes in the order their keys were pressed, regardless of
+// how long their network lookups or Bubble Tea command scheduling take.
+type queueTask struct {
+	previous <-chan struct{}
+	done     chan struct{}
+}
+
+func (m *Model) reserveQueue() queueTask {
+	task := queueTask{previous: m.queueTail, done: make(chan struct{})}
+	m.queueTail = task.done
+	return task
+}
+
+func (task queueTask) run(fn func() error) error {
+	if task.previous != nil {
+		<-task.previous
+	}
+	defer close(task.done)
+	return fn()
+}
+
+func queueAction(task queueTask, requestID uint64, status string, fn func(context.Context) error) tea.Cmd {
+	return func() tea.Msg {
+		err := task.run(func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+			defer cancel()
+			return fn(ctx)
+		})
+		return queueActionDoneMsg{requestID: requestID, status: status, err: err}
+	}
+}
+
+func (m *Model) queueWrite(fn func(context.Context) error) tea.Cmd {
+	return projectedQueueAction(m.reserveQueue(), m.nextRequest(), "queue updated", fn)
+}
+
+func projectedQueueAction(task queueTask, requestID uint64, status string, fn func(context.Context) error) tea.Cmd {
+	cmd := queueAction(task, requestID, status, fn)
+	return func() tea.Msg {
+		msg := cmd().(queueActionDoneMsg)
+		msg.projected = true
+		return msg
+	}
+}
+
+type queueProjection struct{}
+
+func (m *Model) expectQueue() {
+	m.queueProjection = &queueProjection{}
+	m.queueEditsPending++
+	m.queueRevision++
+}
+
+func (m *Model) scheduleQueueRefresh() tea.Cmd {
+	if (m.queueProjection == nil && !m.queueAuthoritative) || m.queueEditsPending > 0 || m.queueRefreshPending {
+		return nil
+	}
+	m.queueRefreshPending = true
+	return refreshQueue(m.reserveQueue(), m.deps.Player, m.queueRevision, m.queueEventVersion)
+}
+
+const queueDebounceDelay = 50 * time.Millisecond
+
+func (m *Model) scheduleQueueDebounce() tea.Cmd {
+	if m.queueDebouncePending {
+		return nil
+	}
+	m.queueDebouncePending = true
+	return queueDebounce(m.queueEventVersion)
+}
+
+func queueDebounce(version uint64) tea.Cmd {
+	return tea.Tick(queueDebounceDelay, func(time.Time) tea.Msg { return queueDebounceMsg{version: version} })
+}
+
+func refreshQueue(task queueTask, p *mpv.Player, revision, eventVersion uint64) tea.Cmd {
+	return func() tea.Msg {
+		var entries []mpv.PlaylistEntry
+		pos := -1
+		err := task.run(func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+			defer cancel()
+			var err error
+			entries, pos, err = p.Playlist(ctx)
+			return err
+		})
+		return queueRefreshMsg{revision: revision, eventVersion: eventVersion, entries: entries, pos: pos, err: err}
+	}
+}
+
+func search(s Searcher, query string, requestID uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), searchTimeout)
 		defer cancel()
 		tracks, err := s.Search(ctx, query, searchLimit)
-		return searchDoneMsg{query: query, tracks: tracks, err: err}
+		return searchDoneMsg{requestID: requestID, query: query, tracks: tracks, err: err}
 	}
 }
 
@@ -387,13 +527,17 @@ func (m Model) startRadio() (tea.Model, tea.Cmd) {
 		m.setStatus("nothing playing to seed a radio from")
 		return m, nil
 	}
+	requestID, task := m.nextRequest(), m.reserveQueue()
+	m.spinnerRequest = requestID
 	m.searching = true
 	m.setStatus("fetching radio…")
-	return m, tea.Batch(m.spinner.Tick, fetchRadio(m.deps.Searcher, t.ID))
+	return m, tea.Batch(m.spinner.Tick, fetchRadio(m.deps.Searcher, func(tracks []youtube.Track) error {
+		return appendTracks(m.deps.Player, tracks)
+	}, t.ID, requestID, task))
 }
 
 // fetchQueue resolves the tracks behind a pasted link so update can queue them.
-func fetchQueue(s Searcher, link youtube.Link) tea.Cmd {
+func fetchQueue(s Searcher, appendQueue func([]youtube.Track) error, link youtube.Link, requestID uint64, task queueTask) tea.Cmd {
 	return func() tea.Msg {
 		limit := 0
 		if link.Mix {
@@ -406,12 +550,22 @@ func fetchQueue(s Searcher, link youtube.Link) tea.Cmd {
 		if link.Mix && len(tracks) > radioLimit {
 			tracks = tracks[:radioLimit]
 		}
-		return queueDoneMsg{tracks: tracks, err: err}
+		if !link.Mix && len(tracks) > youtube.MaxPlaylistItems {
+			tracks = tracks[:youtube.MaxPlaylistItems]
+		}
+		limitHit := !link.Mix && len(tracks) == youtube.MaxPlaylistItems
+		err = task.run(func() error {
+			if err != nil || len(tracks) == 0 {
+				return err
+			}
+			return appendQueue(tracks)
+		})
+		return queueDoneMsg{requestID: requestID, tracks: tracks, limitHit: limitHit, err: err}
 	}
 }
 
 // fetchRadio resolves YouTube's mix for the track with seedID.
-func fetchRadio(s Searcher, seedID string) tea.Cmd {
+func fetchRadio(s Searcher, appendQueue func([]youtube.Track) error, seedID string, requestID uint64, task queueTask) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), searchTimeout)
 		defer cancel()
@@ -422,8 +576,24 @@ func fetchRadio(s Searcher, seedID string) tea.Cmd {
 		if len(tracks) > radioLimit {
 			tracks = tracks[:radioLimit]
 		}
-		return queueDoneMsg{tracks: tracks, err: err}
+		err = task.run(func() error {
+			if err != nil || len(tracks) == 0 {
+				return err
+			}
+			return appendQueue(tracks)
+		})
+		return queueDoneMsg{requestID: requestID, tracks: tracks, err: err}
 	}
+}
+
+func appendTracks(p *mpv.Player, tracks []youtube.Track) error {
+	urls := make([]string, len(tracks))
+	for i, track := range tracks {
+		urls[i] = track.URL
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	return p.AppendAll(ctx, urls)
 }
 
 // loadDevices reads mpv's output devices, which covers every audio output

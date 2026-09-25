@@ -3,6 +3,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"image"
 	"log/slog"
 	"net/http"
@@ -49,13 +50,14 @@ type Spectrum interface {
 
 // Deps are the collaborators the UI drives. Tap and MPRIS are optional.
 type Deps struct {
-	Searcher   Searcher
-	Player     *mpv.Player
-	Tap        Spectrum
-	MPRIS      *mpris.Server
-	Thumbnails bool
-	HTTP       *http.Client
-	Normalize  bool
+	Searcher      Searcher
+	Player        *mpv.Player
+	Tap           Spectrum
+	MPRIS         *mpris.Server
+	Thumbnails    bool
+	HTTP          *http.Client
+	Normalize     bool
+	InitialTracks map[string]youtube.Track
 }
 
 type focus int
@@ -77,13 +79,28 @@ type Model struct {
 	spinner spinner.Model
 	focus   focus
 
-	searching bool
-	results   []youtube.Track
-	resultCur int
+	searching      bool
+	requestID      uint64
+	activeRequest  uint64
+	searchRequest  uint64
+	spinnerRequest uint64
+	queueTail      <-chan struct{}
+	results        []youtube.Track
+	resultCur      int
 
-	queue    []mpv.PlaylistEntry
-	queueCur int
-	pos      int
+	queue           []mpv.PlaylistEntry
+	queueCur        int
+	queueProjection *queueProjection
+	// Once an edit has raced with playlist events, read mpv's current queue
+	// after later events instead of trusting payloads that may have been delayed.
+	queueAuthoritative   bool
+	queueEditsPending    int
+	queueInsertPending   bool
+	queueRefreshPending  bool
+	queueRevision        uint64
+	queueEventVersion    uint64
+	queueDebouncePending bool
+	pos                  int
 	// tracks remembers search metadata by URL, since mpv only knows filenames
 	// until yt-dlp resolves each entry.
 	tracks map[string]youtube.Track
@@ -165,12 +182,16 @@ func New(deps Deps) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.MiniDot
 
+	tracks := make(map[string]youtube.Track, len(deps.InitialTracks))
+	for url, track := range deps.InitialTracks {
+		tracks[url] = track
+	}
 	return Model{
 		deps:      deps,
 		input:     in,
 		spinner:   sp,
 		focus:     focusSearch,
-		tracks:    make(map[string]youtube.Track),
+		tracks:    tracks,
 		pos:       -1,
 		idle:      true,
 		volume:    100,
@@ -178,6 +199,9 @@ func New(deps Deps) Model {
 		showViz:   deps.Tap != nil,
 	}
 }
+
+// KnownTrack returns metadata learned from search, import, or a prior session.
+func (m Model) KnownTrack(url string) youtube.Track { return m.tracks[url] }
 
 // Init starts the event pumps.
 func (m Model) Init() tea.Cmd {
@@ -197,18 +221,35 @@ func (m Model) Init() tea.Cmd {
 
 type (
 	searchDoneMsg struct {
-		query  string
-		tracks []youtube.Track
-		err    error
+		requestID uint64
+		query     string
+		tracks    []youtube.Track
+		err       error
 	}
 	queueDoneMsg struct {
-		tracks []youtube.Track
-		err    error
+		requestID uint64
+		tracks    []youtube.Track
+		limitHit  bool
+		err       error
 	}
-	mpvEventMsg  mpv.Event
-	mpvClosedMsg struct{}
-	levelsMsg    []float64
-	devicesMsg   struct {
+	queueActionDoneMsg struct {
+		requestID uint64
+		status    string
+		err       error
+		projected bool
+	}
+	queueRefreshMsg struct {
+		revision     uint64
+		eventVersion uint64
+		entries      []mpv.PlaylistEntry
+		pos          int
+		err          error
+	}
+	queueDebounceMsg struct{ version uint64 }
+	mpvEventMsg      mpv.Event
+	mpvClosedMsg     struct{}
+	levelsMsg        []float64
+	devicesMsg       struct {
 		devices []mpv.AudioDevice
 		open    bool
 		err     error
@@ -323,36 +364,96 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case searchDoneMsg:
-		m.searching = false
+		if msg.requestID != m.searchRequest {
+			return m, nil
+		}
+		if msg.requestID == m.spinnerRequest {
+			m.searching = false
+		}
 		if msg.err != nil {
-			m.setError("search failed: " + msg.err.Error())
+			if msg.requestID == m.activeRequest {
+				m.setError("search failed: " + msg.err.Error())
+			}
 			return m, nil
 		}
 		m.results, m.resultCur = msg.tracks, 0
 		for _, t := range msg.tracks {
 			m.tracks[t.URL] = t
 		}
-		m.setStatus(pluralize(len(msg.tracks), "result") + " for " + quote(msg.query))
+		if msg.requestID == m.activeRequest {
+			m.setStatus(pluralize(len(msg.tracks), "result") + " for " + quote(msg.query))
+		}
 		return m, nil
 
 	case queueDoneMsg:
-		m.searching = false
-		if msg.err != nil {
-			m.setError(msg.err.Error())
-			return m, nil
+		if msg.requestID == m.spinnerRequest {
+			m.searching = false
 		}
+		// mpv may have accepted some entries before AppendAll returned an error.
+		// Keep their lookup metadata available to playback and MPRIS.
 		for _, t := range msg.tracks {
 			m.tracks[t.URL] = t
 		}
-		m.setStatus(pluralize(len(msg.tracks), "track") + " queued")
-		p := m.deps.Player
-		return m, do(func(ctx context.Context) error {
-			urls := make([]string, len(msg.tracks))
-			for i, t := range msg.tracks {
-				urls[i] = t.URL
+		// Playback events may arrive while the append command is still running.
+		// Reconcile the current track now that its lookup metadata is known.
+		thumbCmd := m.refreshThumb()
+		m.syncMPRIS()
+		if msg.err != nil {
+			if msg.requestID == m.activeRequest {
+				m.setError(msg.err.Error())
 			}
-			return p.AppendAll(ctx, urls)
-		})
+			return m, tea.Batch(thumbCmd, m.scheduleQueueRefresh())
+		}
+		if msg.requestID == m.activeRequest {
+			status := pluralize(len(msg.tracks), "track") + " queued"
+			if msg.limitHit {
+				status += fmt.Sprintf(" (import limit: %d)", youtube.MaxPlaylistItems)
+			}
+			m.setStatus(status)
+		}
+		return m, tea.Batch(thumbCmd, m.scheduleQueueRefresh())
+
+	case queueActionDoneMsg:
+		if msg.projected {
+			m.queueEditsPending--
+		}
+		if msg.requestID == m.activeRequest {
+			if msg.err != nil {
+				m.setError(msg.err.Error())
+			} else {
+				m.setStatus(msg.status)
+			}
+		}
+		return m, m.scheduleQueueRefresh()
+
+	case queueRefreshMsg:
+		m.queueRefreshPending = false
+		if msg.revision != m.queueRevision || m.queueEditsPending > 0 {
+			return m, m.scheduleQueueRefresh()
+		}
+		if msg.err != nil {
+			m.setError("refresh queue: " + msg.err.Error())
+			return m, nil
+		}
+		m.queueProjection = nil
+		m.queueAuthoritative = true
+		m.queueInsertPending = false
+		m.queue = msg.entries
+		m.queueCur = min(m.queueCur, max(0, len(m.queue)-1))
+		m.pos = msg.pos
+		m.syncMPRIS()
+		var refresh tea.Cmd
+		if m.queueEventVersion != msg.eventVersion {
+			refresh = m.scheduleQueueDebounce()
+		}
+		return m, tea.Batch(m.refreshThumb(), refresh)
+
+	case queueDebounceMsg:
+		if msg.version != m.queueEventVersion {
+			return m, queueDebounce(m.queueEventVersion)
+		}
+		m.queueDebouncePending = false
+		return m, m.scheduleQueueRefresh()
 
 	case mpvEventMsg:
 		cmd := m.applyEvent(mpv.Event(msg))

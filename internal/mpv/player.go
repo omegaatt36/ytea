@@ -224,6 +224,28 @@ func (p *Player) Move(ctx context.Context, from, to int) error {
 	return err
 }
 
+// Playlist reads the current entries and selected position from mpv.
+func (p *Player) Playlist(ctx context.Context) ([]PlaylistEntry, int, error) {
+	data, err := p.client.Command(ctx, "get_property", PropPlaylist)
+	if err != nil {
+		return nil, -1, fmt.Errorf("read playlist: %w", err)
+	}
+	entries := Decode[[]PlaylistEntry](data)
+
+	data, err = p.client.Command(ctx, "get_property", PropPlaylistPos)
+	if err != nil {
+		return nil, -1, fmt.Errorf("read playlist position: %w", err)
+	}
+	pos := -1
+	if string(data) != "null" {
+		pos = Decode[int](data)
+	}
+	if pos < -1 || pos >= len(entries) {
+		pos = -1
+	}
+	return entries, pos, nil
+}
+
 // Next skips to the next playlist entry.
 func (p *Player) Next(ctx context.Context) error {
 	_, err := p.client.Command(ctx, "playlist-next")

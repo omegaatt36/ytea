@@ -303,7 +303,7 @@ func (m Model) renderFooter() string {
 	}
 	help := dimStyle.Render("/ search · enter play · a queue · tab pane · space pause · ←→ seek · n/p next/prev · +/- vol · N norm · o output · v viz · r radio · q quit")
 	if m.focus == focusQueue {
-		help = dimStyle.Render("enter jump · d remove · J/K move · tab pane · space pause · n/p next/prev · r radio · q quit")
+		help = dimStyle.Render("enter jump · d remove · C clear queue · J/K move · tab pane · space pause · n/p next/prev · r radio · q quit")
 	}
 	return ansi.Truncate(status, m.width, "…") + "\n" + ansi.Truncate(help, m.width, "…")
 }
