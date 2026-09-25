@@ -18,6 +18,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/urfave/cli/v3"
 
+	"github.com/omegaatt36/ytea/internal/library"
 	"github.com/omegaatt36/ytea/internal/mpris"
 	"github.com/omegaatt36/ytea/internal/mpv"
 	"github.com/omegaatt36/ytea/internal/pipewire"
@@ -177,6 +178,10 @@ func run(ctx context.Context, opts options) error {
 			stopCancel()
 		}
 	}
+	libraryStore, err := library.Open(stateDir)
+	if err != nil {
+		return fmt.Errorf("load local playlists: %w", err)
+	}
 
 	deps := tui.Deps{
 		Searcher:      youtube.NewSearcher(opts.ytdlpBin),
@@ -185,6 +190,7 @@ func run(ctx context.Context, opts options) error {
 		HTTP:          &http.Client{Timeout: 10 * time.Second},
 		Normalize:     opts.normalize,
 		InitialTracks: tracksFromSession(saved),
+		Library:       libraryStore,
 	}
 
 	if opts.visualizer {

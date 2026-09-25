@@ -16,6 +16,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 
+	"github.com/omegaatt36/ytea/internal/library"
 	"github.com/omegaatt36/ytea/internal/mpris"
 	"github.com/omegaatt36/ytea/internal/mpv"
 	"github.com/omegaatt36/ytea/internal/thumbnail"
@@ -58,6 +59,7 @@ type Deps struct {
 	HTTP          *http.Client
 	Normalize     bool
 	InitialTracks map[string]youtube.Track
+	Library       *library.Store
 }
 
 type focus int
@@ -67,6 +69,10 @@ const (
 	focusResults
 	focusQueue
 	focusDevices
+	focusPlaylists
+	focusPlaylistTracks
+	focusPlaylistPicker
+	focusPlaylistName
 )
 
 // Model is the root Bubble Tea model.
@@ -75,9 +81,18 @@ type Model struct {
 
 	width, height int
 
-	input   textinput.Model
-	spinner spinner.Model
-	focus   focus
+	input                 textinput.Model
+	nameInput             textinput.Model
+	spinner               spinner.Model
+	focus                 focus
+	nameReturn            focus
+	saveReturn            focus
+	saveTrack             youtube.Track
+	nameTracks            []youtube.Track
+	playlists             []library.Playlist
+	playlistCur           int
+	playlistTrackCur      int
+	deletePlaylistPending int
 
 	searching      bool
 	requestID      uint64
@@ -181,22 +196,34 @@ func New(deps Deps) Model {
 
 	sp := spinner.New()
 	sp.Spinner = spinner.MiniDot
+	nameInput := textinput.New()
+	nameInput.Placeholder = "playlist name"
+	nameInput.Prompt = " name: "
+	nameInput.CharLimit = 100
+	nameInput.KeyMap.Paste = pasteKeys
 
 	tracks := make(map[string]youtube.Track, len(deps.InitialTracks))
 	for url, track := range deps.InitialTracks {
 		tracks[url] = track
 	}
+	var playlists []library.Playlist
+	if deps.Library != nil {
+		playlists = deps.Library.Playlists()
+	}
 	return Model{
-		deps:      deps,
-		input:     in,
-		spinner:   sp,
-		focus:     focusSearch,
-		tracks:    tracks,
-		pos:       -1,
-		idle:      true,
-		volume:    100,
-		normalize: deps.Normalize,
-		showViz:   deps.Tap != nil,
+		deps:                  deps,
+		input:                 in,
+		nameInput:             nameInput,
+		spinner:               sp,
+		focus:                 focusSearch,
+		tracks:                tracks,
+		playlists:             playlists,
+		deletePlaylistPending: -1,
+		pos:                   -1,
+		idle:                  true,
+		volume:                100,
+		normalize:             deps.Normalize,
+		showViz:               deps.Tap != nil,
 	}
 }
 
@@ -319,8 +346,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case tea.PasteMsg:
-		// Terminal paste (ctrl+shift+v, cmd+v) always lands in the search box;
-		// there is nothing else to paste into.
+		if m.focus == focusPlaylistName {
+			var inputCmd tea.Cmd
+			m.nameInput, inputCmd = m.nameInput.Update(msg)
+			return m, inputCmd
+		}
+		// Terminal paste normally lands in the search box.
 		cmd := m.focusSearch()
 		var inputCmd tea.Cmd
 		m.input, inputCmd = m.input.Update(msg)

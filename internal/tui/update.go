@@ -18,11 +18,14 @@ import (
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	pressed := msg.String()
+	if pressed != "D" {
+		m.deletePlaylistPending = -1
+	}
 	if pressed == "ctrl+c" {
 		return m.quit()
 	}
 
-	if key.Matches(msg, pasteKeys) && m.focus != focusSearch {
+	if key.Matches(msg, pasteKeys) && m.focus != focusSearch && m.focus != focusPlaylistName {
 		// Pasting from a list pane goes to the search box, like terminal paste does.
 		return m, tea.Batch(m.focusSearch(), textinput.Paste)
 	}
@@ -30,6 +33,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.focus {
 	case focusSearch:
 		return m.handleSearchKey(msg)
+	case focusPlaylistName:
+		return m.handlePlaylistNameKey(msg)
 	case focusDevices:
 		return m.handleDeviceKey(pressed)
 	}
@@ -44,11 +49,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "/":
 		return m, m.focusSearch()
 	case "tab", "shift+tab":
-		if m.focus == focusResults {
-			m.focus = focusQueue
-		} else {
-			m.focus = focusResults
-		}
+		m.cycleTab(pressed == "shift+tab")
 		return m, nil
 	case "o":
 		return m, loadDevices(m.deps.Player, true)
@@ -61,8 +62,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.startRadio()
 	}
 
-	if m.focus == focusQueue {
+	switch m.focus {
+	case focusQueue:
 		return m.handleQueueKey(pressed)
+	case focusPlaylists, focusPlaylistTracks, focusPlaylistPicker:
+		return m.handlePlaylistKey(pressed)
 	}
 	return m.handleResultKey(pressed)
 }
@@ -155,6 +159,10 @@ func (m Model) handleResultKey(key string) (tea.Model, tea.Cmd) {
 			m.resultCur = min(len(m.results)-1, m.resultCur+1)
 			return m, queueAction(task, requestID, "queued "+quote(t.Title), func(ctx context.Context) error { return m.deps.Player.Append(ctx, t.URL) })
 		}
+	case "s":
+		if t, ok := m.selectedResult(); ok {
+			return m.openPlaylistPicker(t)
+		}
 	}
 	return m, nil
 }
@@ -175,6 +183,46 @@ func (m Model) handleQueueKey(key string) (tea.Model, tea.Cmd) {
 		if !m.queueInsertPending && i >= 0 && i < len(m.queue) {
 			return m, queueAction(m.reserveQueue(), m.nextRequest(), "playing selected track", func(ctx context.Context) error { return p.PlayIndex(ctx, i) })
 		}
+	case "s":
+		if i >= 0 && i < len(m.queue) {
+			e := m.queue[i]
+			t := m.tracks[e.Filename]
+			t.URL = e.Filename
+			if t.Title == "" {
+				t.Title = e.Title
+			}
+			return m.openPlaylistPicker(t)
+		}
+	case "S":
+		if len(m.queue) == 0 {
+			m.setStatus("queue is empty")
+			return m, nil
+		}
+		tracks := make([]youtube.Track, 0, len(m.queue))
+		seen := make(map[string]bool, len(m.queue))
+		for _, e := range m.queue {
+			if e.Filename == "" || seen[e.Filename] {
+				continue
+			}
+			seen[e.Filename] = true
+			t := m.tracks[e.Filename]
+			t.URL = e.Filename
+			if t.Title == "" {
+				t.Title = e.Title
+			}
+			tracks = append(tracks, t)
+		}
+		if len(tracks) == 0 {
+			m.setError("queue has no saveable tracks")
+			return m, nil
+		}
+		m.nameTracks = tracks
+		m.nameReturn = focusQueue
+		m.focus = focusPlaylistName
+		m.nameInput.SetValue("")
+		m.input.Blur()
+		m.setStatus("name the playlist for the current queue")
+		return m, m.nameInput.Focus()
 	case "d", "x", "delete":
 		if !m.queueInsertPending && i >= 0 && i < len(m.queue) {
 			cmd := m.queueWrite(func(ctx context.Context) error { return p.Remove(ctx, i) })

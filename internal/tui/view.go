@@ -67,9 +67,14 @@ func (m Model) render() string {
 	}
 
 	var body string
-	if m.focus == focusDevices {
+	switch m.focus {
+	case focusDevices:
 		body = m.renderDevices(m.width, bodyHeight)
-	} else {
+	case focusPlaylistName:
+		body = m.renderPlaylistName(bodyHeight)
+	case focusPlaylists, focusPlaylistTracks, focusPlaylistPicker:
+		body = m.renderPlaylistPanes(bodyHeight)
+	default:
 		body = m.renderPanes(bodyHeight)
 	}
 
@@ -106,7 +111,55 @@ func (m Model) renderHeader() string {
 	if m.searching {
 		search += " " + m.spinner.View()
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Center, title, search)
+	tabs := []string{"Results", "Queue", "Playlists"}
+	active := 0
+	switch m.focus {
+	case focusQueue:
+		active = 1
+	case focusPlaylists, focusPlaylistTracks, focusPlaylistPicker, focusPlaylistName:
+		active = 2
+	}
+	for i := range tabs {
+		if i == active {
+			tabs[i] = headStyle.Render("[" + tabs[i] + "]")
+		}
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Center, title, search) + "\n" + strings.Join(tabs, "  ")
+}
+
+func (m Model) renderPlaylistPanes(height int) string {
+	leftW := m.width * 2 / 5
+	rightW := m.width - leftW
+	names := make([]string, len(m.playlists))
+	for i, p := range m.playlists {
+		names[i] = fmt.Sprintf("%s (%d)", p.Name, len(p.Tracks))
+	}
+	if len(names) == 0 {
+		names = []string{dimStyle.Render("press c to create")}
+	}
+	tracks := m.selectedPlaylistTracks()
+	lines := make([]string, len(tracks))
+	for i, t := range tracks {
+		lines[i] = resultLine(t, rightW-4)
+	}
+	if len(lines) == 0 {
+		lines = []string{dimStyle.Render("empty playlist")}
+	}
+	leftTitle := "Playlists"
+	if m.focus == focusPlaylistPicker {
+		leftTitle = "Save to playlist — enter to select"
+	}
+	rightTitle := "Tracks"
+	if m.playlistCur < len(m.playlists) {
+		rightTitle = m.playlists[m.playlistCur].Name
+	}
+	left := pane(leftTitle, names, m.playlistCur, m.focus != focusPlaylistTracks, leftW, height)
+	right := pane(rightTitle, lines, m.playlistTrackCur, m.focus == focusPlaylistTracks, rightW, height)
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+}
+
+func (m Model) renderPlaylistName(height int) string {
+	return pane("New playlist — enter to save, esc to cancel", []string{m.nameInput.View()}, -1, true, m.width, height)
 }
 
 func (m Model) renderPanes(height int) string {
@@ -301,9 +354,21 @@ func (m Model) renderFooter() string {
 	if m.statusErr {
 		status = errorStyle.Render(m.status)
 	}
-	help := dimStyle.Render("/ search · enter play · a queue · tab pane · space pause · ←→ seek · n/p next/prev · +/- vol · N norm · o output · v viz · r radio · q quit")
+	help := dimStyle.Render("/ search · enter play · a queue · s save · tab next pane · space pause · ←→ seek · n/p next/prev · +/- vol · N norm · o output · v viz · r radio · q quit")
 	if m.focus == focusQueue {
-		help = dimStyle.Render("enter jump · d remove · C clear queue · J/K move · tab pane · space pause · n/p next/prev · r radio · q quit")
+		help = dimStyle.Render("enter jump · s save track · S save queue · d remove · C clear queue · J/K move · tab next pane · n/p next/prev · q quit")
+	}
+	if m.focus == focusPlaylists {
+		help = dimStyle.Render("c create · enter browse · a queue all · D delete playlist · tab next pane · / search · q quit")
+	}
+	if m.focus == focusPlaylistTracks {
+		help = dimStyle.Render("enter play · a queue · d remove saved track · esc back · tab next pane · / search · q quit")
+	}
+	if m.focus == focusPlaylistPicker {
+		help = dimStyle.Render("enter save track · c new playlist · esc cancel · q quit")
+	}
+	if m.focus == focusPlaylistName {
+		help = dimStyle.Render("enter create playlist · esc cancel")
 	}
 	return ansi.Truncate(status, m.width, "…") + "\n" + ansi.Truncate(help, m.width, "…")
 }

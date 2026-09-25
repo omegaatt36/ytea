@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/kitty"
 
+	"github.com/omegaatt36/ytea/internal/library"
 	"github.com/omegaatt36/ytea/internal/mpv"
 	"github.com/omegaatt36/ytea/internal/thumbnail"
 	"github.com/omegaatt36/ytea/internal/youtube"
@@ -108,6 +109,126 @@ func TestRenderFitsWindow(t *testing.T) {
 	got := m.render()
 	if w, h := lipgloss.Width(got), lipgloss.Height(got); w > 100 || h > 30 {
 		t.Errorf("render() size = %dx%d, want within 100x30", w, h)
+	}
+}
+
+func TestLocalPlaylistFlow(t *testing.T) {
+	store, err := library.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := youtube.Track{ID: "one", Title: "First", URL: "https://www.youtube.com/watch?v=one"}
+	second := youtube.Track{ID: "two", Title: "Second", URL: "https://www.youtube.com/watch?v=two"}
+	m := New(Deps{Library: store})
+	m.focus = focusResults
+	m.results = []youtube.Track{first, second}
+	got, _ := m.handleResultKey("s")
+	m = got.(Model)
+	if m.focus != focusPlaylistName {
+		t.Fatalf("save without lists focused %v, want name input", m.focus)
+	}
+	m.nameInput.SetValue("Favorites")
+	got, _ = m.handlePlaylistNameKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = got.(Model)
+	if m.focus != focusResults || len(store.Playlists()) != 1 || len(store.Playlists()[0].Tracks) != 1 {
+		t.Fatalf("created playlist and saved song: focus=%v playlists=%+v", m.focus, store.Playlists())
+	}
+	m.resultCur = 1
+	got, _ = m.handleResultKey("s")
+	m = got.(Model)
+	if m.focus != focusPlaylistPicker {
+		t.Fatalf("save with existing list focused %v", m.focus)
+	}
+	got, _ = m.handlePlaylistKey("enter")
+	m = got.(Model)
+	if m.focus != focusResults || len(store.Playlists()[0].Tracks) != 2 {
+		t.Fatalf("saved second song: focus=%v playlists=%+v", m.focus, store.Playlists())
+	}
+	m.cycleTab(false)
+	m.cycleTab(false)
+	if m.focus != focusPlaylists {
+		t.Fatalf("two tabs from results = %v", m.focus)
+	}
+	got, _ = m.handlePlaylistKey("enter")
+	m = got.(Model)
+	if m.focus != focusPlaylistTracks {
+		t.Fatalf("enter list = %v", m.focus)
+	}
+	m.playlistTrackCur = 1
+	got, _ = m.handlePlaylistKey("d")
+	m = got.(Model)
+	if len(store.Playlists()[0].Tracks) != 1 || store.Playlists()[0].Tracks[0].URL != first.URL {
+		t.Fatalf("after removal = %+v", store.Playlists())
+	}
+	m.width, m.height = 80, 24
+	if w, h := lipgloss.Width(m.render()), lipgloss.Height(m.render()); w > 80 || h > 24 {
+		t.Errorf("playlist render size = %dx%d", w, h)
+	}
+}
+
+func TestPlaylistNamePasteStaysInNameInput(t *testing.T) {
+	store, err := library.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Deps{Library: store})
+	m.focus = focusPlaylists
+	got, _ := m.handlePlaylistKey("c")
+	m = got.(Model)
+	got, _ = m.Update(tea.PasteMsg{Content: "Morning"})
+	m = got.(Model)
+	if m.focus != focusPlaylistName || m.nameInput.Value() != "Morning" || m.input.Value() != "" {
+		t.Errorf("paste routing: focus=%v name=%q search=%q", m.focus, m.nameInput.Value(), m.input.Value())
+	}
+}
+
+func TestSaveQueueAsPlaylist(t *testing.T) {
+	store, err := library.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Deps{Library: store})
+	m.focus = focusQueue
+	firstURL := "https://www.youtube.com/watch?v=one"
+	secondURL := "https://www.youtube.com/watch?v=two"
+	m.queue = []mpv.PlaylistEntry{
+		{Filename: firstURL, Title: "First"},
+		{Filename: secondURL, Title: "Second"},
+		{Filename: firstURL, Title: "First"},
+	}
+	got, _ := m.handleQueueKey("S")
+	m = got.(Model)
+	if m.focus != focusPlaylistName {
+		t.Fatalf("save queue focused %v", m.focus)
+	}
+	m.nameInput.SetValue("Imported")
+	got, _ = m.handlePlaylistNameKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = got.(Model)
+	playlists := store.Playlists()
+	if m.focus != focusPlaylists || len(playlists) != 1 || len(playlists[0].Tracks) != 2 || playlists[0].Tracks[0].URL != firstURL || playlists[0].Tracks[1].URL != secondURL {
+		t.Fatalf("saved queue = %+v, focus=%v", playlists, m.focus)
+	}
+}
+
+func TestDeletePlaylistNeedsSecondPress(t *testing.T) {
+	store, err := library.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create("Keep"); err != nil {
+		t.Fatal(err)
+	}
+	m := New(Deps{Library: store})
+	m.focus = focusPlaylists
+	got, _ := m.handlePlaylistKey("D")
+	m = got.(Model)
+	if len(store.Playlists()) != 1 || m.deletePlaylistPending != 0 {
+		t.Fatalf("first D deleted playlist: %+v", store.Playlists())
+	}
+	got, _ = m.handlePlaylistKey("D")
+	m = got.(Model)
+	if len(store.Playlists()) != 0 || m.deletePlaylistPending != -1 {
+		t.Fatalf("second D did not delete playlist: %+v", store.Playlists())
 	}
 }
 

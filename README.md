@@ -9,7 +9,7 @@ and cover art in the terminal, including inside Zellij.
 
 ```
 ┌ Bubble Tea TUI ──────────────────────────────────┐
-│ search │ results │ queue │ now playing │ spectrum │
+│ search │ results / playlists │ queue │ now playing │ spectrum │
 └──┬─────────┬──────────┬───────────┬──────────────┘
  yt-dlp    mpv IPC    mpv IPC     PipeWire      D-Bus
  search    playback   devices     pw-cat tap    MPRIS
@@ -20,6 +20,7 @@ and cover art in the terminal, including inside Zellij.
 
 - **Search while you listen.** Queue results with `a`, or play one right after the current track with `enter`. The queue is mpv's own playlist, so the next track is resolved ahead of time and track changes are near-gapless.
 - **Paste a link.** A playlist URL pasted into search imports its first 200 tracks straight into the queue, a mix queues its first 25 with the seed playing first, and a single video URL queues just that video. `r` queues a mix seeded by the track playing now.
+- **Keep local playlists.** Save a result or queued track with `s`, or save the whole queue with `S`. Create named playlists and queue a saved track or an entire playlist later. Playlists are stored on this device and do not modify your YouTube account.
 - **Resume your session.** On exit, ytea saves the queue, selected track, and volume locally. On the next launch it restores them with playback paused.
 - **Audio-only, best quality.** Streams `bestaudio` (usually Opus, ~130 kbps; 256 kbps with [YouTube Premium](#youtube-premium-audio)) to the audio output mpv picked: PipeWire on Linux, Core Audio on macOS. No video is fetched.
 - **Loudness leveling.** An on/off `dynaudnorm` filter (`N`) evens out volume between uploads.
@@ -55,7 +56,7 @@ go install github.com/omegaatt36/ytea/cmd/ytea@latest
 |---|---|
 | `/` | focus search (`enter` runs it, `esc` leaves) |
 | `ctrl+v` `ctrl+shift+v` `shift+insert`, terminal paste | paste into search |
-| `tab` | switch between results and queue |
+| `tab` / `shift+tab` | cycle Results, Queue, and Playlists |
 | `space` | pause / resume |
 | `←` `→` | seek ±5s |
 | `n` `p` (or `>` `<`) | next / previous track |
@@ -73,6 +74,7 @@ go install github.com/omegaatt36/ytea/cmd/ytea@latest
 | `j` `k` / `↑` `↓`, `g` `G` | move, jump to top / bottom |
 | `enter` | play now (inserted after the current track) |
 | `a` | add to the end of the queue |
+| `s` | save the selected result to a local playlist |
 
 **Queue**
 
@@ -83,6 +85,21 @@ go install github.com/omegaatt36/ytea/cmd/ytea@latest
 | `d` / `x` / `delete` | remove |
 | `C` | clear the entire queue and stop playback |
 | `J` `K` / `shift+↓` `shift+↑` | move track down / up |
+| `s` | save the selected queued track to a local playlist |
+| `S` | save the current queue as a new local playlist |
+
+**Playlists**
+
+| Key | Action |
+|---|---|
+| `c` | create a playlist |
+| `enter` | browse the selected playlist; inside it, play the selected track now |
+| `a` | queue the whole playlist; inside it, queue the selected track |
+| `d` | remove a saved track while browsing it |
+| `D` twice | delete the selected playlist |
+| `esc` | leave the track list or cancel the save picker |
+
+When you press `s` on a result or queued track, select a playlist with `enter` or press `c` to create one. The first saved track prompts for a playlist name automatically.
 
 ## Flags
 
@@ -106,6 +123,8 @@ Every flag can also come from an environment variable (`--audio-device` reads `Y
 
 Logs go to `$XDG_STATE_HOME/ytea/` (`ytea.log`, `mpv.log`), since the TUI owns the terminal.
 The previous queue, known song titles and artists, selected track, and volume are stored in `session.json` in the same directory. Playback resumes paused from the start of the selected track.
+Named local playlists are stored separately in `playlists.json` in that directory, so clearing the queue or replacing the last session does not remove them.
+Edit local playlists from one ytea instance at a time; simultaneous instances can overwrite each other's playlist changes.
 
 ## Config
 
