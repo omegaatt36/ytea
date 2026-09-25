@@ -1,6 +1,6 @@
 # ytea
 
-A terminal YouTube music player for Linux desktops running PipeWire.
+A terminal YouTube music player.
 
 Search with yt-dlp, play through mpv, and get the parts a shell-script
 frontend can't give you: a queue you can edit while music plays, output
@@ -11,19 +11,19 @@ and cover art in the terminal, including inside Zellij.
 ┌ Bubble Tea TUI ──────────────────────────────────┐
 │ search │ results │ queue │ now playing │ spectrum │
 └──┬─────────┬──────────┬───────────┬──────────────┘
- yt-dlp    mpv IPC    PipeWire     D-Bus
- search    playback   pw-dump      MPRIS
-                      pw-cat tap
+ yt-dlp    mpv IPC    mpv IPC     PipeWire      D-Bus
+ search    playback   devices     pw-cat tap    MPRIS
+                                  pw-dump
 ```
 
 ## Features
 
 - **Search while you listen.** Queue results with `a`, or play one right after the current track with `enter`. The queue is mpv's own playlist, so the next track is resolved ahead of time and track changes are near-gapless.
-- **Audio-only, best quality.** Streams `bestaudio` (usually Opus, ~130 kbps; 256 kbps with [YouTube Premium](#youtube-premium-audio)) straight to PipeWire. No video is fetched.
+- **Audio-only, best quality.** Streams `bestaudio` (usually Opus, ~130 kbps; 256 kbps with [YouTube Premium](#youtube-premium-audio)) to the audio output mpv picked: PipeWire on Linux, Core Audio on macOS. No video is fetched.
 - **Loudness leveling.** An on/off `dynaudnorm` filter (`N`) evens out volume between uploads.
-- **Output switching.** Pick any PipeWire sink with `o`. The choice applies only to ytea, not to the system default.
-- **Live spectrum.** Captured from ytea's own PipeWire stream, so other apps' sound never shows up in it.
-- **Media keys.** Registers as an MPRIS player, so keyboard media keys, desktop widgets and `playerctl` can control it.
+- **Output switching.** Pick any device mpv can output to with `o` — PipeWire sinks on Linux, Core Audio devices on macOS. The choice applies only to ytea, not to the system default.
+- **Live spectrum (Linux).** Captured from ytea's own PipeWire stream, so other apps' sound never shows up in it. Auto-disabled where PipeWire is absent.
+- **Media keys (Linux).** Registers as an MPRIS player, so keyboard media keys, desktop widgets and `playerctl` can control it.
 - **Cover art.** Uses the best method the terminal supports (see [Thumbnails](#thumbnails)).
 - **Ghostty niceties.** The window title shows the current track, and playback progress appears in the tab (OSC 9;4).
 
@@ -31,10 +31,10 @@ and cover art in the terminal, including inside Zellij.
 
 | Needed for | Dependency |
 |---|---|
-| everything | Linux with PipeWire, `mpv`, `yt-dlp` |
-| output switching, spectrum | `pw-dump`, `pw-cat` (PipeWire tools); switching also needs `mpv` built with the `pipewire` audio output |
-| media keys | a D-Bus session bus (optional; ytea runs without it) |
-| `ctrl+v` paste | `wl-paste` (Wayland) or `xclip`/`xsel` (X11) |
+| everything | `mpv`, `yt-dlp` (runs wherever mpv does; developed on Linux) |
+| spectrum | Linux with PipeWire, plus `pw-dump` and `pw-cat` (auto-disabled elsewhere) |
+| media keys | a D-Bus session bus (Linux; optional; ytea runs without it) |
+| `ctrl+v` paste | Linux: `wl-paste` (Wayland) or `xclip`/`xsel` (X11); macOS works out of the box |
 | building | Go 1.27+ |
 
 Keep yt-dlp current. YouTube changes regularly break old versions, and the symptom is failed searches or tracks that won't play.
@@ -86,7 +86,7 @@ go install github.com/omegaatt36/ytea/cmd/ytea@latest
 --config FILE                  TOML config (default: $XDG_CONFIG_HOME/ytea/config.toml)
 --volume 80                    initial volume in percent
 --[no-]normalize               loudness leveling at start (default on)
---audio-device ""              mpv device such as pipewire/<sink node.name> (default: system sink)
+--audio-device ""              mpv audio device name (default: system default)
 --[no-]thumbnails              cover art (default on)
 --[no-]visualizer              spectrum (default on)
 --[no-]mpris                   register org.mpris.MediaPlayer2.ytea (default on)
@@ -109,7 +109,7 @@ Logs go to `$XDG_STATE_HOME/ytea/` (`ytea.log`, `mpv.log`), since the TUI owns t
 ```toml
 volume = 70
 normalize = false
-audio-device = "pipewire/alsa_output.usb-xxx"
+audio-device = "pipewire/alsa_output.usb-xxx"   # mpv audio device name
 cookies = "cookies.txt"   # relative to this file; ~/ is expanded
 ```
 
@@ -154,20 +154,20 @@ Zellij 0.45 implements the kitty graphics protocol but rejects Unicode placehold
 ## How it works
 
 - **Playback.** mpv runs headless (`--idle --no-video`) and is driven over its JSON IPC socket. mpv picks its own audio output at runtime: `pipewire` where that is compiled in, coreaudio on macOS. ytea watches mpv's properties, so its UI and the MPRIS state always reflect what mpv is actually doing.
-- **Output switching.** mpv's stream is named `ytea-<pid>` in the PipeWire graph. Switching output sets mpv's `audio-device` to `pipewire/<sink>`, so the choice survives track changes.
-- **Spectrum.** `pw-cat --record --target <serial>` records that stream node directly, not the sink monitor. The serial changes whenever mpv reopens its output, so the tap re-resolves it every second.
+- **Output switching.** ytea reads mpv's `audio-device-list` over its IPC socket, so the picker follows whichever audio output mpv picked (PipeWire sinks on Linux, Core Audio devices on macOS). Switching sets mpv's `audio-device`, so the choice survives track changes.
+- **Spectrum (Linux).** mpv's stream is named `ytea-<pid>` in the PipeWire graph. `pw-cat --record --target <serial>` records that stream node directly, not the sink monitor. The serial changes whenever mpv reopens its output, so the tap re-resolves it every second.
 - **Thumbnails.** Placeholders are ordinary text cells that Bubble Tea's renderer draws like any other text. Direct placement moves the cursor to the thumbnail cell, puts the image, and restores the cursor. It re-places the image when the layout moves or the window is resized.
 
 ## Known issues
 
 - Inside Zellij, result rows containing some emoji can leave stray border characters. This is likely a character-width disagreement between ytea and Zellij.
-- Built for Linux. Playback runs anywhere mpv runs (macOS plays through coreaudio), but output switching, the spectrum and MPRIS depend on PipeWire and D-Bus.
+- Built for Linux. Playback and output switching run anywhere mpv runs (macOS plays through Core Audio), but the spectrum depends on PipeWire and media keys on D-Bus.
 
 ## Development
 
 ```sh
 go test -race ./...
-go run ./cmd/ytea -audio-device pipewire/<muted sink>   # test without sound
+go run ./cmd/ytea --audio-device <a muted device>   # test without sound
 ```
 
 ## Acknowledgements

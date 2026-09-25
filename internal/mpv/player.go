@@ -25,6 +25,10 @@ const (
 	PropAF          = "af"
 )
 
+// PropAudioDeviceList lists the devices of the audio output mpv picked. Unlike
+// the observed properties it is only read on demand, when the picker opens.
+const PropAudioDeviceList = "audio-device-list"
+
 var observed = []string{
 	PropTimePos, PropDuration, PropPause, PropVolume, PropPlaylist,
 	PropPlaylistPos, PropIdle, PropCodec, PropAudioParams, PropAudioDevice, PropAF,
@@ -43,9 +47,11 @@ type Config struct {
 	Bin string
 	// Socket is the IPC socket path; any stale file is removed.
 	Socket string
-	// ClientName becomes the PipeWire node.name of the playback stream.
+	// ClientName names mpv's audio stream (--audio-client-name); the PipeWire
+	// spectrum tap finds the stream by it on Linux.
 	ClientName string
-	// AudioDevice is an mpv device name such as "pipewire/<node.name>"; empty means the default sink.
+	// AudioDevice is an mpv device name from AudioDevices, such as
+	// "pipewire/<sink>" (Linux) or "coreaudio/<id>" (macOS); empty means the default.
 	AudioDevice        string
 	Volume             int
 	Normalize          bool
@@ -255,7 +261,31 @@ func (p *Player) SetVolume(ctx context.Context, volume float64) error {
 	return err
 }
 
-// SetAudioDevice routes output to a PipeWire node, e.g. "pipewire/alsa_output...".
+// AudioDevice is one entry of mpv's audio-device-list property.
+type AudioDevice struct {
+	Name        string `json:"name"` // e.g. "auto", "pipewire/<sink>", "coreaudio/<id>"
+	Description string `json:"description"`
+}
+
+// Label is a human-readable device name.
+func (d AudioDevice) Label() string {
+	if d.Description != "" {
+		return d.Description
+	}
+	return d.Name
+}
+
+// AudioDevices lists what mpv can output to, following whichever audio output
+// driver it picked (pipewire, coreaudio, …).
+func (p *Player) AudioDevices(ctx context.Context) ([]AudioDevice, error) {
+	data, err := p.client.Command(ctx, "get_property", PropAudioDeviceList)
+	if err != nil {
+		return nil, err
+	}
+	return Decode[[]AudioDevice](data), nil
+}
+
+// SetAudioDevice routes output to an mpv audio device from AudioDevices.
 func (p *Player) SetAudioDevice(ctx context.Context, device string) error {
 	_, err := p.client.Command(ctx, "set_property", PropAudioDevice, device)
 	return err

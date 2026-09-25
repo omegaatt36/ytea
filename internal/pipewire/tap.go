@@ -1,10 +1,15 @@
+// Package pipewire records ytea's mpv stream with pw-cat for the spectrum
+// visualizer. Capture is PipeWire-specific, so the package is unused elsewhere.
 package pipewire
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -59,8 +64,8 @@ func (t *Tap) Run(ctx context.Context) {
 	ticker := time.NewTicker(rescanEvery)
 	defer ticker.Stop()
 	for {
-		serial, err := t.resolve(ctx)
-		if err != nil && !errors.Is(err, ErrNodeNotFound) {
+		serial, err := t.streamSerial(ctx)
+		if err != nil && !errors.Is(err, errNodeNotFound) {
 			slog.WarnContext(ctx, "resolve playback stream", "node", t.node, "error", err)
 		}
 		if serial != rec.target() {
@@ -112,14 +117,65 @@ func (r *recording) stop() {
 	}
 }
 
-func (t *Tap) resolve(ctx context.Context) (int, error) {
+// errNodeNotFound is returned when no pw-dump object matches the requested stream.
+var errNodeNotFound = errors.New("pipewire stream not found")
+
+// streamSerial resolves the object.serial of the output stream whose node.name
+// is the tap's node; pw-cat --target takes serials. It re-resolves on every
+// scan because the serial changes whenever mpv reopens its audio output
+// (device switch, format change).
+func (t *Tap) streamSerial(ctx context.Context) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	g, err := Dump(ctx)
-	if err != nil {
-		return 0, err
+
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "pw-dump")
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return 0, fmt.Errorf("run pw-dump: %w: %s", err, bytes.TrimSpace(stderr.Bytes()))
 	}
-	return g.StreamSerial(t.node)
+	var objects []dumpObject
+	if err := json.Unmarshal(stdout.Bytes(), &objects); err != nil {
+		return 0, fmt.Errorf("decode pw-dump output: %w", err)
+	}
+	return findStreamSerial(objects, t.node)
+}
+
+// dumpObject is one entry of pw-dump's JSON output; only nodes are of interest.
+type dumpObject struct {
+	ID   int         `json:"id"`
+	Type string      `json:"type"`
+	Info *objectInfo `json:"info"`
+}
+
+type objectInfo struct {
+	Props map[string]any `json:"props"`
+}
+
+const typeNode = "PipeWire:Interface:Node"
+
+// findStreamSerial returns the object.serial of the output stream whose
+// node.name is node.
+func findStreamSerial(objects []dumpObject, node string) (int, error) {
+	for _, o := range objects {
+		if o.Type != typeNode || o.Info == nil {
+			continue
+		}
+		props := o.Info.Props
+		if propString(props, "media.class") != "Stream/Output/Audio" || propString(props, "node.name") != node {
+			continue
+		}
+		if serial, ok := props["object.serial"].(float64); ok {
+			return int(serial), nil
+		}
+	}
+	return 0, fmt.Errorf("find stream %q: %w", node, errNodeNotFound)
+}
+
+func propString(props map[string]any, key string) string {
+	s, _ := props[key].(string)
+	return s
 }
 
 // record starts pw-cat capturing the stream with the given serial.

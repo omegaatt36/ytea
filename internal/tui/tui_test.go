@@ -156,6 +156,61 @@ func TestGraphicsProbe(t *testing.T) {
 	}
 }
 
+// devicePickerModel returns a model listing mpv's output devices.
+func devicePickerModel(device string) Model {
+	m := New(Deps{})
+	m.width, m.height = 80, 30
+	m.applyProperty(mpv.Event{Prop: mpv.PropAudioDevice, Data: json.RawMessage(device)})
+	m.devices = []mpv.AudioDevice{
+		{Name: "auto", Description: "Autoselect device"},
+		{Name: "pipewire/DX5", Description: "DX5 II Headphones"},
+	}
+	return m
+}
+
+func TestDevicePickerMarksCurrent(t *testing.T) {
+	tests := []struct {
+		name      string
+		device    string // mpv's audio-device property, JSON-encoded
+		wantIndex int
+	}{
+		{name: "explicit device", device: `"pipewire/DX5"`, wantIndex: 1},
+		{name: "mpv's auto", device: `"auto"`, wantIndex: 0},
+		{name: "before the first event", device: `null`, wantIndex: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := devicePickerModel(tt.device)
+			if !m.isCurrentDevice(m.devices[tt.wantIndex]) {
+				t.Errorf("device %d not marked as current for %s", tt.wantIndex, tt.device)
+			}
+			if got := m.currentDeviceName(); got != m.devices[tt.wantIndex].Name {
+				t.Errorf("currentDeviceName() = %q, want %q", got, m.devices[tt.wantIndex].Name)
+			}
+			if _, ok := m.currentDevice(); !ok {
+				t.Errorf("currentDevice() = not found for %s", tt.device)
+			}
+		})
+	}
+}
+
+func TestRenderDevices(t *testing.T) {
+	m := devicePickerModel(`"pipewire/DX5"`)
+	m.deviceCur = 1
+
+	got := ansi.Strip(m.renderDevices(80, 20))
+	for _, want := range []string{"● ", "DX5 II Headphones", "Autoselect device"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("renderDevices() = %q, want %q", got, want)
+		}
+	}
+
+	m.devices = nil
+	if got := ansi.Strip(m.renderDevices(80, 20)); !strings.Contains(got, "no output devices") {
+		t.Errorf("renderDevices() = %q, want an empty-list hint", got)
+	}
+}
+
 func TestPasteKeysReadClipboard(t *testing.T) {
 	// Zellij forwards ctrl+shift+v as a kitty-protocol key event rather than a paste.
 	ctrlShiftV := tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl | tea.ModShift}

@@ -67,8 +67,8 @@ func (m Model) render() string {
 	}
 
 	var body string
-	if m.focus == focusSinks {
-		body = m.renderSinks(m.width, bodyHeight)
+	if m.focus == focusDevices {
+		body = m.renderDevices(m.width, bodyHeight)
 	} else {
 		body = m.renderPanes(bodyHeight)
 	}
@@ -232,8 +232,8 @@ func (m Model) audioLine() string {
 	if m.params.SampleRate > 0 {
 		parts = append(parts, fmt.Sprintf("%gkHz", float64(m.params.SampleRate)/1000))
 	}
-	if s, ok := m.currentSink(); ok {
-		parts = append(parts, "→ "+s.Label())
+	if d, ok := m.currentDevice(); ok {
+		parts = append(parts, "→ "+d.Label())
 	}
 	if m.normalize {
 		parts = append(parts, "norm")
@@ -281,23 +281,19 @@ func (m Model) renderSpectrum(width, height int) string {
 	return strings.Join(rows, "\n")
 }
 
-func (m Model) renderSinks(width, height int) string {
-	lines := make([]string, len(m.sinks))
-	for i, s := range m.sinks {
+func (m Model) renderDevices(width, height int) string {
+	lines := make([]string, len(m.devices))
+	for i, d := range m.devices {
 		mark := "  "
-		if m.isCurrentSink(s) {
+		if m.isCurrentDevice(d) {
 			mark = "● "
 		}
-		label := s.Label()
-		if s.Default {
-			label += dimStyle.Render(" (default)")
-		}
-		lines[i] = mark + label
+		lines[i] = mark + d.Label()
 	}
 	if len(lines) == 0 {
-		lines = []string{dimStyle.Render("no PipeWire sinks found")}
+		lines = []string{dimStyle.Render("no output devices")}
 	}
-	return pane("Output device — enter to switch, esc to cancel", lines, m.sinkCur, true, width, height)
+	return pane("Output device — enter to switch, esc to cancel", lines, m.deviceCur, true, width, height)
 }
 
 func (m Model) renderFooter() string {

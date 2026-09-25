@@ -11,7 +11,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/pipewire"
 	"github.com/omegaatt36/ytea/internal/thumbnail"
 	"github.com/omegaatt36/ytea/internal/youtube"
 )
@@ -30,8 +29,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.focus {
 	case focusSearch:
 		return m.handleSearchKey(msg)
-	case focusSinks:
-		return m.handleSinkKey(pressed)
+	case focusDevices:
+		return m.handleDeviceKey(pressed)
 	}
 
 	if cmd, ok := m.handlePlaybackKey(pressed); ok {
@@ -51,7 +50,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "o":
-		return m, loadSinks(true)
+		return m, loadDevices(m.deps.Player, true)
 	case "v":
 		if m.deps.Tap != nil {
 			m.showViz = !m.showViz
@@ -175,23 +174,23 @@ func (m Model) handleQueueKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleSinkKey(key string) (tea.Model, tea.Cmd) {
+func (m Model) handleDeviceKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "up", "k":
-		m.sinkCur = max(0, m.sinkCur-1)
+		m.deviceCur = max(0, m.deviceCur-1)
 	case "down", "j":
-		m.sinkCur = min(len(m.sinks)-1, m.sinkCur+1)
+		m.deviceCur = min(len(m.devices)-1, m.deviceCur+1)
 	case "esc", "o", "q":
 		m.focus = focusResults
 	case "enter":
 		m.focus = focusResults
-		if m.sinkCur < len(m.sinks) {
-			s := m.sinks[m.sinkCur]
-			m.setStatus("output → " + s.Label())
-			// Routing mpv itself (rather than relinking with wpctl) makes the
-			// choice stick across tracks and survive stream re-creation.
+		if m.deviceCur < len(m.devices) {
+			d := m.devices[m.deviceCur]
+			m.setStatus("output → " + d.Label())
+			// Routing mpv itself (rather than the system mixer) makes the choice
+			// stick across tracks and survive stream re-creation.
 			return m, do(func(ctx context.Context) error {
-				return m.deps.Player.SetAudioDevice(ctx, "pipewire/"+s.Name)
+				return m.deps.Player.SetAudioDevice(ctx, d.Name)
 			})
 		}
 	}
@@ -374,15 +373,14 @@ func search(s Searcher, query string) tea.Cmd {
 	}
 }
 
-func loadSinks(open bool) tea.Cmd {
+// loadDevices reads mpv's output devices, which covers every audio output
+// driver mpv picked (pipewire, coreaudio, …).
+func loadDevices(p *mpv.Player, open bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 		defer cancel()
-		g, err := pipewire.Dump(ctx)
-		if err != nil {
-			return sinksMsg{err: err}
-		}
-		return sinksMsg{sinks: g.Sinks(), open: open}
+		devices, err := p.AudioDevices(ctx)
+		return devicesMsg{devices: devices, open: open, err: err}
 	}
 }
 

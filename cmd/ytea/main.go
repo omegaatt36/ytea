@@ -1,4 +1,4 @@
-// Command ytea is a terminal YouTube music player built on mpv and PipeWire.
+// Command ytea is a terminal YouTube music player built on mpv.
 package main
 
 import (
@@ -58,15 +58,15 @@ func newCommand(action func(context.Context, options) error) *cli.Command {
 	var opts options
 	return &cli.Command{
 		Name:  appName,
-		Usage: "terminal YouTube music player for PipeWire",
+		Usage: "terminal YouTube music player",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "config", Usage: "TOML config whose keys are these flag names (default: $XDG_CONFIG_HOME/ytea/config.toml)", TakesFile: true, Sources: env("config")},
 			&cli.IntFlag{Name: "volume", Value: 80, Usage: "initial volume in percent", Sources: env("volume"), Destination: &opts.volume},
 			&cli.BoolWithInverseFlag{Name: "normalize", Value: true, Usage: "even out loudness between tracks (toggle with N)", Sources: env("normalize"), Destination: &opts.normalize},
 			&cli.BoolWithInverseFlag{Name: "thumbnails", Value: true, Usage: "show cover thumbnails (kitty graphics when available, else half-block art)", Sources: env("thumbnails"), Destination: &opts.thumbnails},
-			&cli.BoolWithInverseFlag{Name: "visualizer", Value: true, Usage: "show a spectrum tapped from the PipeWire stream", Sources: env("visualizer"), Destination: &opts.visualizer},
+			&cli.BoolWithInverseFlag{Name: "visualizer", Value: true, Usage: "show a spectrum of ytea's own audio (Linux with PipeWire)", Sources: env("visualizer"), Destination: &opts.visualizer},
 			&cli.BoolWithInverseFlag{Name: "mpris", Value: true, Usage: "register as an MPRIS player for media keys", Sources: env("mpris"), Destination: &opts.mpris},
-			&cli.StringFlag{Name: "audio-device", Usage: `mpv audio device, e.g. "pipewire/<sink node.name>" (default: system default)`, Sources: env("audio-device"), Destination: &opts.device},
+			&cli.StringFlag{Name: "audio-device", Usage: `mpv audio device from its list, e.g. "pipewire/<sink>" (Linux) or "coreaudio/<id>" (macOS); default: system default`, Sources: env("audio-device"), Destination: &opts.device},
 			&cli.StringFlag{Name: "mpv", Value: "mpv", Usage: "mpv binary", Sources: env("mpv"), Destination: &opts.mpvBin},
 			&cli.StringFlag{Name: "yt-dlp", Value: "yt-dlp", Usage: "yt-dlp binary", Sources: env("yt-dlp"), Destination: &opts.ytdlpBin},
 		},
@@ -132,8 +132,8 @@ func run(ctx context.Context, opts options) error {
 		}
 	}
 
-	// The spectrum tap finds mpv's stream by node.name; the pid keeps two
-	// running instances from tapping each other.
+	// The spectrum tap finds mpv's stream by node.name in the PipeWire graph
+	// (Linux only); the pid keeps two running instances from tapping each other.
 	streamName := fmt.Sprintf("%s-%d", appName, os.Getpid())
 
 	player, err := mpv.Start(ctx, mpv.Config{

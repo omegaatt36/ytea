@@ -1,4 +1,4 @@
-// Package tui is the Bubble Tea front end tying search, playback, PipeWire and MPRIS together.
+// Package tui is the Bubble Tea front end tying search, playback and MPRIS together.
 package tui
 
 import (
@@ -17,7 +17,6 @@ import (
 
 	"github.com/omegaatt36/ytea/internal/mpris"
 	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/pipewire"
 	"github.com/omegaatt36/ytea/internal/thumbnail"
 	"github.com/omegaatt36/ytea/internal/youtube"
 )
@@ -38,11 +37,17 @@ type Searcher interface {
 	Search(ctx context.Context, query string, limit int) ([]youtube.Track, error)
 }
 
+// Spectrum delivers visualizer band levels. It is satisfied by pipewire.Tap,
+// whose capture is PipeWire-specific and therefore unavailable off Linux.
+type Spectrum interface {
+	Levels() <-chan []float64
+}
+
 // Deps are the collaborators the UI drives. Tap and MPRIS are optional.
 type Deps struct {
 	Searcher   Searcher
 	Player     *mpv.Player
-	Tap        *pipewire.Tap
+	Tap        Spectrum
 	MPRIS      *mpris.Server
 	Thumbnails bool
 	HTTP       *http.Client
@@ -55,7 +60,7 @@ const (
 	focusSearch focus = iota
 	focusResults
 	focusQueue
-	focusSinks
+	focusDevices
 )
 
 // Model is the root Bubble Tea model.
@@ -90,8 +95,8 @@ type Model struct {
 	levels  []float64
 	showViz bool
 
-	sinks   []pipewire.Sink
-	sinkCur int
+	devices   []mpv.AudioDevice
+	deviceCur int
 
 	status    string
 	statusErr bool
@@ -175,7 +180,7 @@ func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		textinput.Blink,
 		waitMPV(m.deps.Player.Events()),
-		loadSinks(false),
+		loadDevices(m.deps.Player, false),
 	}
 	if m.deps.Tap != nil {
 		cmds = append(cmds, waitLevels(m.deps.Tap.Levels()))
@@ -195,10 +200,10 @@ type (
 	mpvEventMsg  mpv.Event
 	mpvClosedMsg struct{}
 	levelsMsg    []float64
-	sinksMsg     struct {
-		sinks []pipewire.Sink
-		open  bool
-		err   error
+	devicesMsg   struct {
+		devices []mpv.AudioDevice
+		open    bool
+		err     error
 	}
 	errMsg   struct{ err error }
 	thumbMsg struct {
@@ -335,15 +340,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.levels = msg
 		return m, waitLevels(m.deps.Tap.Levels())
 
-	case sinksMsg:
+	case devicesMsg:
 		if msg.err != nil {
 			m.setError("list outputs: " + msg.err.Error())
 			return m, nil
 		}
-		m.sinks = msg.sinks
+		m.devices = msg.devices
 		if msg.open {
-			m.focus = focusSinks
-			m.sinkCur = max(0, slices.IndexFunc(m.sinks, m.isCurrentSink))
+			m.focus = focusDevices
+			m.deviceCur = max(0, slices.IndexFunc(m.devices, m.isCurrentDevice))
 		}
 		return m, nil
 
@@ -387,19 +392,28 @@ func (m Model) current() (mpv.PlaylistEntry, youtube.Track, bool) {
 	return e, m.tracks[e.Filename], true
 }
 
-func (m Model) isCurrentSink(s pipewire.Sink) bool {
-	if m.device == "" || m.device == "auto" {
-		return s.Default
-	}
-	return m.device == "pipewire/"+s.Name
+// isCurrentDevice reports whether d is the device mpv plays through. An unset
+// device is mpv's "auto".
+func (m Model) isCurrentDevice(d mpv.AudioDevice) bool {
+	return d.Name == m.currentDeviceName()
 }
 
-func (m Model) currentSink() (pipewire.Sink, bool) {
-	i := slices.IndexFunc(m.sinks, m.isCurrentSink)
-	if i < 0 {
-		return pipewire.Sink{}, false
+// currentDeviceName is mpv's configured audio device, defaulting to auto.
+func (m Model) currentDeviceName() string {
+	if m.device == "" {
+		return "auto"
 	}
-	return m.sinks[i], true
+	return m.device
+}
+
+// currentDevice returns the device mpv is playing through, if it is listed.
+func (m Model) currentDevice() (mpv.AudioDevice, bool) {
+	name := m.currentDeviceName()
+	i := slices.IndexFunc(m.devices, func(d mpv.AudioDevice) bool { return d.Name == name })
+	if i < 0 {
+		return mpv.AudioDevice{}, false
+	}
+	return m.devices[i], true
 }
 
 func (m Model) syncMPRIS() {
