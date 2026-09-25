@@ -3,11 +3,44 @@ package mpv
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestAppendAllAppendsWithoutJumping(t *testing.T) {
+	var ops [][]string
+	c := newFakePair(t, func(req request) string {
+		cmd := make([]string, len(req.Command))
+		for i, a := range req.Command {
+			cmd[i] = fmt.Sprint(a)
+		}
+		ops = append(ops, cmd)
+		b, _ := json.Marshal(req.RequestID)
+		return `{"request_id":` + string(b) + `,"error":"success"}`
+	})
+	p := &Player{client: c}
+	ctx := context.Background()
+
+	if err := p.AppendAll(ctx, nil); err != nil {
+		t.Fatalf("AppendAll(nil) error = %v", err)
+	}
+	if err := p.AppendAll(ctx, []string{"u1", "u2", "u3"}); err != nil {
+		t.Fatalf("AppendAll() error = %v", err)
+	}
+
+	want := [][]string{
+		{"loadfile", "u1", "append-play"}, // starts an idle player
+		{"loadfile", "u2", "append"},      // the rest must not trigger playback
+		{"loadfile", "u3", "append"},
+	}
+	eq := func(a, b []string) bool { return slices.Equal(a, b) }
+	if !slices.EqualFunc(ops, want, eq) {
+		t.Errorf("AppendAll() commands = %v, want %v", ops, want)
+	}
+}
 
 func TestAudioDevices(t *testing.T) {
 	c := newFakePair(t, func(req request) string {

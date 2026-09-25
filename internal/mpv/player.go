@@ -175,6 +175,23 @@ func (p *Player) Append(ctx context.Context, url string) error {
 	return err
 }
 
+// AppendAll adds urls to the end of the playlist, starting playback if idle.
+func (p *Player) AppendAll(ctx context.Context, urls []string) error {
+	if len(urls) == 0 {
+		return nil
+	}
+	if err := p.Append(ctx, urls[0]); err != nil {
+		return err
+	}
+	for _, url := range urls[1:] {
+		// Plain append: a -play here would jump a player still leaving idle.
+		if _, err := p.client.Command(ctx, "loadfile", url, "append"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // PlayNow inserts url right after the current entry and starts it, keeping the rest of the queue intact.
 func (p *Player) PlayNow(ctx context.Context, url string) error {
 	if _, err := p.client.Command(ctx, "loadfile", url, "insert-next-play"); err != nil {

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -56,6 +57,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.showViz = !m.showViz
 		}
 		return m, nil
+	case "r":
+		return m.startRadio()
 	}
 
 	if m.focus == focusQueue {
@@ -74,6 +77,10 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.searching = true
 		m.focus = focusResults
 		m.input.Blur()
+		if link, ok := youtube.RefOf(query); ok {
+			m.setStatus("importing " + quote(link.URL) + "…")
+			return m, tea.Batch(m.spinner.Tick, fetchQueue(m.deps.Searcher, link))
+		}
 		m.setStatus("searching " + quote(query) + "…")
 		return m, tea.Batch(m.spinner.Tick, search(m.deps.Searcher, query))
 	case "esc":
@@ -370,6 +377,52 @@ func search(s Searcher, query string) tea.Cmd {
 		defer cancel()
 		tracks, err := s.Search(ctx, query, searchLimit)
 		return searchDoneMsg{query: query, tracks: tracks, err: err}
+	}
+}
+
+// startRadio queues YouTube's mix for the track playing now.
+func (m Model) startRadio() (tea.Model, tea.Cmd) {
+	_, t, ok := m.current()
+	if !ok || t.ID == "" {
+		m.setStatus("nothing playing to seed a radio from")
+		return m, nil
+	}
+	m.searching = true
+	m.setStatus("fetching radio…")
+	return m, tea.Batch(m.spinner.Tick, fetchRadio(m.deps.Searcher, t.ID))
+}
+
+// fetchQueue resolves the tracks behind a pasted link so update can queue them.
+func fetchQueue(s Searcher, link youtube.Link) tea.Cmd {
+	return func() tea.Msg {
+		limit := 0
+		if link.Mix {
+			// A mix queues like a radio, not in full.
+			limit = radioLimit
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), importTimeout)
+		defer cancel()
+		tracks, err := s.Lookup(ctx, link.URL, limit)
+		if link.Mix && len(tracks) > radioLimit {
+			tracks = tracks[:radioLimit]
+		}
+		return queueDoneMsg{tracks: tracks, err: err}
+	}
+}
+
+// fetchRadio resolves YouTube's mix for the track with seedID.
+func fetchRadio(s Searcher, seedID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), searchTimeout)
+		defer cancel()
+		ref := "https://www.youtube.com/watch?v=" + seedID + "&list=RD" + seedID
+		tracks, err := s.Lookup(ctx, ref, radioLimit+1)
+		// The mix lists its seed first, and the seed is what is playing.
+		tracks = slices.DeleteFunc(tracks, func(t youtube.Track) bool { return t.ID == seedID })
+		if len(tracks) > radioLimit {
+			tracks = tracks[:radioLimit]
+		}
+		return queueDoneMsg{tracks: tracks, err: err}
 	}
 }
 

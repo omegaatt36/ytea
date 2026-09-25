@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"image"
 	"strings"
 	"testing"
@@ -335,5 +338,171 @@ func TestSyncPlacement(t *testing.T) {
 	}
 	if _, cmd := m.update(placeMsg{id: 16, at: m.placedAt}); cmd == nil {
 		t.Error("placeMsg for the current image: cmd = nil, want Put")
+	}
+}
+
+// searchStub answers Lookup with canned tracks.
+type searchStub struct {
+	tracks []youtube.Track
+}
+
+func (s searchStub) Search(ctx context.Context, query string, limit int) ([]youtube.Track, error) {
+	return nil, errors.New("unexpected search")
+}
+
+func (s searchStub) Lookup(ctx context.Context, url string, limit int) ([]youtube.Track, error) {
+	return s.tracks, nil
+}
+
+func TestSearchEnterImportsYouTubeLink(t *testing.T) {
+	m := New(Deps{Searcher: searchStub{tracks: []youtube.Track{
+		{ID: "x1", Title: "one", URL: "https://www.youtube.com/watch?v=x1"},
+	}}})
+	m.input.SetValue("https://youtu.be/x1")
+
+	got, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	gm := got.(Model)
+	if !gm.searching {
+		t.Error("searching = false, want the import in flight")
+	}
+	if !strings.Contains(gm.status, "importing") {
+		t.Errorf("status = %q, want an importing note", gm.status)
+	}
+
+	qm := fetchQueue(gm.deps.Searcher, youtube.Link{URL: "https://www.youtube.com/watch?v=x1"})()
+	resolved, ok := qm.(queueDoneMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want queueDoneMsg", qm)
+	}
+	got, cmd := gm.update(resolved)
+	gm = got.(Model)
+	if gm.searching {
+		t.Error("searching = true, want the fetch finished")
+	}
+	if _, ok := gm.tracks["https://www.youtube.com/watch?v=x1"]; !ok {
+		t.Errorf("tracks = %v, want the resolved track remembered", gm.tracks)
+	}
+	if got := gm.status; got != "1 track queued" {
+		t.Errorf("status = %q, want 1 track queued", got)
+	}
+	if cmd == nil {
+		t.Error("cmd = nil, want the queue write")
+	}
+}
+
+func TestQueueDoneQueuesTracks(t *testing.T) {
+	m := New(Deps{})
+	m.searching = true
+	tracks := []youtube.Track{
+		{ID: "a", Title: "one", URL: "https://www.youtube.com/watch?v=a"},
+		{ID: "b", Title: "two", URL: "https://www.youtube.com/watch?v=b"},
+	}
+
+	got, cmd := m.update(queueDoneMsg{tracks: tracks})
+	gm := got.(Model)
+	if gm.searching {
+		t.Error("searching = true, want the fetch finished")
+	}
+	if got := gm.status; got != "2 tracks queued" {
+		t.Errorf("status = %q, want 2 tracks queued", got)
+	}
+	for _, tr := range tracks {
+		if _, ok := gm.tracks[tr.URL]; !ok {
+			t.Errorf("tracks missing %q", tr.URL)
+		}
+	}
+	if cmd == nil {
+		t.Error("cmd = nil, want the queue write")
+	}
+
+	got, cmd = m.update(queueDoneMsg{err: errors.New("boom")})
+	gm = got.(Model)
+	if !gm.statusErr || gm.status != "boom" {
+		t.Errorf("status = %q err = %v, want the error surfaced", gm.status, gm.statusErr)
+	}
+	if cmd != nil {
+		t.Errorf("cmd = %v, want none for a failed fetch", cmd)
+	}
+}
+
+func TestFetchQueueCapsMixes(t *testing.T) {
+	tracks := []youtube.Track{{ID: "seed", URL: "https://www.youtube.com/watch?v=seed"}}
+	for i := range radioLimit + 4 {
+		id := fmt.Sprintf("t%d", i)
+		tracks = append(tracks, youtube.Track{ID: id, URL: "https://www.youtube.com/watch?v=" + id})
+	}
+
+	link := youtube.Link{URL: "https://www.youtube.com/watch?v=seed&list=RDseed", Mix: true}
+	qm, ok := fetchQueue(searchStub{tracks: tracks}, link)().(queueDoneMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want queueDoneMsg", qm)
+	}
+	if len(qm.tracks) != radioLimit {
+		t.Errorf("tracks = %d, want %d", len(qm.tracks), radioLimit)
+	}
+	if qm.tracks[0].ID != "seed" {
+		t.Errorf("first track = %q, want the seed, which is what the link plays", qm.tracks[0].ID)
+	}
+
+	link = youtube.Link{URL: "https://www.youtube.com/playlist?list=PL123"}
+	qm, ok = fetchQueue(searchStub{tracks: tracks}, link)().(queueDoneMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want queueDoneMsg", qm)
+	}
+	if len(qm.tracks) != radioLimit+5 {
+		t.Errorf("tracks = %d, want the whole playlist", len(qm.tracks))
+	}
+}
+
+func TestRadioKeySeedsFromCurrentTrack(t *testing.T) {
+	m := playingModel(graphicsNone)
+	m.focus = focusResults
+
+	got, cmd := m.Update(tea.KeyPressMsg{Code: 'r'})
+	gm := got.(Model)
+	if !gm.searching {
+		t.Error("searching = false, want the radio fetch in flight")
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil, want a radio fetch")
+	}
+	if got := gm.status; got != "fetching radio…" {
+		t.Errorf("status = %q, want fetching radio", got)
+	}
+
+	m = New(Deps{})
+	m.focus = focusResults
+	got, cmd = m.Update(tea.KeyPressMsg{Code: 'r'})
+	gm = got.(Model)
+	if gm.searching {
+		t.Error("searching = true, want no fetch for an idle player")
+	}
+	if cmd != nil {
+		t.Errorf("cmd = %v, want none", cmd)
+	}
+}
+
+func TestFetchRadioDropsSeedAndCaps(t *testing.T) {
+	tracks := []youtube.Track{{ID: "seed", URL: "https://www.youtube.com/watch?v=seed"}}
+	for i := range radioLimit + 1 {
+		id := fmt.Sprintf("t%d", i)
+		tracks = append(tracks, youtube.Track{ID: id, URL: "https://www.youtube.com/watch?v=" + id})
+	}
+
+	msg := fetchRadio(searchStub{tracks: tracks}, "seed")()
+	qm, ok := msg.(queueDoneMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want queueDoneMsg", msg)
+	}
+	if qm.err != nil {
+		t.Fatalf("err = %v", qm.err)
+	}
+	if len(qm.tracks) != radioLimit {
+		t.Errorf("tracks = %d, want %d", len(qm.tracks), radioLimit)
+	}
+	for _, tr := range qm.tracks {
+		if tr.ID == "seed" {
+			t.Error("seed still queued, want it dropped from the mix")
+		}
 	}
 }

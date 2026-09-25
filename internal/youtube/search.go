@@ -48,34 +48,45 @@ func (s *Searcher) Search(ctx context.Context, query string, limit int) ([]Track
 	if query == "" {
 		return nil, ErrEmptyQuery
 	}
+	return s.extract(ctx, "search", fmt.Sprintf("ytsearch%d:%s", limit, query), 0)
+}
 
-	// --flat-playlist skips per-video extraction, which turns a ~10s search into ~1s.
-	cmd := exec.CommandContext(ctx, s.bin,
-		fmt.Sprintf("ytsearch%d:%s", limit, query),
-		"--flat-playlist", "--dump-single-json", "--no-warnings",
-	)
+// Lookup returns the videos behind a URL from RefOf; a positive limit stops the listing there.
+func (s *Searcher) Lookup(ctx context.Context, url string, limit int) ([]Track, error) {
+	return s.extract(ctx, "url", url, limit)
+}
+
+func (s *Searcher) extract(ctx context.Context, what, target string, items int) ([]Track, error) {
+	// Flat extraction skips per-video stream resolution: ~1s instead of ~10s.
+	args := []string{target, "--flat-playlist", "--dump-single-json", "--no-warnings"}
+	if items > 0 {
+		args = append(args, "--playlist-items", fmt.Sprintf("1:%d", items))
+	}
+	cmd := exec.CommandContext(ctx, s.bin, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return nil, fmt.Errorf("run yt-dlp search %q: %w: %s", query, err, msg)
+			return nil, fmt.Errorf("run yt-dlp %s %q: %w: %s", what, target, err, msg)
 		}
-		return nil, fmt.Errorf("run yt-dlp search %q: %w", query, err)
+		return nil, fmt.Errorf("run yt-dlp %s %q: %w", what, target, err)
 	}
-
-	tracks, err := parseSearch(stdout.Bytes())
+	tracks, err := parseTracks(stdout.Bytes())
 	if err != nil {
-		return nil, fmt.Errorf("parse yt-dlp search %q: %w", query, err)
+		return nil, fmt.Errorf("parse yt-dlp %s %q: %w", what, target, err)
 	}
 	return tracks, nil
 }
 
-type searchResult struct {
-	Entries []searchEntry `json:"entries"`
+// flatDump is a yt-dlp dump: entries for playlists, or a bare video at the top level.
+type flatDump struct {
+	flatEntry
+	Type    string      `json:"_type"`
+	Entries []flatEntry `json:"entries"`
 }
 
-type searchEntry struct {
+type flatEntry struct {
 	ID         string  `json:"id"`
 	Title      string  `json:"title"`
 	URL        string  `json:"url"`
@@ -86,24 +97,31 @@ type searchEntry struct {
 	IEKey      string  `json:"ie_key"`
 }
 
-func parseSearch(data []byte) ([]Track, error) {
-	var res searchResult
+func parseTracks(data []byte) ([]Track, error) {
+	var res flatDump
 	if err := json.Unmarshal(data, &res); err != nil {
 		return nil, err
 	}
 
-	tracks := make([]Track, 0, len(res.Entries))
-	for _, e := range res.Entries {
-		// Channels and playlists can show up in search results; only videos are playable tracks.
-		if e.ID == "" || (e.IEKey != "" && e.IEKey != "Youtube") {
-			continue
+	if len(res.Entries) > 0 {
+		tracks := make([]Track, 0, len(res.Entries))
+		for _, e := range res.Entries {
+			// Channels and playlists can show up in search results; only videos are playable tracks.
+			if e.ID == "" || (e.IEKey != "" && e.IEKey != "Youtube") {
+				continue
+			}
+			tracks = append(tracks, trackFromEntry(e))
 		}
-		tracks = append(tracks, trackFromEntry(e))
+		return tracks, nil
 	}
-	return tracks, nil
+	// A bare video dumps itself at the top level.
+	if res.Type == "video" && res.ID != "" {
+		return []Track{trackFromEntry(res.flatEntry)}, nil
+	}
+	return []Track{}, nil
 }
 
-func trackFromEntry(e searchEntry) Track {
+func trackFromEntry(e flatEntry) Track {
 	channel := e.Channel
 	if channel == "" {
 		channel = e.Uploader

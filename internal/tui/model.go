@@ -23,6 +23,7 @@ import (
 
 const (
 	searchLimit   = 30
+	radioLimit    = 25
 	seekStep      = 5 * time.Second
 	volumeStep    = 5
 	thumbCols     = 18
@@ -30,11 +31,14 @@ const (
 	vizRows       = 6
 	cmdTimeout    = 5 * time.Second
 	searchTimeout = 30 * time.Second
+	importTimeout = 2 * time.Minute
 )
 
 // Searcher finds tracks. It is satisfied by youtube.Searcher.
 type Searcher interface {
 	Search(ctx context.Context, query string, limit int) ([]youtube.Track, error)
+	// Lookup resolves the tracks behind a YouTube URL; a positive limit caps the listing.
+	Lookup(ctx context.Context, url string, limit int) ([]youtube.Track, error)
 }
 
 // Spectrum delivers visualizer band levels. It is satisfied by pipewire.Tap,
@@ -197,6 +201,10 @@ type (
 		tracks []youtube.Track
 		err    error
 	}
+	queueDoneMsg struct {
+		tracks []youtube.Track
+		err    error
+	}
 	mpvEventMsg  mpv.Event
 	mpvClosedMsg struct{}
 	levelsMsg    []float64
@@ -326,6 +334,25 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.setStatus(pluralize(len(msg.tracks), "result") + " for " + quote(msg.query))
 		return m, nil
+
+	case queueDoneMsg:
+		m.searching = false
+		if msg.err != nil {
+			m.setError(msg.err.Error())
+			return m, nil
+		}
+		for _, t := range msg.tracks {
+			m.tracks[t.URL] = t
+		}
+		m.setStatus(pluralize(len(msg.tracks), "track") + " queued")
+		p := m.deps.Player
+		return m, do(func(ctx context.Context) error {
+			urls := make([]string, len(msg.tracks))
+			for i, t := range msg.tracks {
+				urls[i] = t.URL
+			}
+			return p.AppendAll(ctx, urls)
+		})
 
 	case mpvEventMsg:
 		cmd := m.applyEvent(mpv.Event(msg))
