@@ -195,7 +195,9 @@ func (m Model) handlePlaylistKey(key string) (tea.Model, tea.Cmd) {
 		m.spinnerRequest = requestID
 		m.searching = true
 		m.setStatus("queueing " + quote(m.playlists[m.playlistCur].Name) + "…")
-		return m, tea.Batch(m.spinner.Tick, appendPlaylist(m.deps.Player.AppendAll, tracks, requestID, task))
+		return m, tea.Batch(m.spinner.Tick, appendPlaylist(func(ctx context.Context, urls []string) error {
+			return m.deps.Player.AppendAll(ctx, urls)
+		}, tracks, requestID, task))
 	case "d":
 		if m.focus == focusPlaylistTracks {
 			if _, ok := m.selectedPlaylistTrack(); ok {

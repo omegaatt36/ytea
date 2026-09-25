@@ -166,6 +166,85 @@ func TestLocalPlaylistFlow(t *testing.T) {
 	}
 }
 
+type spyPlaylistPlayer struct {
+	*mpv.Player
+	calls []string
+	err   error
+}
+
+func (p *spyPlaylistPlayer) PlayNow(_ context.Context, url string) error {
+	p.calls = append(p.calls, "play "+url)
+	return p.err
+}
+
+func (p *spyPlaylistPlayer) Append(_ context.Context, url string) error {
+	p.calls = append(p.calls, "append "+url)
+	return p.err
+}
+
+func TestPlaylistTrackKeyRunsPlayerCommand(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		key        rune
+		wantCall   string
+		wantStatus string
+		projected  bool
+		err        error
+	}{
+		{name: "play", key: tea.KeyEnter, wantCall: "play second", wantStatus: "playing", projected: true},
+		{name: "append", key: 'a', wantCall: "append second", wantStatus: "queued"},
+		{name: "append failure", key: 'a', wantCall: "append second", err: errors.New("mpv rejected append")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := library.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			tracks := []youtube.Track{{URL: "first", Title: "First"}, {URL: "second", Title: "Second"}}
+			if _, err := store.CreateWithTracks("Favorites", tracks); err != nil {
+				t.Fatal(err)
+			}
+			player := &spyPlaylistPlayer{err: tt.err}
+			m := New(Deps{Library: store, Player: player})
+			m.focus = focusPlaylistTracks
+			m.playlistTrackCur = 1
+
+			got, cmd := m.update(tea.KeyPressMsg{Code: tt.key})
+			m = got.(Model)
+			if cmd == nil {
+				t.Fatal("playlist key did not schedule a player command")
+			}
+			if len(player.calls) != 0 {
+				t.Fatalf("player was called before the command ran: %v", player.calls)
+			}
+			if m.tracks["second"].Title != "Second" {
+				t.Fatalf("selected track metadata was lost: %+v", m.tracks["second"])
+			}
+
+			result := cmd()
+			done, ok := result.(queueActionDoneMsg)
+			if !ok {
+				t.Fatalf("command result has type %T, want queueActionDoneMsg", result)
+			}
+			if len(player.calls) != 1 || player.calls[0] != tt.wantCall {
+				t.Fatalf("player calls = %v, want [%s]", player.calls, tt.wantCall)
+			}
+			if done.projected != tt.projected || !errors.Is(done.err, tt.err) {
+				t.Fatalf("command result = %+v, want projected=%v error=%v", done, tt.projected, tt.err)
+			}
+			got, _ = m.update(done)
+			m = got.(Model)
+			if tt.err != nil {
+				if !m.statusErr || m.status != tt.err.Error() {
+					t.Fatalf("failed command status = %q (error=%v)", m.status, m.statusErr)
+				}
+			} else if m.statusErr || !strings.Contains(m.status, tt.wantStatus) {
+				t.Fatalf("command status = %q (error=%v), want %q", m.status, m.statusErr, tt.wantStatus)
+			}
+		})
+	}
+}
+
 func TestPlaylistNamePasteStaysInNameInput(t *testing.T) {
 	store, err := library.Open(t.TempDir())
 	if err != nil {

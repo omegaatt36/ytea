@@ -112,15 +112,15 @@ func (m Model) handlePlaybackKey(key string) (tea.Cmd, bool) {
 	p := m.deps.Player
 	switch key {
 	case "space":
-		return do(p.TogglePause), true
+		return do(func(ctx context.Context) error { return p.TogglePause(ctx) }), true
 	case "left":
 		return do(func(ctx context.Context) error { return p.Seek(ctx, -seekStep) }), true
 	case "right":
 		return do(func(ctx context.Context) error { return p.Seek(ctx, seekStep) }), true
 	case "n", ">":
-		return do(p.Next), true
+		return do(func(ctx context.Context) error { return p.Next(ctx) }), true
 	case "p", "<":
-		return do(p.Prev), true
+		return do(func(ctx context.Context) error { return p.Prev(ctx) }), true
 	case "+", "=":
 		return do(func(ctx context.Context) error { return p.AddVolume(ctx, volumeStep) }), true
 	case "-":
@@ -234,7 +234,7 @@ func (m Model) handleQueueKey(key string) (tea.Model, tea.Cmd) {
 	case "C":
 		// Clear follows any in-flight import or edit, even when the displayed
 		// queue is already empty. The authoritative refresh settles its result.
-		cmd := projectedQueueAction(m.reserveQueue(), m.nextRequest(), "queue cleared", p.Stop)
+		cmd := projectedQueueAction(m.reserveQueue(), m.nextRequest(), "queue cleared", func(ctx context.Context) error { return p.Stop(ctx) })
 		m.queue = nil
 		m.queueCur = 0
 		m.pos = -1
@@ -544,7 +544,7 @@ func queueDebounce(version uint64) tea.Cmd {
 	return tea.Tick(queueDebounceDelay, func(time.Time) tea.Msg { return queueDebounceMsg{version: version} })
 }
 
-func refreshQueue(task queueTask, p *mpv.Player, revision, eventVersion uint64) tea.Cmd {
+func refreshQueue(task queueTask, p Player, revision, eventVersion uint64) tea.Cmd {
 	return func() tea.Msg {
 		var entries []mpv.PlaylistEntry
 		pos := -1
@@ -634,7 +634,7 @@ func fetchRadio(s Searcher, appendQueue func([]youtube.Track) error, seedID stri
 	}
 }
 
-func appendTracks(p *mpv.Player, tracks []youtube.Track) error {
+func appendTracks(p Player, tracks []youtube.Track) error {
 	urls := make([]string, len(tracks))
 	for i, track := range tracks {
 		urls[i] = track.URL
@@ -646,7 +646,7 @@ func appendTracks(p *mpv.Player, tracks []youtube.Track) error {
 
 // loadDevices reads mpv's output devices, which covers every audio output
 // driver mpv picked (pipewire, coreaudio, …).
-func loadDevices(p *mpv.Player, open bool) tea.Cmd {
+func loadDevices(p Player, open bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 		defer cancel()

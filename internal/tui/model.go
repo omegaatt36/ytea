@@ -49,10 +49,31 @@ type Spectrum interface {
 	Levels() <-chan []float64
 }
 
+// Player provides the playback operations driven by the UI.
+type Player interface {
+	Events() <-chan mpv.Event
+	AudioDevices(context.Context) ([]mpv.AudioDevice, error)
+	SetAudioDevice(context.Context, string) error
+	TogglePause(context.Context) error
+	Seek(context.Context, time.Duration) error
+	Next(context.Context) error
+	Prev(context.Context) error
+	AddVolume(context.Context, int) error
+	SetNormalize(context.Context, bool) error
+	PlayNow(context.Context, string) error
+	Append(context.Context, string) error
+	AppendAll(context.Context, []string) error
+	PlayIndex(context.Context, int) error
+	Remove(context.Context, int) error
+	Move(context.Context, int, int) error
+	Stop(context.Context) error
+	Playlist(context.Context) ([]mpv.PlaylistEntry, int, error)
+}
+
 // Deps are the collaborators the UI drives. Tap and MPRIS are optional.
 type Deps struct {
 	Searcher      Searcher
-	Player        *mpv.Player
+	Player        Player
 	Tap           Spectrum
 	MPRIS         *mpris.Server
 	Thumbnails    bool
