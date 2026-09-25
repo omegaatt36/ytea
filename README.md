@@ -31,8 +31,8 @@ and cover art in the terminal, including inside Zellij.
 
 | Needed for | Dependency |
 |---|---|
-| everything | Linux with PipeWire, `mpv` built with the `pipewire` audio output, `yt-dlp` |
-| output switching, spectrum | `pw-dump`, `pw-cat` (PipeWire tools) |
+| everything | Linux with PipeWire, `mpv`, `yt-dlp` |
+| output switching, spectrum | `pw-dump`, `pw-cat` (PipeWire tools); switching also needs `mpv` built with the `pipewire` audio output |
 | media keys | a D-Bus session bus (optional; ytea runs without it) |
 | `ctrl+v` paste | `wl-paste` (Wayland) or `xclip`/`xsel` (X11) |
 | building | Go 1.27+ |
@@ -153,7 +153,7 @@ Zellij 0.45 implements the kitty graphics protocol but rejects Unicode placehold
 
 ## How it works
 
-- **Playback.** mpv runs headless (`--idle --no-video --ao=pipewire`) and is driven over its JSON IPC socket. ytea watches mpv's properties, so its UI and the MPRIS state always reflect what mpv is actually doing.
+- **Playback.** mpv runs headless (`--idle --no-video`) and is driven over its JSON IPC socket. mpv picks its own audio output at runtime: `pipewire` where that is compiled in, coreaudio on macOS. ytea watches mpv's properties, so its UI and the MPRIS state always reflect what mpv is actually doing.
 - **Output switching.** mpv's stream is named `ytea-<pid>` in the PipeWire graph. Switching output sets mpv's `audio-device` to `pipewire/<sink>`, so the choice survives track changes.
 - **Spectrum.** `pw-cat --record --target <serial>` records that stream node directly, not the sink monitor. The serial changes whenever mpv reopens its output, so the tap re-resolves it every second.
 - **Thumbnails.** Placeholders are ordinary text cells that Bubble Tea's renderer draws like any other text. Direct placement moves the cursor to the thumbnail cell, puts the image, and restores the cursor. It re-places the image when the layout moves or the window is resized.
@@ -161,7 +161,7 @@ Zellij 0.45 implements the kitty graphics protocol but rejects Unicode placehold
 ## Known issues
 
 - Inside Zellij, result rows containing some emoji can leave stray border characters. This is likely a character-width disagreement between ytea and Zellij.
-- Linux only. Output switching, the spectrum and MPRIS all depend on PipeWire and D-Bus.
+- Built for Linux. Playback runs anywhere mpv runs (macOS plays through coreaudio), but output switching, the spectrum and MPRIS depend on PipeWire and D-Bus.
 
 ## Development
 

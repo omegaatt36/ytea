@@ -103,7 +103,6 @@ func (cfg Config) args() []string {
 		"--idle=yes",
 		"--no-video",
 		"--no-terminal",
-		"--ao=pipewire",
 		"--audio-client-name=" + cfg.ClientName,
 		"--input-ipc-server=" + cfg.Socket,
 		"--ytdl-format=bestaudio/best",

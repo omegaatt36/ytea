@@ -20,9 +20,13 @@ var cookieKeys = []string{"cookies", "cookies-from-browser"}
 var notConfigurable = []string{"config", "help"}
 
 func configDir() (string, error) {
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve config dir: %w", err)
+	base := os.Getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home dir: %w", err)
+		}
+		base = filepath.Join(home, ".config")
 	}
 	return filepath.Join(base, appName), nil
 }
