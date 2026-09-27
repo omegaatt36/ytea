@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -107,5 +110,53 @@ func TestConfigArgsCookies(t *testing.T) {
 				t.Errorf("ytdl raw options = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestMain lets TestMPVDiesWithParent re-run this binary as a stand-in for
+// ytea: it starts mpv, reports mpv's pid and waits to be SIGKILLed.
+func TestMain(m *testing.M) {
+	if os.Getenv("YTEA_MPV_PARENT") == "1" {
+		p, err := Start(context.Background(), Config{Bin: "mpv"})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(p.cmd.Process.Pid)
+		select {}
+	}
+	os.Exit(m.Run())
+}
+
+func TestMPVDiesWithParent(t *testing.T) {
+	if _, err := exec.LookPath("mpv"); err != nil {
+		t.Skip("mpv not in PATH")
+	}
+	parent := exec.Command(os.Args[0])
+	parent.Env = append(os.Environ(), "YTEA_MPV_PARENT=1")
+	out, err := parent.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if _, err := fmt.Fscan(out, &pid); err != nil {
+		_ = parent.Process.Kill()
+		t.Fatalf("read mpv pid: %v", err)
+	}
+
+	// SIGKILL skips every deferred Quit, like the benchmark that leaked mpv.
+	_ = parent.Process.Kill()
+	_ = parent.Wait()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("mpv %d outlived its SIGKILLed parent", pid)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

@@ -64,16 +64,6 @@ type Client struct {
 	done    chan struct{}
 }
 
-// Dial connects to an mpv IPC socket.
-func Dial(ctx context.Context, socket string) (*Client, error) {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", socket)
-	if err != nil {
-		return nil, fmt.Errorf("dial mpv socket %s: %w", socket, err)
-	}
-	return newClient(conn), nil
-}
-
 func newClient(conn net.Conn) *Client {
 	c := &Client{
 		conn: conn,

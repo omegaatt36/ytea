@@ -140,7 +140,6 @@ func run(ctx context.Context, opts options) error {
 
 	player, err := mpv.Start(ctx, mpv.Config{
 		Bin:         opts.mpvBin,
-		Socket:      socketPath(),
 		ClientName:  streamName,
 		AudioDevice: opts.device,
 		Volume:      opts.volume,
@@ -283,13 +282,4 @@ func stateDir() (string, error) {
 		return "", fmt.Errorf("create state dir: %w", err)
 	}
 	return dir, nil
-}
-
-// socketPath is per-process so two ytea instances never share an mpv.
-func socketPath() string {
-	dir := os.Getenv("XDG_RUNTIME_DIR")
-	if dir == "" {
-		dir = os.TempDir()
-	}
-	return filepath.Join(dir, fmt.Sprintf("ytea-%d.sock", os.Getpid()))
 }

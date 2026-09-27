@@ -3,10 +3,11 @@ package mpv
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
@@ -45,8 +46,6 @@ const NormalizeLabel = "norm"
 // Config controls how mpv is launched.
 type Config struct {
 	Bin string
-	// Socket is the IPC socket path; any stale file is removed.
-	Socket string
 	// ClientName names mpv's audio stream (--audio-client-name); the PipeWire
 	// spectrum tap finds the stream by it on Linux.
 	ClientName string
@@ -66,19 +65,29 @@ const premiumClients = "youtube:player_client=default,web_music"
 type Player struct {
 	cmd    *exec.Cmd
 	client *Client
-	socket string
 	exited chan struct{}
 }
 
+// ipcFD is where mpv finds its end of the IPC socketpair: the first of cmd.ExtraFiles.
+const ipcFD = 3
+
 // Start launches mpv in idle audio-only mode and connects to it.
+//
+// mpv talks over one end of a socketpair and quits when the other end closes.
+// The kernel closes it whenever ytea exits, SIGKILL included, so mpv can never
+// outlive ytea.
 func Start(ctx context.Context, cfg Config) (*Player, error) {
-	if err := os.Remove(cfg.Socket); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("remove stale mpv socket %s: %w", cfg.Socket, err)
+	ours, theirs, err := socketpair()
+	if err != nil {
+		return nil, err
 	}
+	defer theirs.Close()
 
 	// WithoutCancel: mpv must outlive the startup context and is stopped via Quit.
 	cmd := exec.CommandContext(context.WithoutCancel(ctx), cfg.Bin, cfg.args()...)
+	cmd.ExtraFiles = []*os.File{theirs}
 	if err := cmd.Start(); err != nil {
+		_ = ours.Close()
 		return nil, fmt.Errorf("start mpv: %w", err)
 	}
 	exited := make(chan struct{})
@@ -87,15 +96,16 @@ func Start(ctx context.Context, cfg Config) (*Player, error) {
 		close(exited)
 	}()
 
-	client, err := dialWithRetry(ctx, cfg.Socket, exited)
+	conn, err := net.FileConn(ours)
+	_ = ours.Close()
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return nil, err
+		return nil, fmt.Errorf("wrap mpv ipc socket: %w", err)
 	}
 
-	p := &Player{cmd: cmd, client: client, socket: cfg.Socket, exited: exited}
+	p := &Player{cmd: cmd, client: newClient(conn), exited: exited}
 	for i, prop := range observed {
-		if _, err := client.Command(ctx, "observe_property", i+1, prop); err != nil {
+		if _, err := p.client.Command(ctx, "observe_property", i+1, prop); err != nil {
 			_ = p.Quit()
 			return nil, fmt.Errorf("observe mpv property %s: %w", prop, err)
 		}
@@ -112,7 +122,7 @@ func (cfg Config) args() []string {
 		"--osc=no",
 		"--load-stats-overlay=no",
 		"--audio-client-name=" + cfg.ClientName,
-		"--input-ipc-server=" + cfg.Socket,
+		fmt.Sprintf("--input-ipc-client=fd://%d", ipcFD),
 		"--ytdl-format=bestaudio/best",
 		"--prefetch-playlist=yes",
 		"--gapless-audio=weak",
@@ -144,26 +154,21 @@ func (cfg Config) args() []string {
 	return args
 }
 
-// dialWithRetry waits for mpv to create its socket, which happens shortly after exec.
-func dialWithRetry(ctx context.Context, socket string, exited <-chan struct{}) (*Client, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		client, err := Dial(ctx, socket)
-		if err == nil {
-			return client, nil
-		}
-		select {
-		case <-exited:
-			return nil, fmt.Errorf("mpv exited before opening %s", socket)
-		case <-ctx.Done():
-			return nil, fmt.Errorf("wait for mpv socket: %w", err)
-		case <-ticker.C:
-		}
+// socketpair returns a connected pair of unix sockets, both close-on-exec so
+// no other child inherits them; exec.Cmd clears the flag on the ExtraFiles it passes.
+func socketpair() (ours, theirs *os.File, err error) {
+	// ForkLock keeps a concurrent exec from inheriting the fds before CloseOnExec.
+	syscall.ForkLock.RLock()
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err == nil {
+		syscall.CloseOnExec(fds[0])
+		syscall.CloseOnExec(fds[1])
 	}
+	syscall.ForkLock.RUnlock()
+	if err != nil {
+		return nil, nil, fmt.Errorf("create mpv ipc socketpair: %w", err)
+	}
+	return os.NewFile(uintptr(fds[0]), "mpv-ipc"), os.NewFile(uintptr(fds[1]), "mpv-ipc-child"), nil
 }
 
 // Events delivers mpv events; it is closed when mpv goes away.
@@ -342,27 +347,19 @@ func (p *Player) SetNormalize(ctx context.Context, on bool) error {
 	return err
 }
 
-// Quit stops mpv, waits for it to exit and removes its socket.
+// Quit stops mpv and waits for it to exit. Closing the IPC connection is what
+// makes mpv quit.
 func (p *Player) Quit() error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, _ = p.client.Command(ctx, "quit")
 	_ = p.client.Close()
-
-	var errs []error
 	select {
 	case <-p.exited:
 	case <-time.After(2 * time.Second):
 		if err := p.cmd.Process.Kill(); err != nil {
-			errs = append(errs, fmt.Errorf("kill mpv: %w", err))
+			return fmt.Errorf("kill mpv: %w", err)
 		}
 		<-p.exited
 	}
-	// mpv leaves the socket file behind on quit.
-	if err := os.Remove(p.socket); err != nil && !errors.Is(err, os.ErrNotExist) {
-		errs = append(errs, fmt.Errorf("remove mpv socket: %w", err))
-	}
-	return errors.Join(errs...)
+	return nil
 }
 
 // PlaylistEntry is one element of mpv's playlist property.

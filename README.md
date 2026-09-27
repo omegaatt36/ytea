@@ -181,7 +181,7 @@ Zellij 0.45 implements the kitty graphics protocol but rejects Unicode placehold
 
 ## How it works
 
-- **Playback.** mpv runs headless (`--idle --no-video`) and is driven over its JSON IPC socket. mpv picks its own audio output at runtime: `pipewire` where that is compiled in, coreaudio on macOS. ytea watches mpv's properties, so its UI and the MPRIS state always reflect what mpv is actually doing.
+- **Playback.** mpv runs headless (`--idle --no-video`) and is driven over its JSON IPC on an inherited socketpair; mpv quits when that connection closes, so it never outlives ytea, even a SIGKILLed one. mpv picks its own audio output at runtime: `pipewire` where that is compiled in, coreaudio on macOS. ytea watches mpv's properties, so its UI and the MPRIS state always reflect what mpv is actually doing.
 - **Output switching.** ytea reads mpv's `audio-device-list` over its IPC socket, so the picker follows whichever audio output mpv picked (PipeWire sinks on Linux, Core Audio devices on macOS). Switching sets mpv's `audio-device`, so the choice survives track changes.
 - **Spectrum (Linux).** mpv's stream is named `ytea-<pid>` in the PipeWire graph. `pw-cat --record --target <serial>` records that stream node directly, not the sink monitor. The serial changes whenever mpv reopens its output, so the tap re-resolves it every second.
 - **Thumbnails.** Placeholders are ordinary text cells that Bubble Tea's renderer draws like any other text. Direct placement moves the cursor to the thumbnail cell, puts the image, and restores the cursor. It re-places the image when the layout moves or the window is resized.
