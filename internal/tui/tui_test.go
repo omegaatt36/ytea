@@ -1394,3 +1394,148 @@ func TestFailedQueueActionReleasesNextWrite(t *testing.T) {
 		}
 	}
 }
+
+func cellAt(t *testing.T, m Model, text string) image.Point {
+	t.Helper()
+	for y, line := range strings.Split(ansi.Strip(m.render()), "\n") {
+		if before, _, ok := strings.Cut(line, text); ok {
+			return image.Pt(lipgloss.Width(before), y)
+		}
+	}
+	t.Fatalf("%q not rendered", text)
+	return image.Point{}
+}
+
+func click(m Model, at image.Point) Model {
+	next, _ := m.Update(tea.MouseClickMsg{X: at.X, Y: at.Y, Button: tea.MouseLeft})
+	return next.(Model)
+}
+
+func wheel(m Model, at image.Point, button tea.MouseButton) Model {
+	next, _ := m.Update(tea.MouseWheelMsg{X: at.X, Y: at.Y, Button: button})
+	return next.(Model)
+}
+
+func mouseModel() Model {
+	m := New(Deps{})
+	m.width, m.height = 100, 30
+	for i := range 40 {
+		m.results = append(m.results, youtube.Track{Title: fmt.Sprintf("song %02d", i)})
+	}
+	for i := range 3 {
+		m.queue = append(m.queue, mpv.PlaylistEntry{Filename: fmt.Sprintf("u%d", i), Title: fmt.Sprintf("queued %d", i)})
+	}
+	return m
+}
+
+func TestMouseEnablesCellMotionOnly(t *testing.T) {
+	if got := New(Deps{}).View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Errorf("MouseMode = %v, want cell motion so hovering never renders", got)
+	}
+}
+
+func TestClickSelectsRowUnderPointer(t *testing.T) {
+	m := mouseModel()
+	m.focus = focusResults
+	m.input.Blur()
+	// Deep enough that the results pane is scrolled.
+	m.resultCur = 35
+
+	m = click(m, cellAt(t, m, "song 30"))
+	if m.focus != focusResults || m.resultCur != 30 {
+		t.Errorf("click song 30: focus=%v resultCur=%d, want results/30", m.focus, m.resultCur)
+	}
+
+	m = click(m, cellAt(t, m, "queued 2"))
+	if m.focus != focusQueue || m.queueCur != 2 {
+		t.Errorf("click queued 2: focus=%v queueCur=%d, want queue/2", m.focus, m.queueCur)
+	}
+
+	// Blank space below the last queue row focuses the pane but keeps the cursor.
+	m = click(m, cellAt(t, m, "queued 2").Add(image.Pt(0, 3)))
+	if m.focus != focusQueue || m.queueCur != 2 {
+		t.Errorf("click below queue: focus=%v queueCur=%d, want queue/2", m.focus, m.queueCur)
+	}
+}
+
+func TestClickHeader(t *testing.T) {
+	m := mouseModel()
+	if m.focus != focusSearch {
+		t.Fatalf("new model focus = %v, want search", m.focus)
+	}
+
+	m = click(m, cellAt(t, m, "Queue"))
+	if m.focus != focusQueue || m.input.Focused() {
+		t.Errorf("click Queue tab: focus=%v input focused=%v, want queue and blurred input", m.focus, m.input.Focused())
+	}
+	m = click(m, cellAt(t, m, "Playlists"))
+	if m.focus != focusPlaylists {
+		t.Errorf("click Playlists tab: focus=%v", m.focus)
+	}
+	m = click(m, cellAt(t, m, "Playlists").Sub(image.Pt(1, 0))) // the gap between tabs
+	if m.focus != focusPlaylists {
+		t.Errorf("click between tabs: focus=%v, want unchanged", m.focus)
+	}
+	m = click(m, cellAt(t, m, " / "))
+	if m.focus != focusSearch || !m.input.Focused() {
+		t.Errorf("click search box: focus=%v input focused=%v", m.focus, m.input.Focused())
+	}
+}
+
+func TestWheelMovesCursorOfPaneUnderPointer(t *testing.T) {
+	m := mouseModel()
+	at := cellAt(t, m, "queued 0")
+
+	m = wheel(m, at, tea.MouseWheelDown)
+	if m.focus != focusQueue || m.queueCur != 1 || m.input.Focused() {
+		t.Errorf("wheel down over queue: focus=%v queueCur=%d input focused=%v", m.focus, m.queueCur, m.input.Focused())
+	}
+	for range 5 {
+		m = wheel(m, at, tea.MouseWheelDown)
+	}
+	if m.queueCur != 2 {
+		t.Errorf("wheel past end: queueCur=%d, want 2", m.queueCur)
+	}
+
+	m = wheel(m, cellAt(t, m, "song 00"), tea.MouseWheelUp)
+	if m.focus != focusResults || m.resultCur != 0 {
+		t.Errorf("wheel up over results top: focus=%v resultCur=%d", m.focus, m.resultCur)
+	}
+}
+
+func TestMouseInPlaylistPicker(t *testing.T) {
+	store, err := library.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Alpha", "Beta"} {
+		if _, err := store.CreateWithTracks(name, []youtube.Track{{Title: name + " song", URL: "https://www.youtube.com/watch?v=" + name}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := New(Deps{Library: store})
+	m.width, m.height = 100, 30
+	m.focus = focusResults
+	m.results = []youtube.Track{{Title: "pick me", URL: "https://www.youtube.com/watch?v=pick"}}
+	got, _ := m.handleResultKey("s")
+	m = got.(Model)
+
+	m = click(m, cellAt(t, m, "Beta ("))
+	if m.focus != focusPlaylistPicker || m.playlistCur != 1 {
+		t.Errorf("click Beta in picker: focus=%v playlistCur=%d, want picker/1", m.focus, m.playlistCur)
+	}
+	m = click(m, cellAt(t, m, "Beta song"))
+	if m.focus != focusPlaylistPicker {
+		t.Errorf("click tracks pane in picker: focus=%v, want picker kept", m.focus)
+	}
+}
+
+func TestMouseIgnoredWhileNamingPlaylist(t *testing.T) {
+	m := mouseModel()
+	m.focus = focusPlaylistName
+	m.input.Blur()
+	m = click(m, image.Pt(1, 0))
+	if m.focus != focusPlaylistName {
+		t.Errorf("click during name input: focus=%v, want name input kept", m.focus)
+	}
+}

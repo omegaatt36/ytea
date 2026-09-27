@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"time"
@@ -225,9 +226,7 @@ func New(deps Deps) Model {
 	nameInput.SetVirtualCursor(false)
 
 	tracks := make(map[string]youtube.Track, len(deps.InitialTracks))
-	for url, track := range deps.InitialTracks {
-		tracks[url] = track
-	}
+	maps.Copy(tracks, deps.InitialTracks)
 	var playlists []library.Playlist
 	if deps.Library != nil {
 		playlists = deps.Library.Playlists()
@@ -365,6 +364,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 
 	case tea.PasteMsg:
 		if m.focus == focusPlaylistName {

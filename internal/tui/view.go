@@ -38,6 +38,9 @@ var (
 func (m Model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
+	// Cell motion reports clicks and the wheel but not bare movement, so an idle
+	// pointer costs no renders.
+	v.MouseMode = tea.MouseModeCellMotion
 	v.Cursor = m.cursor()
 	v.WindowTitle = "ytea"
 	if e, t, ok := m.current(); ok {
@@ -135,30 +138,129 @@ func (m Model) thumbOrigin() image.Point {
 	return image.Pt(paneStyle.GetBorderLeftSize(), lipgloss.Height(header)+bodyHeight+paneStyle.GetBorderTopSize())
 }
 
+var tabs = []struct {
+	name  string
+	focus focus
+}{
+	{"Results", focusResults},
+	{"Queue", focusQueue},
+	{"Playlists", focusPlaylists},
+}
+
+const tabGap = "  "
+
 func (m Model) renderHeader() string {
 	title := renderTitle()
 	search := m.input.View()
 	if m.searching {
 		search += " " + m.spinner.View()
 	}
-	tabs := []string{"Results", "Queue", "Playlists"}
-	active := 0
+	return lipgloss.JoinHorizontal(lipgloss.Center, title, search) + "\n" + strings.Join(m.tabLabels(), tabGap)
+}
+
+func (m Model) tabLabels() []string {
+	active := focusResults
 	switch m.focus {
 	case focusQueue:
-		active = 1
+		active = focusQueue
 	case focusPlaylists, focusPlaylistTracks, focusPlaylistPicker, focusPlaylistName:
-		active = 2
+		active = focusPlaylists
 	}
-	for i := range tabs {
-		if i == active {
-			tabs[i] = headStyle.Render("[" + tabs[i] + "]")
+	labels := make([]string, len(tabs))
+	for i, t := range tabs {
+		labels[i] = t.name
+		if t.focus == active {
+			labels[i] = headStyle.Render("[" + t.name + "]")
 		}
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Center, title, search) + "\n" + strings.Join(tabs, "  ")
+	return labels
+}
+
+func (m Model) tabsRow() int {
+	return lipgloss.Height(m.renderHeader()) - 1
+}
+
+func (m Model) tabAt(x int) (focus, bool) {
+	for i, label := range m.tabLabels() {
+		w := lipgloss.Width(label)
+		if x < w {
+			return tabs[i].focus, x >= 0
+		}
+		x -= w + len(tabGap)
+	}
+	return 0, false
+}
+
+type listPane int
+
+const (
+	paneNone listPane = iota
+	paneResults
+	paneQueue
+	panePlaylists
+	panePlaylistTracks
+	paneDevices
+)
+
+func (m Model) bodyPanes() (left, right listPane, leftW int) {
+	switch m.focus {
+	case focusDevices:
+		return paneDevices, paneNone, m.width
+	case focusPlaylistName:
+		return paneNone, paneNone, m.width
+	case focusPlaylists, focusPlaylistTracks, focusPlaylistPicker:
+		return panePlaylists, panePlaylistTracks, m.width * 2 / 5
+	default:
+		return paneResults, paneQueue, m.width * 3 / 5
+	}
+}
+
+func (m Model) paneAt(x, y int) (listPane, int) {
+	header, _, _, bodyHeight := m.layout()
+	top := lipgloss.Height(header)
+	if y < top || y >= top+bodyHeight {
+		return paneNone, -1
+	}
+	left, right, leftW := m.bodyPanes()
+	p := left
+	if x >= leftW {
+		p = right
+	}
+	if p == paneNone {
+		return paneNone, -1
+	}
+	visible := listRows(bodyHeight)
+	row := y - top - paneStyle.GetBorderTopSize() - 1 // title row
+	if row < 0 || row >= visible {
+		return p, -1
+	}
+	cursor, n := m.listCursor(p)
+	i := scrollStart(cursor, visible) + row
+	if i >= n {
+		return p, -1
+	}
+	return p, i
+}
+
+func (m Model) listCursor(p listPane) (cursor, n int) {
+	switch p {
+	case paneResults:
+		return m.resultCur, len(m.results)
+	case paneQueue:
+		return m.queueCur, len(m.queue)
+	case panePlaylists:
+		return m.playlistCur, len(m.playlists)
+	case panePlaylistTracks:
+		return m.playlistTrackCur, len(m.selectedPlaylistTracks())
+	case paneDevices:
+		return m.deviceCur, len(m.devices)
+	default:
+		return 0, 0
+	}
 }
 
 func (m Model) renderPlaylistPanes(height int) string {
-	leftW := m.width * 2 / 5
+	_, _, leftW := m.bodyPanes()
 	rightW := m.width - leftW
 	names := make([]string, len(m.playlists))
 	for i, p := range m.playlists {
@@ -193,7 +295,7 @@ func (m Model) renderPlaylistName(height int) string {
 }
 
 func (m Model) renderPanes(height int) string {
-	leftW := m.width * 3 / 5
+	_, _, leftW := m.bodyPanes()
 	rightW := m.width - leftW
 
 	results := make([]string, len(m.results))
@@ -224,12 +326,9 @@ func pane(title string, lines []string, cursor int, focused bool, width, height 
 		style = paneFocus
 	}
 	innerW := width - style.GetHorizontalFrameSize()
-	innerH := height - style.GetVerticalFrameSize() - 1 // title row
+	innerH := listRows(height)
 
-	start := 0
-	if cursor >= innerH {
-		start = cursor - innerH + 1
-	}
+	start := scrollStart(cursor, innerH)
 	end := min(len(lines), start+max(innerH, 0))
 
 	rows := []string{headStyle.Render(title)}
@@ -241,6 +340,17 @@ func pane(title string, lines []string, cursor int, focused bool, width, height 
 		rows = append(rows, line)
 	}
 	return style.Width(width).Height(height).Render(strings.Join(rows, "\n"))
+}
+
+func listRows(height int) int {
+	return height - paneStyle.GetVerticalFrameSize() - 1 // title row
+}
+
+func scrollStart(cursor, visible int) int {
+	if cursor >= visible {
+		return cursor - visible + 1
+	}
+	return 0
 }
 
 func resultLine(t youtube.Track, width int) string {

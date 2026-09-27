@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 const (
@@ -117,10 +118,8 @@ func (s State) validate() error {
 	if math.IsNaN(s.Volume) || math.IsInf(s.Volume, 0) || s.Volume < 0 {
 		return fmt.Errorf("invalid session volume %v", s.Volume)
 	}
-	for _, url := range s.URLs {
-		if url == "" {
-			return errors.New("session has an empty track URL")
-		}
+	if slices.Contains(s.URLs, "") {
+		return errors.New("session has an empty track URL")
 	}
 	if len(s.Metadata) > len(s.URLs) {
 		return errors.New("session has metadata for more tracks than URLs")

@@ -101,6 +101,10 @@ go install -trimpath -ldflags="-s -w" github.com/omegaatt36/ytea/cmd/ytea@latest
 
 When you press `s` on a result or queued track, select a playlist with `enter` or press `c` to create one. The first saved track prompts for a playlist name automatically.
 
+**Mouse**
+
+Click the search box, a tab, or a list row to focus or select it, and scroll the wheel over a list to move its selection. Playing and editing stay on the keys. Because ytea captures the mouse, hold `shift` while dragging to select text (the modifier varies by terminal).
+
 ## Flags
 
 ```
