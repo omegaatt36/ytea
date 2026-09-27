@@ -354,7 +354,11 @@ func (m Model) renderFooter() string {
 	if m.statusErr {
 		status = errorStyle.Render(m.status)
 	}
-	help := dimStyle.Render("/ search · enter play · a queue · s save · tab next pane · space pause · ←→ seek · n/p next/prev · +/- vol · N norm · o output · v viz · r radio · q quit")
+	viz := ""
+	if m.deps.Tap != nil {
+		viz = "v viz · "
+	}
+	help := dimStyle.Render("/ search · enter play · a queue · s save · tab next pane · space pause · ←→ seek · n/p next/prev · +/- vol · N norm · o output · " + viz + "r radio · q quit")
 	if m.focus == focusQueue {
 		help = dimStyle.Render("enter jump · s save track · S save queue · d remove · C clear queue · J/K move · tab next pane · n/p next/prev · q quit")
 	}

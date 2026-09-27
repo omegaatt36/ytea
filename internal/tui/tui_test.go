@@ -112,6 +112,29 @@ func TestRenderFitsWindow(t *testing.T) {
 	}
 }
 
+type spectrumStub struct{}
+
+func (spectrumStub) Levels() <-chan []float64 { return nil }
+
+func TestFooterListsVizOnlyWithSpectrum(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tap  Spectrum
+		want bool
+	}{
+		{"without spectrum", nil, false},
+		{"with spectrum", spectrumStub{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(Deps{Tap: tc.tap})
+			m.width = 500
+			if got := strings.Contains(m.renderFooter(), "v viz"); got != tc.want {
+				t.Errorf("footer contains %q = %v, want %v", "v viz", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLocalPlaylistFlow(t *testing.T) {
 	store, err := library.Open(t.TempDir())
 	if err != nil {

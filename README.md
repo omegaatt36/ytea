@@ -64,7 +64,7 @@ go install github.com/omegaatt36/ytea/cmd/ytea@latest
 | `N` | toggle loudness leveling |
 | `r` | radio: queue a mix seeded by the current track |
 | `o` | choose output device (`enter` to switch, `esc` to cancel) |
-| `v` | toggle spectrum |
+| `v` | toggle spectrum (Linux with PipeWire; hidden elsewhere) |
 | `q`, `ctrl+c` | quit |
 
 **Results**
