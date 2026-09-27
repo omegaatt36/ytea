@@ -50,55 +50,133 @@ go install -trimpath -ldflags="-s -w" github.com/omegaatt36/ytea/cmd/ytea@latest
 
 ## Keys
 
-**Anywhere**
+### Playback
 
 | Key | Action |
 |---|---|
-| `/` | focus search (`enter` runs it, `esc` leaves) |
-| `ctrl+v` `ctrl+shift+v` `shift+insert`, terminal paste | paste into search |
-| `tab` / `shift+tab` | cycle Results, Queue, and Playlists |
 | `space` | pause / resume |
-| `←` `→` | seek ±5s |
-| `n` `p` (or `>` `<`) | next / previous track |
-| `+` `-` | volume |
+| `←` | seek -5s |
+| `→` | seek +5s |
+| `n` `>` | next |
+| `p` `<` | prev |
+| `+` `=` | vol up (`=` is the unshifted volume up alias) |
+| `-` | vol down |
 | `N` | toggle loudness leveling |
-| `r` | radio: queue a mix seeded by the current track |
-| `o` | choose output device (`enter` to switch, `esc` to cancel) |
-| `i` | track info: URL, YouTube format (itag, bitrate, size), codec, output (`y` copies the URL, `esc` closes) |
+
+### Navigation and global
+
+| Key | Action |
+|---|---|
+| `/` | focus search |
+| `ctrl+v` `ctrl+shift+v` `shift+insert` | paste into search (terminal paste also works) |
+| `tab` | next pane (Results, Queue, Playlists) |
+| `shift+tab` | prev pane |
+| `o` | choose output device |
+| `i` | track info: URL, YouTube format (itag, bitrate, size), codec, output |
 | `v` | toggle spectrum (Linux with PipeWire; hidden elsewhere) |
-| `q`, `ctrl+c` | quit |
+| `r` | radio: queue a mix seeded by the current track |
+| `?` | more: open full help |
+| `q` | quit |
+| `ctrl+c` | quit |
 
-**Results**
+While full help is open, `?`, `esc`, or `q` closes it; `q` does not quit.
+
+### Search
 
 | Key | Action |
 |---|---|
-| `j` `k` / `↑` `↓`, `g` `G` | move, jump to top / bottom |
+| `enter` | search YouTube |
+| `esc` `tab` | leave |
+
+### Results
+
+| Key | Action |
+|---|---|
+| `↑` `k` | up |
+| `↓` `j` | down |
+| `g` `home` | top |
+| `G` `end` | bottom |
 | `enter` | play now (inserted after the current track) |
-| `a` | add to the end of the queue |
-| `s` | save the selected result to a local playlist |
+| `a` | queue at the end |
+| `s` | save to a local playlist |
 
-**Queue**
+### Queue
 
 | Key | Action |
 |---|---|
-| `j` `k` / `↑` `↓`, `g` `G` | move, jump to top / bottom |
+| `↑` `k` | up |
+| `↓` `j` | down |
+| `g` `home` | top |
+| `G` `end` | bottom |
 | `enter` | jump to this track |
-| `d` / `x` / `delete` | remove |
-| `C` | clear the entire queue and stop playback |
-| `J` `K` / `shift+↓` `shift+↑` | move track down / up |
-| `s` | save the selected queued track to a local playlist |
-| `S` | save the current queue as a new local playlist |
+| `d` `x` `delete` | remove |
+| `C` | clear queue and stop playback |
+| `K` `shift+↑` | move up |
+| `J` `shift+↓` | move down |
+| `s` | save track to a local playlist |
+| `S` | save queue as a new local playlist |
 
-**Playlists**
+### Playlists
 
 | Key | Action |
 |---|---|
-| `c` | create a playlist |
-| `enter` | browse the selected playlist; inside it, play the selected track now |
-| `a` | queue the whole playlist; inside it, queue the selected track |
-| `d` | remove a saved track while browsing it |
-| `D` twice | delete the selected playlist |
-| `esc` | leave the track list or cancel the save picker |
+| `↑` `k` | up |
+| `↓` `j` | down |
+| `g` `home` | top |
+| `G` `end` | bottom |
+| `enter` | browse the selected playlist |
+| `c` | new playlist |
+| `a` | queue all tracks in the playlist |
+| `D` | delete playlist (press `D` twice) |
+| `esc` | back to Results |
+
+### Playlist tracks
+
+| Key | Action |
+|---|---|
+| `↑` `k` | up |
+| `↓` `j` | down |
+| `g` `home` | top |
+| `G` `end` | bottom |
+| `enter` | play now |
+| `a` | queue |
+| `d` | remove saved track |
+| `esc` | back to Playlists |
+
+### Output
+
+| Key | Action |
+|---|---|
+| `↑` `k` | up |
+| `↓` `j` | down |
+| `enter` | switch |
+| `esc` `o` `q` | cancel |
+
+### Track info
+
+| Key | Action |
+|---|---|
+| `y` | copy url to the clipboard (OSC 52) |
+| `esc` `i` `q` | close |
+
+### Save to playlist
+
+| Key | Action |
+|---|---|
+| `↑` `k` | up |
+| `↓` `j` | down |
+| `g` `home` | top |
+| `G` `end` | bottom |
+| `enter` | save track |
+| `c` | new playlist |
+| `esc` | cancel |
+
+### New playlist
+
+| Key | Action |
+|---|---|
+| `enter` | create playlist |
+| `esc` | cancel |
 
 When you press `s` on a result or queued track, select a playlist with `enter` or press `c` to create one. The first saved track prompts for a playlist name automatically.
 

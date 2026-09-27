@@ -5,7 +5,7 @@ import (
 )
 
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.overlay == overlayName {
+	if m.overlay == overlayName || m.fullHelp {
 		return m, nil
 	}
 	mouse := msg.Mouse()

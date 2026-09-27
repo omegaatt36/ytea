@@ -1,0 +1,299 @@
+package tui
+
+import (
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/key"
+)
+
+type keyMap struct {
+	global         globalKeyMap
+	playback       playbackKeyMap
+	closeHelp      key.Binding
+	search         searchKeyMap
+	results        resultKeyMap
+	queue          queueKeyMap
+	playlists      playlistKeyMap
+	playlistTracks playlistTrackKeyMap
+	devices        deviceKeyMap
+	info           infoKeyMap
+	picker         pickerKeyMap
+	name           nameKeyMap
+}
+
+type globalKeyMap struct {
+	Search, Paste, NextPane, PrevPane, Output, Info, Viz, Radio, Help, Quit, ForceQuit key.Binding
+}
+
+type playbackKeyMap struct {
+	Pause, SeekBack, SeekForward, Next, Prev, VolumeUp, VolumeDown, Normalize key.Binding
+}
+
+type searchKeyMap struct {
+	Submit, Leave key.Binding
+}
+
+type navKeyMap struct {
+	Up, Down, Top, Bottom key.Binding
+}
+
+type resultKeyMap struct {
+	navKeyMap
+	Play, Enqueue, Save key.Binding
+}
+
+type queueKeyMap struct {
+	navKeyMap
+	Jump, Remove, Clear, MoveUp, MoveDown, Save, SaveQueue key.Binding
+}
+
+type playlistKeyMap struct {
+	navKeyMap
+	Browse, Create, EnqueueAll, Delete, Back key.Binding
+}
+
+type playlistTrackKeyMap struct {
+	navKeyMap
+	Play, Enqueue, Remove, Back key.Binding
+}
+
+type deviceKeyMap struct {
+	Up, Down, Select, Close key.Binding
+}
+
+type infoKeyMap struct {
+	Copy, Close key.Binding
+}
+
+type pickerKeyMap struct {
+	navKeyMap
+	Save, Create, Cancel key.Binding
+}
+
+type nameKeyMap struct {
+	Create, Cancel key.Binding
+}
+
+func newKeyMap() keyMap {
+	nav := navKeyMap{
+		Up:     key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
+		Down:   key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		Top:    key.NewBinding(key.WithKeys("g", "home"), key.WithHelp("g/home", "top")),
+		Bottom: key.NewBinding(key.WithKeys("G", "end"), key.WithHelp("G/end", "bottom")),
+	}
+	create := key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "new playlist"))
+	return keyMap{
+		global: globalKeyMap{
+			Search: key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
+			// ctrl+shift+v and shift+insert are normally the terminal's own paste, but
+			// under a kitty-keyboard multiplexer (Zellij) they arrive as key events.
+			Paste:     key.NewBinding(key.WithKeys("ctrl+v", "ctrl+shift+v", "shift+insert"), key.WithHelp("ctrl+v", "paste")),
+			NextPane:  key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next pane")),
+			PrevPane:  key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev pane")),
+			Output:    key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "output")),
+			Info:      key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "info")),
+			Viz:       key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "spectrum")),
+			Radio:     key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "radio")),
+			Help:      key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "more")),
+			Quit:      key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
+			ForceQuit: key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+		},
+		// q closes rather than quits, as it does in the device and info overlays.
+		closeHelp: key.NewBinding(key.WithKeys("?", "esc", "q"), key.WithHelp("?/esc/q", "close")),
+		playback: playbackKeyMap{
+			Pause:       key.NewBinding(key.WithKeys("space"), key.WithHelp("space", "pause")),
+			SeekBack:    key.NewBinding(key.WithKeys("left"), key.WithHelp("←", "seek -5s")),
+			SeekForward: key.NewBinding(key.WithKeys("right"), key.WithHelp("→", "seek +5s")),
+			Next:        key.NewBinding(key.WithKeys("n", ">"), key.WithHelp("n", "next")),
+			Prev:        key.NewBinding(key.WithKeys("p", "<"), key.WithHelp("p", "prev")),
+			VolumeUp:    key.NewBinding(key.WithKeys("+", "="), key.WithHelp("+", "vol up")),
+			VolumeDown:  key.NewBinding(key.WithKeys("-"), key.WithHelp("-", "vol down")),
+			Normalize:   key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "leveling")),
+		},
+		search: searchKeyMap{
+			Submit: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "search")),
+			Leave:  key.NewBinding(key.WithKeys("esc", "tab"), key.WithHelp("esc", "leave")),
+		},
+		results: resultKeyMap{
+			navKeyMap: nav,
+			Play:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "play now")),
+			Enqueue:   key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "queue")),
+			Save:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "save")),
+		},
+		queue: queueKeyMap{
+			navKeyMap: nav,
+			Jump:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "jump")),
+			Remove:    key.NewBinding(key.WithKeys("d", "x", "delete"), key.WithHelp("d", "remove")),
+			Clear:     key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "clear queue")),
+			MoveUp:    key.NewBinding(key.WithKeys("K", "shift+up"), key.WithHelp("K", "move up")),
+			MoveDown:  key.NewBinding(key.WithKeys("J", "shift+down"), key.WithHelp("J", "move down")),
+			Save:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "save track")),
+			SaveQueue: key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "save queue")),
+		},
+		playlists: playlistKeyMap{
+			navKeyMap:  nav,
+			Browse:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "browse")),
+			Create:     create,
+			EnqueueAll: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "queue all")),
+			Delete:     key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "delete playlist")),
+			Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		},
+		playlistTracks: playlistTrackKeyMap{
+			navKeyMap: nav,
+			Play:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "play now")),
+			Enqueue:   key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "queue")),
+			Remove:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "remove saved track")),
+			Back:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		},
+		devices: deviceKeyMap{
+			Up:     nav.Up,
+			Down:   nav.Down,
+			Select: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "switch")),
+			Close:  key.NewBinding(key.WithKeys("esc", "o", "q"), key.WithHelp("esc", "cancel")),
+		},
+		info: infoKeyMap{
+			Copy:  key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy url")),
+			Close: key.NewBinding(key.WithKeys("esc", "i", "q"), key.WithHelp("esc", "close")),
+		},
+		picker: pickerKeyMap{
+			navKeyMap: nav,
+			Save:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "save track")),
+			Create:    create,
+			Cancel:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+		},
+		name: nameKeyMap{
+			Create: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "create playlist")),
+			Cancel: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+		},
+	}
+}
+
+func (m Model) contextKeys() (string, help.KeyMap) {
+	switch m.overlay {
+	case overlayDevices:
+		return "Output", m.keys.devices
+	case overlayInfo:
+		return "Track info", m.keys.info
+	case overlayPicker:
+		return "Save to playlist", m.keys.picker
+	case overlayName:
+		return "New playlist", m.keys.name
+	case overlayNone:
+	}
+	switch m.focus {
+	case focusSearch:
+		return "Search", m.keys.search
+	case focusQueue:
+		return "Queue", m.keys.queue
+	case focusPlaylists:
+		return "Playlists", m.keys.playlists
+	case focusPlaylistTracks:
+		return "Playlist tracks", m.keys.playlistTracks
+	case focusResults:
+	}
+	return "Results", m.keys.results
+}
+
+func (k globalKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Search, k.NextPane, k.Output, k.Info, k.Viz, k.Radio, k.Quit}
+}
+
+func (k globalKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Search, k.Paste, k.NextPane, k.PrevPane},
+		{k.Output, k.Info, k.Viz, k.Radio},
+		{k.Quit, k.ForceQuit},
+	}
+}
+
+func (k playbackKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Pause, k.SeekBack, k.SeekForward, k.Next, k.Prev, k.VolumeUp, k.VolumeDown, k.Normalize}
+}
+
+func (k playbackKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Pause, k.SeekBack, k.SeekForward},
+		{k.Next, k.Prev},
+		{k.VolumeUp, k.VolumeDown, k.Normalize},
+	}
+}
+
+func (k searchKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Submit, k.Leave}
+}
+
+func (k searchKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{k.ShortHelp()}
+}
+
+func (k navKeyMap) bindings() []key.Binding {
+	return []key.Binding{k.Up, k.Down, k.Top, k.Bottom}
+}
+
+func (k resultKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Play, k.Enqueue, k.Save}
+}
+
+func (k resultKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{k.bindings(), k.ShortHelp()}
+}
+
+func (k queueKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Jump, k.Save, k.SaveQueue, k.Remove, k.Clear, k.MoveDown, k.MoveUp}
+}
+
+func (k queueKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		k.bindings(),
+		{k.Jump, k.Remove, k.Clear},
+		{k.MoveUp, k.MoveDown},
+		{k.Save, k.SaveQueue},
+	}
+}
+
+func (k playlistKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Create, k.Browse, k.EnqueueAll, k.Delete}
+}
+
+func (k playlistKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{k.bindings(), {k.Create, k.Browse, k.EnqueueAll, k.Delete, k.Back}}
+}
+
+func (k playlistTrackKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Play, k.Enqueue, k.Remove, k.Back}
+}
+
+func (k playlistTrackKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{k.bindings(), k.ShortHelp()}
+}
+
+func (k deviceKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Select, k.Close}
+}
+
+func (k deviceKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{{k.Up, k.Down}, k.ShortHelp()}
+}
+
+func (k infoKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Copy, k.Close}
+}
+
+func (k infoKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{k.ShortHelp()}
+}
+
+func (k pickerKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Save, k.Create, k.Cancel}
+}
+
+func (k pickerKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{k.bindings(), k.ShortHelp()}
+}
+
+func (k nameKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Create, k.Cancel}
+}
+
+func (k nameKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{k.ShortHelp()}
+}

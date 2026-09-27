@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -18,15 +19,16 @@ const (
 	overlayName
 )
 
-func (m Model) handleDeviceKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "up", "k":
+func (m Model) handleDeviceKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	k := m.keys.devices
+	switch {
+	case key.Matches(msg, k.Up):
 		m.deviceCur = max(0, m.deviceCur-1)
-	case "down", "j":
+	case key.Matches(msg, k.Down):
 		m.deviceCur = min(len(m.devices)-1, m.deviceCur+1)
-	case "esc", "o", "q":
+	case key.Matches(msg, k.Close):
 		m.overlay = overlayNone
-	case "enter":
+	case key.Matches(msg, k.Select):
 		m.overlay = overlayNone
 		if m.deviceCur < len(m.devices) {
 			d := m.devices[m.deviceCur]
@@ -41,12 +43,13 @@ func (m Model) handleDeviceKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleInfoKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "esc", "i", "q":
+func (m Model) handleInfoKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	k := m.keys.info
+	switch {
+	case key.Matches(msg, k.Close):
 		m.overlay = overlayNone
 		return m, nil
-	case "y":
+	case key.Matches(msg, k.Copy):
 		if e, _, ok := m.current(); ok {
 			m.setStatus("copied " + e.Filename)
 			// OSC 52: the alt screen with mouse reporting leaves no way to select text.
@@ -54,6 +57,6 @@ func (m Model) handleInfoKey(key string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	cmd, _ := m.handlePlaybackKey(key)
+	cmd, _ := m.handlePlaybackKey(msg)
 	return m, cmd
 }

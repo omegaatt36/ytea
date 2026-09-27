@@ -9,7 +9,7 @@ import (
 	"slices"
 	"time"
 
-	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -93,6 +93,8 @@ const (
 
 type Model struct {
 	deps Deps
+	keys keyMap
+	help help.Model
 
 	width, height int
 
@@ -134,8 +136,9 @@ type Model struct {
 	device            string
 	normalize         bool
 
-	levels  []float64
-	showViz bool
+	levels   []float64
+	showViz  bool
+	fullHelp bool
 
 	devices   []mpv.AudioDevice
 	deviceCur int
@@ -148,16 +151,17 @@ type Model struct {
 	thumb thumbImage
 }
 
-// ctrl+shift+v and shift+insert are normally the terminal's own paste, but
-// under a kitty-keyboard multiplexer (Zellij) they arrive as key events.
-var pasteKeys = key.NewBinding(key.WithKeys("ctrl+v", "ctrl+shift+v", "shift+insert"))
-
 func New(deps Deps) Model {
+	keys := newKeyMap()
+	keys.global.Viz.SetEnabled(deps.Tap != nil)
+	hm := help.New()
+	hm.ShortSeparator = " · "
+	hm.Styles.ShortKey, hm.Styles.ShortDesc, hm.Styles.ShortSeparator, hm.Styles.Ellipsis = dimStyle, dimStyle, dimStyle, dimStyle
 	in := textinput.New()
 	in.Placeholder = "search YouTube…"
 	in.Prompt = " / "
 	in.CharLimit = 200
-	in.KeyMap.Paste = pasteKeys
+	in.KeyMap.Paste = keys.global.Paste
 	in.SetVirtualCursor(false)
 	in.Focus()
 
@@ -167,7 +171,7 @@ func New(deps Deps) Model {
 	nameInput.Placeholder = "playlist name"
 	nameInput.Prompt = " name: "
 	nameInput.CharLimit = 100
-	nameInput.KeyMap.Paste = pasteKeys
+	nameInput.KeyMap.Paste = keys.global.Paste
 	nameInput.SetVirtualCursor(false)
 
 	tracks := make(map[string]youtube.Track, len(deps.InitialTracks))
@@ -178,6 +182,8 @@ func New(deps Deps) Model {
 	}
 	return Model{
 		deps:                  deps,
+		keys:                  keys,
+		help:                  hm,
 		input:                 in,
 		nameInput:             nameInput,
 		spinner:               sp,
@@ -263,6 +269,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.help.SetWidth(m.width)
 		m.input.SetWidth(max(10, m.width/2))
 		m.nameInput.SetWidth(max(1, m.width-paneFocus.GetHorizontalFrameSize()-lipgloss.Width(m.nameInput.Prompt)-1))
 		return m, m.updateThumb(msg)
@@ -277,6 +284,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouse(msg)
 
 	case tea.PasteMsg:
+		if m.fullHelp {
+			return m, nil
+		}
 		if m.overlay == overlayName {
 			var inputCmd tea.Cmd
 			m.nameInput, inputCmd = m.nameInput.Update(msg)

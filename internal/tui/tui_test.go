@@ -6,11 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -227,7 +232,134 @@ type spectrumStub struct{}
 
 func (spectrumStub) Levels() <-chan []float64 { return nil }
 
-func TestFooterListsVizOnlyWithSpectrum(t *testing.T) {
+func resize(m Model, width int) Model {
+	got, _ := m.update(tea.WindowSizeMsg{Width: width, Height: 40})
+	return got.(Model)
+}
+
+func footerHelp(m Model) string {
+	lines := strings.Split(m.renderFooter(), "\n")
+	return ansi.Strip(lines[len(lines)-1])
+}
+
+func helpEntry(b key.Binding) string {
+	return b.Help().Key + " " + b.Help().Desc
+}
+
+func helpContexts(t *testing.T) []struct {
+	name  string
+	model Model
+	keys  help.KeyMap
+} {
+	t.Helper()
+	at := func(f focus, o overlay) Model {
+		m := overlayModel(t, f)
+		m.overlay = o
+		if f == focusSearch && o == overlayNone {
+			m.focusSearch()
+		}
+		return m
+	}
+	k := newKeyMap()
+	return []struct {
+		name  string
+		model Model
+		keys  help.KeyMap
+	}{
+		{"search", at(focusSearch, overlayNone), k.search},
+		{"results", at(focusResults, overlayNone), k.results},
+		{"queue", at(focusQueue, overlayNone), k.queue},
+		{"playlists", at(focusPlaylists, overlayNone), k.playlists},
+		{"playlist tracks", at(focusPlaylistTracks, overlayNone), k.playlistTracks},
+		{"device picker", at(focusQueue, overlayDevices), k.devices},
+		{"track info", at(focusQueue, overlayInfo), k.info},
+		{"playlist picker", at(focusQueue, overlayPicker), k.picker},
+		{"playlist name", at(focusQueue, overlayName), k.name},
+	}
+}
+
+func TestShortHelpListsContextActionsWithoutPlaybackKeys(t *testing.T) {
+	playbackTokens := []string{"space", "←", "→", "n/p", "+/-"}
+	for _, b := range newKeyMap().playback.ShortHelp() {
+		playbackTokens = append(playbackTokens, helpEntry(b))
+	}
+	for _, tc := range helpContexts(t) {
+		t.Run(tc.name, func(t *testing.T) {
+			got := footerHelp(resize(tc.model, 500))
+			if !strings.HasSuffix(got, "? more") {
+				t.Errorf("help %q does not end with %q", got, "? more")
+			}
+			for _, b := range tc.keys.ShortHelp() {
+				if !strings.Contains(got, helpEntry(b)) {
+					t.Errorf("help %q is missing the context action %q", got, helpEntry(b))
+				}
+			}
+			for _, tok := range playbackTokens {
+				if strings.Contains(got, tok) {
+					t.Errorf("help %q repeats the playback key %q", got, tok)
+				}
+			}
+		})
+	}
+}
+
+func TestShortHelpTruncatesWholeEntriesAndKeepsMore(t *testing.T) {
+	m := overlayModel(t, focusQueue)
+	entries := m.keys.queue.ShortHelp()
+	// bubbles renders its " …" tail only when it fits with a cell to spare.
+	for width := lipgloss.Width(" · ? more") + 3; width <= 120; width++ {
+		got := footerHelp(resize(m, width))
+		if w := lipgloss.Width(got); w > width {
+			t.Errorf("width %d: help %q is %d cells wide", width, got, w)
+		}
+		if !strings.HasSuffix(got, "? more") {
+			t.Errorf("width %d: help %q does not end with %q", width, got, "? more")
+		}
+		before, _, truncated := strings.Cut(got, "…")
+		if !truncated {
+			for _, b := range entries {
+				if !strings.Contains(got, helpEntry(b)) {
+					t.Errorf("width %d: help %q drops %q without an ellipsis", width, got, helpEntry(b))
+				}
+			}
+			continue
+		}
+		kept := strings.TrimRight(before, " ·•")
+		if kept != "" && !slices.ContainsFunc(entries, func(b key.Binding) bool {
+			return strings.HasSuffix(kept, helpEntry(b))
+		}) {
+			t.Errorf("width %d: help %q cuts an entry: %q does not end with a whole queue entry", width, got, kept)
+		}
+	}
+	if got := footerHelp(resize(m, 40)); !strings.Contains(got, "…") {
+		t.Errorf("width 40: help %q has no ellipsis for the dropped entries", got)
+	}
+}
+
+func TestShortHelpKeepsMoreAndEllipsisAtNarrowWidths(t *testing.T) {
+	m := overlayModel(t, focusQueue)
+	for width := 9; width <= 11; width++ {
+		t.Run(fmt.Sprintf("%d columns", width), func(t *testing.T) {
+			got := footerHelp(resize(m, width))
+			if w := lipgloss.Width(got); w > width {
+				t.Errorf("help %q is %d cells wide, want at most %d", got, w, width)
+			}
+			if !strings.HasSuffix(got, "? more") {
+				t.Errorf("help %q does not keep %q visible", got, "? more")
+			}
+			if !strings.Contains(got, "…") {
+				t.Errorf("help %q has no ellipsis for the omitted queue entries", got)
+			}
+			for _, b := range m.keys.queue.ShortHelp() {
+				if strings.Contains(got, helpEntry(b)) {
+					t.Errorf("help %q unexpectedly fits queue entry %q at width %d", got, helpEntry(b), width)
+				}
+			}
+		})
+	}
+}
+
+func TestVizBindingNeedsSpectrum(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		tap  Spectrum
@@ -238,11 +370,49 @@ func TestFooterListsVizOnlyWithSpectrum(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := New(Deps{Tap: tc.tap})
-			m.width = 500
-			if got := strings.Contains(m.renderFooter(), "v viz"); got != tc.want {
-				t.Errorf("footer contains %q = %v, want %v", "v viz", got, tc.want)
+			v := keyPress("v")
+			if got := key.Matches(v, m.keys.global.Viz); got != tc.want {
+				t.Errorf("v matches the viz binding = %v, want %v", got, tc.want)
+			}
+			entry := "v " + m.keys.global.Viz.Help().Desc
+			if got := strings.Contains(ansi.Strip(help.New().View(m.keys.global)), entry); got != tc.want {
+				t.Errorf("global help contains %q = %v, want %v", entry, got, tc.want)
+			}
+
+			m.input.Blur()
+			m.focus = focusResults
+			m.showViz = true
+			got, _ := m.update(v)
+			if toggled := !got.(Model).showViz; toggled != tc.want {
+				t.Errorf("v toggled the spectrum = %v, want %v", toggled, tc.want)
 			}
 		})
+	}
+	vEntry := regexp.MustCompile(`(^|\s)v \pL`)
+	for _, tc := range helpContexts(t) {
+		t.Run("no v in "+tc.name, func(t *testing.T) {
+			if got := footerHelp(resize(tc.model, 500)); vEntry.MatchString(got) {
+				t.Errorf("help %q shows v without a spectrum tap", got)
+			}
+		})
+	}
+}
+
+func TestQuestionMarkTypesIntoInputs(t *testing.T) {
+	m := New(Deps{})
+	got, _ := m.update(keyPress("?"))
+	if v := got.(Model).input.Value(); v != "?" {
+		t.Errorf("search input = %q after typing ?, want %q", v, "?")
+	}
+
+	m = overlayModel(t, focusPlaylists)
+	m = press(t, m, keyPress("c"))
+	if m.overlay != overlayName {
+		t.Fatalf("overlay = %v, want name input", m.overlay)
+	}
+	got, _ = m.update(keyPress("?"))
+	if v := got.(Model).nameInput.Value(); v != "?" {
+		t.Errorf("name input = %q after typing ?, want %q", v, "?")
 	}
 }
 
@@ -256,7 +426,7 @@ func TestLocalPlaylistFlow(t *testing.T) {
 	m := New(Deps{Library: store})
 	m.focus = focusResults
 	m.results = []youtube.Track{first, second}
-	got, _ := m.handleResultKey("s")
+	got, _ := m.handleResultKey(keyPress("s"))
 	m = got.(Model)
 	if m.overlay != overlayName {
 		t.Fatalf("save without lists: overlay=%v, want name input", m.overlay)
@@ -268,12 +438,12 @@ func TestLocalPlaylistFlow(t *testing.T) {
 		t.Fatalf("created playlist and saved song: focus=%v overlay=%v playlists=%+v", m.focus, m.overlay, store.Playlists())
 	}
 	m.resultCur = 1
-	got, _ = m.handleResultKey("s")
+	got, _ = m.handleResultKey(keyPress("s"))
 	m = got.(Model)
 	if m.overlay != overlayPicker {
 		t.Fatalf("save with existing list: overlay=%v, want picker", m.overlay)
 	}
-	got, _ = m.handlePlaylistKey("enter")
+	got, _ = m.handlePlaylistKey(keyPress("enter"))
 	m = got.(Model)
 	if !atPane(m, focusResults) || len(store.Playlists()[0].Tracks) != 2 {
 		t.Fatalf("saved second song: focus=%v overlay=%v playlists=%+v", m.focus, m.overlay, store.Playlists())
@@ -283,13 +453,13 @@ func TestLocalPlaylistFlow(t *testing.T) {
 	if !atPane(m, focusPlaylists) {
 		t.Fatalf("two tabs from results: focus=%v overlay=%v", m.focus, m.overlay)
 	}
-	got, _ = m.handlePlaylistKey("enter")
+	got, _ = m.handlePlaylistKey(keyPress("enter"))
 	m = got.(Model)
 	if !atPane(m, focusPlaylistTracks) {
 		t.Fatalf("enter list: focus=%v overlay=%v", m.focus, m.overlay)
 	}
 	m.playlistTrackCur = 1
-	got, _ = m.handlePlaylistKey("d")
+	got, _ = m.handlePlaylistKey(keyPress("d"))
 	m = got.(Model)
 	if len(store.Playlists()[0].Tracks) != 1 || store.Playlists()[0].Tracks[0].URL != first.URL {
 		t.Fatalf("after removal = %+v", store.Playlists())
@@ -396,7 +566,7 @@ func TestPlaylistNamePasteStaysInNameInput(t *testing.T) {
 	}
 	m := New(Deps{Library: store})
 	m.focus = focusPlaylists
-	got, _ := m.handlePlaylistKey("c")
+	got, _ := m.handlePlaylistKey(keyPress("c"))
 	m = got.(Model)
 	got, _ = m.Update(tea.PasteMsg{Content: "Morning"})
 	m = got.(Model)
@@ -419,7 +589,7 @@ func TestSaveQueueAsPlaylist(t *testing.T) {
 		{Filename: secondURL, Title: "Second"},
 		{Filename: firstURL, Title: "First"},
 	}
-	got, _ := m.handleQueueKey("S")
+	got, _ := m.handleQueueKey(keyPress("S"))
 	m = got.(Model)
 	if m.overlay != overlayName {
 		t.Fatalf("save queue: overlay=%v, want name input", m.overlay)
@@ -443,16 +613,171 @@ func TestDeletePlaylistNeedsSecondPress(t *testing.T) {
 	}
 	m := New(Deps{Library: store})
 	m.focus = focusPlaylists
-	got, _ := m.handlePlaylistKey("D")
+	got, _ := m.handlePlaylistKey(keyPress("D"))
 	m = got.(Model)
 	if len(store.Playlists()) != 1 || m.deletePlaylistPending != 0 {
 		t.Fatalf("first D deleted playlist: %+v", store.Playlists())
 	}
-	got, _ = m.handlePlaylistKey("D")
+	got, _ = m.handlePlaylistKey(keyPress("D"))
 	m = got.(Model)
 	if len(store.Playlists()) != 0 || m.deletePlaylistPending != -1 {
 		t.Fatalf("second D did not delete playlist: %+v", store.Playlists())
 	}
+}
+
+func TestInlineKeyHintsUseKeymapOrAreAbsent(t *testing.T) {
+	customBinding := func(keyName, helpKey, description string) key.Binding {
+		return key.NewBinding(key.WithKeys(keyName), key.WithHelp(helpKey, description))
+	}
+	blank := func(f focus) Model {
+		m := New(Deps{})
+		m.width, m.height = 120, 40
+		m.input.Blur()
+		m.focus = f
+		return m
+	}
+	tests := []struct {
+		name  string
+		model func(*testing.T) Model
+
+		duplicateHints []string
+		wantHints      []string
+		wantBindings   func(Model) []key.Binding
+	}{
+		{
+			name: "empty playlist list",
+			model: func(_ *testing.T) Model {
+				m := blank(focusPlaylists)
+				m.keys.playlists.Create = customBinding("x", "x", "new playlist")
+				return m
+			},
+
+			duplicateHints: []string{"press c to create"},
+			wantHints:      []string{"press x to create"},
+			wantBindings:   func(m Model) []key.Binding { return []key.Binding{m.keys.playlists.Create} },
+		},
+		{
+			name: "empty search results",
+			model: func(_ *testing.T) Model {
+				m := blank(focusResults)
+				m.queue.entries = []mpv.PlaylistEntry{{Filename: "queued"}}
+				m.keys.global.Search = customBinding("x", "x", "search")
+				return m
+			},
+
+			duplicateHints: []string{"press / to search"},
+			wantHints:      []string{"press x to search"},
+			wantBindings:   func(m Model) []key.Binding { return []key.Binding{m.keys.results.Enqueue} },
+		},
+		{
+			name: "empty queue",
+			model: func(_ *testing.T) Model {
+				m := blank(focusResults)
+				m.results = []youtube.Track{{Title: "Result"}}
+				m.keys.results.Enqueue = customBinding("x", "x", "queue")
+				return m
+			},
+
+			duplicateHints: []string{"empty — press a on a result"},
+			wantHints:      []string{"empty — press x on a result"},
+			wantBindings:   func(m Model) []key.Binding { return []key.Binding{m.keys.results.Enqueue} },
+		},
+		{
+			name: "playlist picker",
+			model: func(t *testing.T) Model {
+				m := overlayModel(t, focusQueue)
+				m.overlay = overlayPicker
+				m.keys.picker.Save = customBinding("x", "x", "save track")
+				return m
+			},
+
+			duplicateHints: []string{"Save to playlist — enter to select"},
+			wantBindings:   func(m Model) []key.Binding { return []key.Binding{m.keys.picker.Save} },
+		},
+		{
+			name: "playlist name",
+			model: func(t *testing.T) Model {
+				m := overlayModel(t, focusQueue)
+				m.overlay = overlayName
+				m.keys.name.Create = customBinding("x", "x", "create playlist")
+				m.keys.name.Cancel = customBinding("z", "z", "cancel")
+				return m
+			},
+
+			duplicateHints: []string{"New playlist — enter to save, esc to cancel"},
+			wantBindings:   func(m Model) []key.Binding { return []key.Binding{m.keys.name.Create, m.keys.name.Cancel} },
+		},
+		{
+			name: "device picker",
+			model: func(t *testing.T) Model {
+				m := overlayModel(t, focusQueue)
+				m.overlay = overlayDevices
+				m.keys.devices.Select = customBinding("x", "x", "switch")
+				m.keys.devices.Close = customBinding("z", "z", "cancel")
+				return m
+			},
+
+			duplicateHints: []string{"Output device — enter to switch, esc to cancel"},
+			wantBindings:   func(m Model) []key.Binding { return []key.Binding{m.keys.devices.Select, m.keys.devices.Close} },
+		},
+		{
+			name: "track info",
+			model: func(t *testing.T) Model {
+				m := overlayModel(t, focusQueue)
+				m.overlay = overlayInfo
+				m.keys.info.Copy = customBinding("x", "x", "copy url")
+				m.keys.info.Close = customBinding("z", "z", "close")
+				return m
+			},
+
+			duplicateHints: []string{"Track info — y copy URL, esc to close"},
+			wantBindings:   func(m Model) []key.Binding { return []key.Binding{m.keys.info.Copy, m.keys.info.Close} },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := tt.model(t)
+			got := rendered(m)
+
+			for _, hint := range tt.duplicateHints {
+				if strings.Contains(got, hint) {
+					t.Errorf("render() still contains duplicate key hint %q", hint)
+				}
+			}
+			for _, hint := range tt.wantHints {
+				if !strings.Contains(got, hint) {
+					t.Errorf("render() lacks keymap-derived hint %q", hint)
+				}
+			}
+			for _, b := range tt.wantBindings(m) {
+				if !strings.Contains(footerHelp(m), helpEntry(b)) {
+					t.Errorf("context help %q does not include keymap binding %q", footerHelp(m), helpEntry(b))
+				}
+			}
+		})
+	}
+
+	t.Run("delete confirmation uses keymap help label", func(t *testing.T) {
+		store, err := library.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Create("Keep"); err != nil {
+			t.Fatal(err)
+		}
+		m := New(Deps{Library: store})
+		m.focus = focusPlaylists
+		m.keys.playlists.Delete = customBinding("x", "alt+x", "delete playlist")
+		got, _ := m.handlePlaylistKey(keyPress("x"))
+		m = got.(Model)
+		want := "press " + m.keys.playlists.Delete.Help().Key + " again to delete " + quote("Keep")
+		if m.status != want {
+			t.Errorf("delete confirmation = %q, want %q", m.status, want)
+		}
+		if m.deletePlaylistPending != 0 {
+			t.Errorf("deletePlaylistPending = %d, want 0 after first press", m.deletePlaylistPending)
+		}
+	})
 }
 
 func TestPasteGoesToSearch(t *testing.T) {
@@ -1011,7 +1336,7 @@ func TestRapidQueueMovesKeepSelectedTrack(t *testing.T) {
 	m.queueCur = 2
 
 	for range 2 {
-		got, cmd := m.handleQueueKey("K")
+		got, cmd := m.handleQueueKey(keyPress("K"))
 		if cmd == nil {
 			t.Fatal("move command = nil")
 		}
@@ -1042,7 +1367,7 @@ func TestEmptyQueueNavigationCannotDelete(t *testing.T) {
 	m := New(Deps{})
 	m.focus = focusQueue
 	for _, key := range []string{"down", "j", "G", "d", "J", "enter"} {
-		got, cmd := m.handleQueueKey(key)
+		got, cmd := m.handleQueueKey(keyPress(key))
 		m = got.(Model)
 		if cmd != nil || m.queueCur < 0 || len(m.queue.entries) != 0 {
 			t.Fatalf("after %q: cursor=%d queue=%+v cmd=%v", key, m.queueCur, m.queue.entries, cmd != nil)
@@ -1057,7 +1382,7 @@ func TestClearQueueProjectsEmptyAndIgnoresStalePlaylist(t *testing.T) {
 	m.queueCur = 1
 	m.queue.pos, m.idle = 0, false
 	m.timePos, m.duration = 10*time.Second, time.Minute
-	got, cmd := m.handleQueueKey("C")
+	got, cmd := m.handleQueueKey(keyPress("C"))
 	m = got.(Model)
 	if cmd == nil || len(m.queue.entries) != 0 || m.queueCur != 0 || m.queue.pos != -1 || !m.idle || m.timePos != 0 || m.duration != 0 {
 		t.Fatalf("clear projection = queue %+v, cursor %d, pos %d, idle %v, time %v/%v", m.queue.entries, m.queueCur, m.queue.pos, m.idle, m.timePos, m.duration)
@@ -1090,7 +1415,7 @@ func TestClearQueueKeepsImportStillResolving(t *testing.T) {
 	importID := m.activeRequest
 
 	m.focus = focusQueue
-	got, clear := m.handleQueueKey("C")
+	got, clear := m.handleQueueKey(keyPress("C"))
 	m = got.(Model)
 	cleared := make(chan tea.Msg, 1)
 	go func() { cleared <- clear() }()
@@ -1118,13 +1443,13 @@ func TestQueueEnterReservesSlotAfterProjectedMove(t *testing.T) {
 	m.focus = focusQueue
 	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
 	m.queueCur = 1
-	got, move := m.handleQueueKey("K")
+	got, move := m.handleQueueKey(keyPress("K"))
 	m = got.(Model)
 	if move == nil || m.queueCur != 0 {
 		t.Fatal("move did not project B to index 0")
 	}
 	moveDone := m.queue.tail
-	got, play := m.handleQueueKey("enter")
+	got, play := m.handleQueueKey(keyPress("enter"))
 	m = got.(Model)
 	if play == nil || m.queue.tail == moveDone {
 		t.Fatal("play selection was not reserved behind the projected move")
@@ -1140,14 +1465,14 @@ func TestPlayNowBlocksIndexEditsUntilQueueRefresh(t *testing.T) {
 	m.results = []youtube.Track{{URL: "D", Title: "D"}}
 	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
 	m.queueCur = 1
-	got, play := m.handleResultKey("enter")
+	got, play := m.handleResultKey(keyPress("enter"))
 	m = got.(Model)
 	if play == nil || !m.queue.insertPending || m.queue.editsPending != 1 {
 		t.Fatal("play-now did not reserve an insertion refresh")
 	}
 	m.focus = focusQueue
 	for _, key := range []string{"d", "K", "J", "enter"} {
-		got, cmd := m.handleQueueKey(key)
+		got, cmd := m.handleQueueKey(keyPress(key))
 		m = got.(Model)
 		if cmd != nil || len(m.queue.entries) != 2 || m.queue.entries[1].Filename != "B" {
 			t.Fatalf("%q edited a stale queue index", key)
@@ -1163,7 +1488,7 @@ func TestPlayNowBlocksIndexEditsUntilQueueRefresh(t *testing.T) {
 	if m.queue.insertPending || len(m.queue.entries) != 3 || m.queue.entries[1].Filename != "D" {
 		t.Fatalf("insertion refresh = %+v; pending = %v", m.queue.entries, m.queue.insertPending)
 	}
-	got, edit := m.handleQueueKey("d")
+	got, edit := m.handleQueueKey(keyPress("d"))
 	m = got.(Model)
 	if edit == nil || len(m.queue.entries) != 2 || m.queue.entries[1].Filename != "B" {
 		t.Fatalf("delete did not target refreshed index: %+v", m.queue.entries)
@@ -1176,7 +1501,7 @@ func TestOpposingQueueMovesIgnoreOldAndIntermediateEvents(t *testing.T) {
 	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
 	m.queueCur = 2
 	for _, key := range []string{"K", "J"} {
-		got, cmd := m.handleQueueKey(key)
+		got, cmd := m.handleQueueKey(keyPress(key))
 		if cmd == nil {
 			t.Fatalf("%s command = nil", key)
 		}
@@ -1214,7 +1539,7 @@ func TestOpposingQueueMovesIgnoreOldAndIntermediateEvents(t *testing.T) {
 	if m.queue.entries[2].Filename != "C" || m.queueCur != 2 {
 		t.Errorf("authoritative refresh = %+v cursor %d, want C selected", m.queue.entries, m.queueCur)
 	}
-	got, _ = m.handleQueueKey("K")
+	got, _ = m.handleQueueKey(keyPress("K"))
 	m = got.(Model)
 	if m.queue.entries[1].Filename != "C" || m.queueCur != 1 {
 		t.Errorf("next move targeted wrong track: queue=%+v cursor=%d", m.queue.entries, m.queueCur)
@@ -1253,7 +1578,7 @@ func TestRapidQueueDeletesAdvanceToNextTrack(t *testing.T) {
 	m.queueCur = 0
 
 	for range 2 {
-		got, cmd := m.handleQueueKey("d")
+		got, cmd := m.handleQueueKey(keyPress("d"))
 		if cmd == nil {
 			t.Fatal("delete command = nil")
 		}
@@ -1273,7 +1598,7 @@ func TestStalePlaylistEventDoesNotRestoreDeletedEntry(t *testing.T) {
 		{Filename: "C"},
 	}
 	m.queueCur = 0
-	got, cmd := m.handleQueueKey("d")
+	got, cmd := m.handleQueueKey(keyPress("d"))
 	if cmd == nil {
 		t.Fatal("delete command = nil")
 	}
@@ -1300,7 +1625,7 @@ func TestProjectedDeleteDistinguishesDuplicateURLs(t *testing.T) {
 	m := New(Deps{})
 	m.focus = focusQueue
 	m.queue.entries = []mpv.PlaylistEntry{{Filename: "same"}, {Filename: "same"}}
-	got, _ := m.handleQueueKey("d")
+	got, _ := m.handleQueueKey(keyPress("d"))
 	m = got.(Model)
 	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"id":1,"filename":"same"},{"id":2,"filename":"same"}]`)})
 	if len(m.queue.entries) != 1 || m.queue.entries[0].Filename != "same" {
@@ -1528,7 +1853,7 @@ func TestMouseInPlaylistPicker(t *testing.T) {
 	m.width, m.height = 100, 30
 	m.focus = focusResults
 	m.results = []youtube.Track{{Title: "pick me", URL: "https://www.youtube.com/watch?v=pick"}}
-	got, _ := m.handleResultKey("s")
+	got, _ := m.handleResultKey(keyPress("s"))
 	m = got.(Model)
 
 	m = click(m, cellAt(t, m, "Beta ("))
@@ -1707,5 +2032,691 @@ func TestReplacedOverlayKeepsFirstOriginPane(t *testing.T) {
 	}
 	if m = press(t, m, tea.KeyPressMsg{Code: tea.KeyEscape}); !atPane(m, focusQueue) {
 		t.Errorf("after esc: focus=%v overlay=%v, want queue", m.focus, m.overlay)
+	}
+}
+
+func keyPress(s string) tea.KeyPressMsg {
+	switch s {
+	case "enter":
+		return tea.KeyPressMsg{Code: tea.KeyEnter}
+	case "down":
+		return tea.KeyPressMsg{Code: tea.KeyDown}
+	}
+	return tea.KeyPressMsg{Code: []rune(s)[0], Text: s}
+}
+
+type spyTransportPlayer struct {
+	*mpv.Player
+	calls []string
+}
+
+func (p *spyTransportPlayer) TogglePause(context.Context) error {
+	p.calls = append(p.calls, "toggle pause")
+	return nil
+}
+
+func (p *spyTransportPlayer) Next(context.Context) error {
+	p.calls = append(p.calls, "next")
+	return nil
+}
+
+func (p *spyTransportPlayer) AddVolume(_ context.Context, delta int) error {
+	if delta > 0 {
+		p.calls = append(p.calls, "volume up")
+	} else {
+		p.calls = append(p.calls, "volume down")
+	}
+	return nil
+}
+
+func TestKeyAliases(t *testing.T) {
+	const watch = "https://www.youtube.com/watch?v=abc"
+	listModel := func(deps Deps, f focus) Model {
+		m := New(deps)
+		m.input.Blur()
+		m.focus = f
+		m.results = []youtube.Track{{URL: "r0"}, {URL: "r1"}, {URL: "r2"}}
+		m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
+		return m
+	}
+	playerCall := func(want string) func(t *testing.T, m Model, cmd tea.Cmd, player *spyTransportPlayer) {
+		return func(t *testing.T, _ Model, cmd tea.Cmd, player *spyTransportPlayer) {
+			t.Helper()
+			if cmd == nil {
+				t.Fatal("cmd = nil, want a player command")
+			}
+			if msg := cmd(); msg != nil {
+				t.Fatalf("player command returned %v", msg)
+			}
+			if !slices.Equal(player.calls, []string{want}) {
+				t.Errorf("player calls = %v, want [%s]", player.calls, want)
+			}
+		}
+	}
+
+	tests := []struct {
+		name  string
+		key   tea.KeyPressMsg
+		setup func(t *testing.T, player *spyTransportPlayer) Model
+		check func(t *testing.T, m Model, cmd tea.Cmd, player *spyTransportPlayer)
+	}{
+		{
+			name: "space pauses",
+			key:  tea.KeyPressMsg{Code: tea.KeySpace, Text: " "},
+			setup: func(_ *testing.T, p *spyTransportPlayer) Model {
+				return listModel(Deps{Player: p}, focusResults)
+			},
+			check: playerCall("toggle pause"),
+		},
+		{
+			name: "> skips to next track",
+			key:  keyPress(">"),
+			setup: func(_ *testing.T, p *spyTransportPlayer) Model {
+				return listModel(Deps{Player: p}, focusResults)
+			},
+			check: playerCall("next"),
+		},
+		{
+			name: "= raises volume",
+			key:  keyPress("="),
+			setup: func(_ *testing.T, p *spyTransportPlayer) Model {
+				return listModel(Deps{Player: p}, focusResults)
+			},
+			check: playerCall("volume up"),
+		},
+		{
+			name: "x removes the selected queue entry",
+			key:  keyPress("x"),
+			setup: func(_ *testing.T, p *spyTransportPlayer) Model {
+				m := listModel(Deps{Player: p}, focusQueue)
+				m.queueCur = 1
+				return m
+			},
+			check: func(t *testing.T, m Model, _ tea.Cmd, _ *spyTransportPlayer) {
+				got := make([]string, len(m.queue.entries))
+				for i, e := range m.queue.entries {
+					got[i] = e.Filename
+				}
+				if !slices.Equal(got, []string{"A", "C"}) {
+					t.Errorf("queue = %v, want [A C]", got)
+				}
+			},
+		},
+		{
+			name: "tab leaves search",
+			key:  tea.KeyPressMsg{Code: tea.KeyTab},
+			setup: func(_ *testing.T, p *spyTransportPlayer) Model {
+				m := New(Deps{Player: p})
+				m.input.SetValue("lofi")
+				return m
+			},
+			check: func(t *testing.T, m Model, _ tea.Cmd, _ *spyTransportPlayer) {
+				if !atPane(m, focusResults) || m.input.Focused() {
+					t.Errorf("focus = %v, input focused = %v, want results with search blurred", m.focus, m.input.Focused())
+				}
+				if v := m.input.Value(); v != "lofi" {
+					t.Errorf("input = %q, want the query untouched", v)
+				}
+			},
+		},
+		{
+			name: "y copies the URL from the info panel",
+			key:  keyPress("y"),
+			setup: func(t *testing.T, _ *spyTransportPlayer) Model {
+				m := press(t, overlayModel(t, focusQueue), tea.KeyPressMsg{Code: 'i'})
+				if m.overlay != overlayInfo {
+					t.Fatalf("overlay = %v, want info", m.overlay)
+				}
+				return m
+			},
+			check: func(t *testing.T, m Model, cmd tea.Cmd, _ *spyTransportPlayer) {
+				if cmd == nil {
+					t.Fatal("cmd = nil, want a clipboard write")
+				}
+				if got, want := cmd(), tea.SetClipboard(watch)(); got != want {
+					t.Errorf("cmd() = %#v, want clipboard write of %q", got, watch)
+				}
+			},
+		},
+		{
+			name: "shift+insert pastes into search",
+			key:  tea.KeyPressMsg{Code: tea.KeyInsert, Mod: tea.ModShift},
+			setup: func(t *testing.T, p *spyTransportPlayer) Model {
+				if got := (tea.KeyPressMsg{Code: tea.KeyInsert, Mod: tea.ModShift}).String(); got != "shift+insert" {
+					t.Fatalf("key string = %q, want shift+insert", got)
+				}
+				return listModel(Deps{Player: p}, focusResults)
+			},
+			check: func(t *testing.T, m Model, cmd tea.Cmd, _ *spyTransportPlayer) {
+				if !atPane(m, focusSearch) {
+					t.Errorf("focus = %v, want focusSearch", m.focus)
+				}
+				// textinput.Paste reads the system clipboard, so compare instead of running it.
+				if cmd == nil || reflect.ValueOf(cmd).Pointer() != reflect.ValueOf(textinput.Paste).Pointer() {
+					t.Error("cmd is not the clipboard read")
+				}
+			},
+		},
+		{
+			name: "k moves the cursor up",
+			key:  keyPress("k"),
+			setup: func(_ *testing.T, p *spyTransportPlayer) Model {
+				m := listModel(Deps{Player: p}, focusResults)
+				m.resultCur = 2
+				return m
+			},
+			check: func(t *testing.T, m Model, _ tea.Cmd, _ *spyTransportPlayer) {
+				if m.resultCur != 1 {
+					t.Errorf("resultCur = %d, want 1", m.resultCur)
+				}
+			},
+		},
+		{
+			name: "g jumps to the top",
+			key:  keyPress("g"),
+			setup: func(_ *testing.T, p *spyTransportPlayer) Model {
+				m := listModel(Deps{Player: p}, focusResults)
+				m.resultCur = 2
+				return m
+			},
+			check: func(t *testing.T, m Model, _ tea.Cmd, _ *spyTransportPlayer) {
+				if m.resultCur != 0 {
+					t.Errorf("resultCur = %d, want 0", m.resultCur)
+				}
+			},
+		},
+		{
+			name: "v toggles the spectrum",
+			key:  keyPress("v"),
+			setup: func(t *testing.T, p *spyTransportPlayer) Model {
+				m := listModel(Deps{Player: p, Tap: spectrumStub{}}, focusResults)
+				if !m.showViz {
+					t.Fatal("showViz = false before toggling, want the spectrum shown with a tap")
+				}
+				return m
+			},
+			check: func(t *testing.T, m Model, _ tea.Cmd, _ *spyTransportPlayer) {
+				if m.showViz {
+					t.Error("showViz = true, want the spectrum toggled off")
+				}
+			},
+		},
+		{
+			name: "q quits",
+			key:  keyPress("q"),
+			setup: func(_ *testing.T, p *spyTransportPlayer) Model {
+				return listModel(Deps{Player: p}, focusResults)
+			},
+			check: func(t *testing.T, _ Model, cmd tea.Cmd, _ *spyTransportPlayer) {
+				if cmd == nil {
+					t.Fatal("cmd = nil, want quit")
+				}
+				if msg := cmd(); msg != (tea.QuitMsg{}) {
+					t.Errorf("cmd() = %#v, want tea.QuitMsg", msg)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			player := &spyTransportPlayer{}
+			got, cmd := tt.setup(t, player).Update(tt.key)
+			tt.check(t, got.(Model), cmd, player)
+		})
+	}
+}
+
+// Column headings are R4's wording; "Navigation and global" appears nowhere
+// else, so it marks the full help as shown.
+const (
+	playbackHeading = "Playback"
+	globalHeading   = "Navigation and global"
+)
+
+func rendered(m Model) string {
+	return ansi.Strip(m.render())
+}
+
+func fullHelpShown(m Model) bool {
+	return strings.Contains(rendered(m), globalHeading)
+}
+
+func enabledEntries(km help.KeyMap) []key.Binding {
+	var entries []key.Binding
+	for _, col := range km.FullHelp() {
+		for _, b := range col {
+			if b.Enabled() {
+				entries = append(entries, b)
+			}
+		}
+	}
+	return entries
+}
+
+// Full help aligns keys and descriptions in columns, so any run of spaces may
+// separate them; entries sit between spaces or the pane border.
+func listsEntry(rendered string, b key.Binding) bool {
+	re := regexp.MustCompile(`(?m)(^|[\s│])` + regexp.QuoteMeta(b.Help().Key) + ` +` + regexp.QuoteMeta(b.Help().Desc) + `([\s│]|$)`)
+	return re.MatchString(rendered)
+}
+
+func TestFullHelpShowsPlaybackGlobalAndContextColumns(t *testing.T) {
+	k := newKeyMap()
+	for _, tc := range helpContexts(t) {
+		if tc.name == "search" || tc.name == "playlist name" {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			m := tc.model
+			if fullHelpShown(m) {
+				t.Fatalf("full help shown before ?")
+			}
+			m = press(t, m, keyPress("?"))
+			got := rendered(m)
+			_, _, _, bodyHeight := m.layout()
+			helpBody := ansi.Strip(m.renderFullHelp(bodyHeight))
+			for _, heading := range []string{playbackHeading, globalHeading} {
+				if !strings.Contains(got, heading) {
+					t.Errorf("full help is missing the %q column", heading)
+				}
+			}
+			var want []key.Binding
+			want = append(want, enabledEntries(k.playback)...)
+			want = append(want, k.global.Search, k.global.NextPane)
+			want = append(want, enabledEntries(tc.keys)...)
+			for _, b := range want {
+				if !listsEntry(got, b) {
+					t.Errorf("full help is missing %q:\n%s", helpEntry(b), got)
+				}
+			}
+			for _, b := range []key.Binding{m.keys.closeHelp, m.keys.global.ForceQuit} {
+				if !listsEntry(helpBody, b) {
+					t.Errorf("full help is missing R5 binding %q:\n%s", helpEntry(b), got)
+				}
+			}
+			if got := footerHelp(m); got != "?/esc/q close" {
+				t.Errorf("full-help footer = %q, want %q", got, "?/esc/q close")
+			}
+		})
+	}
+}
+
+func TestFullHelpKeepsEveryGroupVisibleAt40Columns(t *testing.T) {
+	m := overlayModel(t, focusQueue)
+	m.width = 40
+	got := ansi.Strip(m.renderFullHelp(40))
+	fullHelpGlobal := m.keys.global
+	fullHelpGlobal.Quit = m.keys.closeHelp
+
+	for _, group := range []struct {
+		title string
+		keys  help.KeyMap
+	}{
+		{title: playbackHeading, keys: m.keys.playback},
+		{title: globalHeading, keys: fullHelpGlobal},
+		{title: "Queue", keys: m.keys.queue},
+	} {
+		if !strings.Contains(got, group.title) {
+			t.Errorf("40-column full help is missing the %q heading", group.title)
+		}
+		for _, b := range enabledEntries(group.keys) {
+			if !listsEntry(got, b) {
+				t.Errorf("40-column full help is missing %q from %s", helpEntry(b), group.title)
+			}
+		}
+	}
+}
+
+func TestFullHelpAt24RowsWithSpectrumShowsQueueBindingsAndRestoresVisualizer(t *testing.T) {
+	m := New(Deps{Tap: spectrumStub{}})
+	m.width, m.height = 120, 24
+	m.input.Blur()
+	m.focus = focusQueue
+	m.levels = []float64{1}
+	if !m.showViz {
+		t.Fatal("showViz = false with a spectrum tap, want true")
+	}
+	fullHelpGlobal := m.keys.global
+	fullHelpGlobal.Quit = m.keys.closeHelp
+
+	m = press(t, m, keyPress("?"))
+	if !fullHelpShown(m) {
+		t.Fatal("? did not open the full help")
+	}
+	if !m.showViz {
+		t.Fatal("showViz changed while full help was open")
+	}
+	got := rendered(m)
+	_, _, _, bodyHeight := m.layout()
+	helpBody := ansi.Strip(m.renderFullHelp(bodyHeight))
+	for _, group := range []struct {
+		name string
+		keys help.KeyMap
+	}{
+		{name: "Playback", keys: m.keys.playback},
+		{name: "Navigation and global", keys: fullHelpGlobal},
+		{name: "Queue", keys: m.keys.queue},
+	} {
+		for _, b := range enabledEntries(group.keys) {
+			if !listsEntry(helpBody, b) {
+				t.Errorf("24-row full help is missing %s binding %q", group.name, helpEntry(b))
+			}
+		}
+	}
+	if strings.Contains(got, "█") {
+		t.Error("visualizer is rendered while full help is open")
+	}
+
+	m = press(t, m, keyPress("q"))
+	if !m.showViz {
+		t.Fatal("showViz changed after closing full help")
+	}
+	if !strings.Contains(rendered(m), "█") {
+		t.Error("visualizer was not restored after closing full help")
+	}
+}
+
+func TestFullHelpAt40x24AfterWindowSizeWithSpectrumShowsBindingsAndRestoresVisualizer(t *testing.T) {
+	const watch = "https://www.youtube.com/watch?v=abc"
+	m := New(Deps{Tap: spectrumStub{}})
+	m.input.Blur()
+	m.focus = focusQueue
+	m.levels = []float64{1}
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: watch, Title: "Song"}}
+	m.queue.pos, m.idle = 0, false
+	m.tracks[watch] = youtube.Track{ID: "abc", Title: "Song", URL: watch}
+	m.setStatus("status line text")
+	got, _ := m.update(tea.WindowSizeMsg{Width: 40, Height: 24})
+	m = got.(Model)
+	if !m.showViz {
+		t.Fatal("showViz = false with a spectrum tap, want true")
+	}
+	fullHelpGlobal := m.keys.global
+	fullHelpGlobal.Quit = m.keys.closeHelp
+
+	m = press(t, m, keyPress("?"))
+	if !fullHelpShown(m) {
+		t.Fatal("? did not open the full help")
+	}
+	if !m.showViz {
+		t.Fatal("showViz changed while full help was open")
+	}
+	renderedHelp := rendered(m)
+	if w, h := lipgloss.Width(m.render()), lipgloss.Height(m.render()); w > 40 || h > 24 {
+		t.Errorf("render() size = %dx%d, want within 40x24", w, h)
+	}
+	for _, text := range []string{"▶ Song", "status line text"} {
+		if !strings.Contains(renderedHelp, text) {
+			t.Errorf("full help dropped %q (now-playing box / status line)", text)
+		}
+	}
+	for _, group := range []struct {
+		name string
+		keys help.KeyMap
+	}{
+		{name: "Playback", keys: m.keys.playback},
+		{name: "Navigation and global", keys: fullHelpGlobal},
+		{name: "Queue", keys: m.keys.queue},
+	} {
+		for _, b := range enabledEntries(group.keys) {
+			if !listsEntry(renderedHelp, b) {
+				t.Errorf("40x24 full help is missing %s binding %q", group.name, helpEntry(b))
+			}
+		}
+	}
+	if strings.Contains(renderedHelp, "█") {
+		t.Error("visualizer is rendered while full help is open")
+	}
+
+	m = press(t, m, keyPress("q"))
+	if !m.showViz {
+		t.Fatal("showViz changed after closing full help")
+	}
+	if !strings.Contains(rendered(m), "█") {
+		t.Error("visualizer was not restored after closing full help")
+	}
+}
+
+func TestFullHelpClosesWithQuestionMarkOrEsc(t *testing.T) {
+	for _, k := range []tea.KeyPressMsg{keyPress("?"), {Code: tea.KeyEscape}} {
+		t.Run(k.String(), func(t *testing.T) {
+			m := press(t, overlayModel(t, focusQueue), keyPress("?"))
+			if !fullHelpShown(m) {
+				t.Fatal("? did not open the full help")
+			}
+			m = press(t, m, k)
+			if fullHelpShown(m) {
+				t.Errorf("full help still shown after %s", k)
+			}
+			if !atPane(m, focusQueue) {
+				t.Errorf("after %s: focus=%v overlay=%v, want queue", k, m.focus, m.overlay)
+			}
+			if !strings.Contains(rendered(m), "Queue (1)") {
+				t.Errorf("queue pane not restored after %s", k)
+			}
+		})
+	}
+}
+
+func TestFullHelpReplacesListPanesKeepsNowPlayingAndStatus(t *testing.T) {
+	m := overlayModel(t, focusQueue)
+	m.results = []youtube.Track{{Title: "A search result"}}
+	m.setStatus("status line text")
+	before := rendered(m)
+	for _, s := range []string{"Queue (1)", "A search result"} {
+		if !strings.Contains(before, s) {
+			t.Fatalf("list panes do not render %q before ?", s)
+		}
+	}
+
+	m = press(t, m, keyPress("?"))
+	got := rendered(m)
+	for _, s := range []string{"Queue (1)", "A search result"} {
+		if strings.Contains(got, s) {
+			t.Errorf("full help still renders the list pane content %q", s)
+		}
+	}
+	for _, s := range []string{"▶ Song", "status line text"} {
+		if !strings.Contains(got, s) {
+			t.Errorf("full help dropped %q (now-playing box / status line)", s)
+		}
+	}
+	if w, h := lipgloss.Width(m.render()), lipgloss.Height(m.render()); w > m.width || h > m.height {
+		t.Errorf("render() size = %dx%d, want within %dx%d", w, h, m.width, m.height)
+	}
+}
+
+func TestQuestionMarkInInputIsLiteralNotFullHelp(t *testing.T) {
+	m := overlayModel(t, focusQueue)
+	m.focusSearch()
+	m = press(t, m, keyPress("?"))
+	if v := m.input.Value(); v != "?" {
+		t.Errorf("search input = %q after typing ?, want %q", v, "?")
+	}
+	if fullHelpShown(m) {
+		t.Error("? in the search input opened the full help")
+	}
+
+	m = press(t, overlayModel(t, focusPlaylists), keyPress("c"))
+	if m.overlay != overlayName {
+		t.Fatalf("overlay = %v, want name input", m.overlay)
+	}
+	m = press(t, m, keyPress("?"))
+	if v := m.nameInput.Value(); v != "?" {
+		t.Errorf("name input = %q after typing ?, want %q", v, "?")
+	}
+	if fullHelpShown(m) {
+		t.Error("? in the playlist name input opened the full help")
+	}
+}
+
+func TestFullHelpAppliesPlaybackKeysAndIgnoresPaneKeys(t *testing.T) {
+	player := &spyTransportPlayer{}
+	m := overlayModel(t, focusQueue)
+	m.deps.Player = player
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
+	m = press(t, m, keyPress("?"))
+
+	got, cmd := m.update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	m = got.(Model)
+	if cmd == nil {
+		t.Fatal("space: cmd = nil, want a player command")
+	}
+	if msg := cmd(); msg != nil {
+		t.Fatalf("space: player command returned %v", msg)
+	}
+	if !slices.Equal(player.calls, []string{"toggle pause"}) {
+		t.Errorf("player calls = %v, want [toggle pause]", player.calls)
+	}
+	if !fullHelpShown(m) {
+		t.Error("space closed the full help")
+	}
+
+	got, cmd = m.update(keyPress("d"))
+	m = got.(Model)
+	if cmd != nil || len(m.queue.entries) != 3 {
+		t.Errorf("d with full help open: cmd=%v, queue=%v, want no removal", cmd != nil, m.queue.entries)
+	}
+	if !fullHelpShown(m) {
+		t.Error("d closed the full help")
+	}
+}
+
+func TestFullHelpIgnoresGlobalKeysButForceQuit(t *testing.T) {
+	ignored := []tea.KeyPressMsg{
+		{Code: tea.KeyTab},
+		{Code: tea.KeyTab, Mod: tea.ModShift},
+		keyPress("/"),
+		keyPress("o"),
+		keyPress("i"),
+		keyPress("r"),
+		{Code: 'v', Mod: tea.ModCtrl},
+	}
+	for _, k := range ignored {
+		t.Run(k.String(), func(t *testing.T) {
+			m := press(t, overlayModel(t, focusQueue), keyPress("?"))
+			got, cmd := m.update(k)
+			m = got.(Model)
+			if cmd != nil {
+				t.Errorf("%s returned a command with full help open", k)
+			}
+			if !atPane(m, focusQueue) || !fullHelpShown(m) {
+				t.Errorf("after %s: focus=%v overlay=%v help=%v, want queue with full help", k, m.focus, m.overlay, fullHelpShown(m))
+			}
+		})
+	}
+
+	t.Run("bracketed paste", func(t *testing.T) {
+		m := press(t, overlayModel(t, focusQueue), keyPress("?"))
+		got, _ := m.update(tea.PasteMsg{Content: "lofi"})
+		m = got.(Model)
+		if m.input.Value() != "" || !atPane(m, focusQueue) || !fullHelpShown(m) {
+			t.Errorf("paste: input=%q focus=%v help=%v, want ignored", m.input.Value(), m.focus, fullHelpShown(m))
+		}
+	})
+
+	t.Run("q closes without quitting", func(t *testing.T) {
+		m := press(t, overlayModel(t, focusQueue), keyPress("?"))
+		got, cmd := m.update(keyPress("q"))
+		m = got.(Model)
+		if cmd != nil {
+			t.Errorf("q returned %#v, want no command", cmd())
+		}
+		if fullHelpShown(m) || !atPane(m, focusQueue) {
+			t.Errorf("after q: help=%v focus=%v overlay=%v, want queue without full help", fullHelpShown(m), m.focus, m.overlay)
+		}
+	})
+
+	t.Run("ctrl+c quits", func(t *testing.T) {
+		m := press(t, overlayModel(t, focusQueue), keyPress("?"))
+		_, cmd := m.update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+		if cmd == nil {
+			t.Fatal("ctrl+c: cmd = nil, want quit")
+		}
+		if msg := cmd(); msg != (tea.QuitMsg{}) {
+			t.Errorf("ctrl+c: cmd() = %#v, want tea.QuitMsg", msg)
+		}
+	})
+}
+
+func TestFullHelpOverOverlayReturnsToIt(t *testing.T) {
+	tests := []struct {
+		name  string
+		open  func(t *testing.T, m Model) Model
+		want  overlay
+		shown string
+	}{
+		{"device picker", func(_ *testing.T, m Model) Model {
+			got, _ := m.update(devicesMsg{devices: m.devices, open: true})
+			return got.(Model)
+		}, overlayDevices, "Autoselect device"},
+		{"track info", func(t *testing.T, m Model) Model { return press(t, m, keyPress("i")) }, overlayInfo, "copy url"},
+		{"playlist picker", func(t *testing.T, m Model) Model { return press(t, m, keyPress("s")) }, overlayPicker, "Save to playlist"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := tt.open(t, overlayModel(t, focusQueue))
+			if m.overlay != tt.want {
+				t.Fatalf("overlay = %v, want %v", m.overlay, tt.want)
+			}
+			m = press(t, m, keyPress("?"))
+			if !fullHelpShown(m) {
+				t.Fatal("? did not open the full help over the overlay")
+			}
+			m = press(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+			if fullHelpShown(m) || m.overlay != tt.want || m.focus != focusQueue {
+				t.Errorf("after esc: help=%v overlay=%v focus=%v, want %v over queue", fullHelpShown(m), m.overlay, m.focus, tt.want)
+			}
+			if !strings.Contains(rendered(m), tt.shown) {
+				t.Errorf("overlay body %q not restored", tt.shown)
+			}
+		})
+	}
+}
+
+func TestFullHelpIgnoresMouse(t *testing.T) {
+	m := mouseModel()
+	m.focus = focusResults
+	m.input.Blur()
+	row := cellAt(t, m, "queued 1")
+	tab := cellAt(t, m, "Queue")
+	searchBox := image.Pt(lipgloss.Width(renderTitle())+1, 0)
+	m = press(t, m, keyPress("?"))
+
+	for name, at := range map[string]image.Point{"pane row": row, "tab": tab, "search": searchBox} {
+		got := click(m, at)
+		if !atPane(got, focusResults) || got.queueCur != 0 || !fullHelpShown(got) {
+			t.Errorf("click on %s: focus=%v queueCur=%d help=%v, want ignored", name, got.focus, got.queueCur, fullHelpShown(got))
+		}
+	}
+	got := wheel(m, row, tea.MouseWheelDown)
+	if !atPane(got, focusResults) || got.resultCur != 0 || got.queueCur != 0 {
+		t.Errorf("wheel: focus=%v resultCur=%d queueCur=%d, want ignored", got.focus, got.resultCur, got.queueCur)
+	}
+}
+
+func TestFullHelpListsVizOnlyWithSpectrum(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tap  Spectrum
+		want bool
+	}{
+		{"without spectrum", nil, false},
+		{"with spectrum", spectrumStub{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(Deps{Tap: tc.tap})
+			m = resize(m, 120)
+			m.input.Blur()
+			m.focus = focusResults
+			m = press(t, m, keyPress("?"))
+			if !fullHelpShown(m) {
+				t.Fatal("? did not open the full help")
+			}
+			viz := m.keys.global.Viz
+			if got := listsEntry(rendered(m), viz); got != tc.want {
+				t.Errorf("full help lists %q = %v, want %v", helpEntry(viz), got, tc.want)
+			}
+		})
 	}
 }

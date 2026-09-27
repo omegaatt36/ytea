@@ -16,16 +16,24 @@ import (
 )
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	pressed := msg.String()
-	if pressed != "D" {
+	g := m.keys.global
+	if !key.Matches(msg, m.keys.playlists.Delete) {
 		m.deletePlaylistPending = -1
 	}
-	if pressed == "ctrl+c" {
+	if key.Matches(msg, g.ForceQuit) {
 		return m.quit()
+	}
+	if m.fullHelp {
+		if key.Matches(msg, m.keys.closeHelp) {
+			m.fullHelp = false
+			return m, nil
+		}
+		cmd, _ := m.handlePlaybackKey(msg)
+		return m, cmd
 	}
 
 	inSearch := m.overlay == overlayNone && m.focus == focusSearch
-	if key.Matches(msg, pasteKeys) && !inSearch && m.overlay != overlayName {
+	if key.Matches(msg, g.Paste) && !inSearch && m.overlay != overlayName {
 		return m, tea.Batch(m.focusSearch(), textinput.Paste)
 	}
 
@@ -34,53 +42,57 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleSearchKey(msg)
 	case m.overlay == overlayName:
 		return m.handlePlaylistNameKey(msg)
+	case key.Matches(msg, g.Help):
+		m.fullHelp = true
+		return m, nil
 	case m.overlay == overlayDevices:
-		return m.handleDeviceKey(pressed)
+		return m.handleDeviceKey(msg)
 	case m.overlay == overlayInfo:
-		return m.handleInfoKey(pressed)
+		return m.handleInfoKey(msg)
 	}
 
-	if cmd, ok := m.handlePlaybackKey(pressed); ok {
+	if cmd, ok := m.handlePlaybackKey(msg); ok {
 		return m, cmd
 	}
 
-	switch pressed {
-	case "q":
+	switch {
+	case key.Matches(msg, g.Quit):
 		return m.quit()
-	case "/":
+	case key.Matches(msg, g.Search):
 		return m, m.focusSearch()
-	case "tab", "shift+tab":
-		m.cycleTab(pressed == "shift+tab")
+	case key.Matches(msg, g.NextPane):
+		m.cycleTab(false)
 		return m, nil
-	case "o":
+	case key.Matches(msg, g.PrevPane):
+		m.cycleTab(true)
+		return m, nil
+	case key.Matches(msg, g.Output):
 		return m, loadDevices(m.deps.Player, true)
-	case "i":
+	case key.Matches(msg, g.Info):
 		if _, _, ok := m.current(); !ok {
 			m.setStatus("nothing playing")
 			return m, nil
 		}
 		return m, loadStream(m.deps.Player, true)
-	case "v":
-		if m.deps.Tap != nil {
-			m.showViz = !m.showViz
-		}
+	case key.Matches(msg, g.Viz):
+		m.showViz = !m.showViz
 		return m, nil
-	case "r":
+	case key.Matches(msg, g.Radio):
 		return m.startRadio()
 	}
 
 	switch {
 	case m.overlay == overlayPicker, m.focus == focusPlaylists, m.focus == focusPlaylistTracks:
-		return m.handlePlaylistKey(pressed)
+		return m.handlePlaylistKey(msg)
 	case m.focus == focusQueue:
-		return m.handleQueueKey(pressed)
+		return m.handleQueueKey(msg)
 	}
-	return m.handleResultKey(pressed)
+	return m.handleResultKey(msg)
 }
 
 func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "enter":
+	switch {
+	case key.Matches(msg, m.keys.search.Submit):
 		query := strings.TrimSpace(m.input.Value())
 		if query == "" {
 			return m, nil
@@ -98,11 +110,7 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.setStatus("searching " + quote(query) + "…")
 		m.searchRequest = requestID
 		return m, tea.Batch(m.spinner.Tick, search(m.deps.Searcher, query, requestID))
-	case "esc":
-		m.focus = focusResults
-		m.input.Blur()
-		return m, nil
-	case "tab":
+	case key.Matches(msg, m.keys.search.Leave):
 		m.focus = focusResults
 		m.input.Blur()
 		return m, nil
@@ -112,54 +120,55 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) handlePlaybackKey(key string) (tea.Cmd, bool) {
-	p := m.deps.Player
-	switch key {
-	case "space":
+func (m Model) handlePlaybackKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
+	p, k := m.deps.Player, m.keys.playback
+	switch {
+	case key.Matches(msg, k.Pause):
 		return do(func(ctx context.Context) error { return p.TogglePause(ctx) }), true
-	case "left":
+	case key.Matches(msg, k.SeekBack):
 		return do(func(ctx context.Context) error { return p.Seek(ctx, -seekStep) }), true
-	case "right":
+	case key.Matches(msg, k.SeekForward):
 		return do(func(ctx context.Context) error { return p.Seek(ctx, seekStep) }), true
-	case "n", ">":
+	case key.Matches(msg, k.Next):
 		return do(func(ctx context.Context) error { return p.Next(ctx) }), true
-	case "p", "<":
+	case key.Matches(msg, k.Prev):
 		return do(func(ctx context.Context) error { return p.Prev(ctx) }), true
-	case "+", "=":
+	case key.Matches(msg, k.VolumeUp):
 		return do(func(ctx context.Context) error { return p.AddVolume(ctx, volumeStep) }), true
-	case "-":
+	case key.Matches(msg, k.VolumeDown):
 		return do(func(ctx context.Context) error { return p.AddVolume(ctx, -volumeStep) }), true
-	case "N":
+	case key.Matches(msg, k.Normalize):
 		on := !m.normalize
 		return do(func(ctx context.Context) error { return p.SetNormalize(ctx, on) }), true
 	}
 	return nil, false
 }
 
-func (m Model) handleResultKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "up", "k":
+func (m Model) handleResultKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	k := m.keys.results
+	switch {
+	case key.Matches(msg, k.Up):
 		m.resultCur = max(0, m.resultCur-1)
-	case "down", "j":
+	case key.Matches(msg, k.Down):
 		m.resultCur = min(len(m.results)-1, m.resultCur+1)
-	case "g", "home":
+	case key.Matches(msg, k.Top):
 		m.resultCur = 0
-	case "G", "end":
+	case key.Matches(msg, k.Bottom):
 		m.resultCur = max(0, len(m.results)-1)
-	case "enter":
+	case key.Matches(msg, k.Play):
 		if t, ok := m.selectedResult(); ok {
 			cmd := m.queue.playNow(m.nextRequest(), t)
 			m.setStatus("playing " + quote(t.Title) + "…")
 			return m, cmd
 		}
-	case "a":
+	case key.Matches(msg, k.Enqueue):
 		if t, ok := m.selectedResult(); ok {
 			cmd := m.queue.enqueue(m.nextRequest(), t)
 			m.setStatus("queueing " + quote(t.Title) + "…")
 			m.resultCur = min(len(m.results)-1, m.resultCur+1)
 			return m, cmd
 		}
-	case "s":
+	case key.Matches(msg, k.Save):
 		if t, ok := m.selectedResult(); ok {
 			return m.openPlaylistPicker(t)
 		}
@@ -167,23 +176,24 @@ func (m Model) handleResultKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleQueueKey(key string) (tea.Model, tea.Cmd) {
+func (m Model) handleQueueKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	k := m.keys.queue
 	entries := m.queue.entries
 	i := m.queueCur
-	switch key {
-	case "up", "k":
+	switch {
+	case key.Matches(msg, k.Up):
 		m.queueCur = max(0, i-1)
-	case "down", "j":
+	case key.Matches(msg, k.Down):
 		m.queueCur = min(max(0, len(entries)-1), i+1)
-	case "g", "home":
+	case key.Matches(msg, k.Top):
 		m.queueCur = 0
-	case "G", "end":
+	case key.Matches(msg, k.Bottom):
 		m.queueCur = max(0, len(entries)-1)
-	case "enter":
+	case key.Matches(msg, k.Jump):
 		if !m.queue.insertPending && i >= 0 && i < len(entries) {
 			return m, m.queue.playIndex(m.nextRequest(), i)
 		}
-	case "s":
+	case key.Matches(msg, k.Save):
 		if i >= 0 && i < len(entries) {
 			e := entries[i]
 			t := m.tracks[e.Filename]
@@ -193,7 +203,7 @@ func (m Model) handleQueueKey(key string) (tea.Model, tea.Cmd) {
 			}
 			return m.openPlaylistPicker(t)
 		}
-	case "S":
+	case key.Matches(msg, k.SaveQueue):
 		if len(entries) == 0 {
 			m.setStatus("queue is empty")
 			return m, nil
@@ -217,13 +227,13 @@ func (m Model) handleQueueKey(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openPlaylistName(tracks, false, "name the playlist for the current queue")
-	case "d", "x", "delete":
+	case key.Matches(msg, k.Remove):
 		if !m.queue.insertPending && i >= 0 && i < len(entries) {
 			cmd := m.queue.remove(m.nextRequest(), i)
 			m.queueCur = min(i, max(0, len(m.queue.entries)-1))
 			return m, cmd
 		}
-	case "C":
+	case key.Matches(msg, k.Clear):
 		// Imports still resolving take a slot once resolved, so they land after the clear.
 		cmd := m.queue.clear(m.nextRequest())
 		m.queueCur = 0
@@ -232,13 +242,13 @@ func (m Model) handleQueueKey(key string) (tea.Model, tea.Cmd) {
 		m.setStatus("clearing queue…")
 		m.syncMPRIS()
 		return m, tea.Batch(cmd, m.refreshThumb())
-	case "K", "shift+up":
+	case key.Matches(msg, k.MoveUp):
 		if !m.queue.insertPending && i > 0 && i < len(entries) {
 			cmd := m.queue.move(m.nextRequest(), i, i-1)
 			m.queueCur--
 			return m, cmd
 		}
-	case "J", "shift+down":
+	case key.Matches(msg, k.MoveDown):
 		if !m.queue.insertPending && i >= 0 && i < len(entries)-1 {
 			cmd := m.queue.move(m.nextRequest(), i, i+1)
 			m.queueCur++

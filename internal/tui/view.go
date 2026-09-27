@@ -3,9 +3,12 @@ package tui
 import (
 	"fmt"
 	"image"
+	"slices"
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -90,12 +93,14 @@ func (m Model) render() string {
 	header, now, footer, bodyHeight := m.layout()
 
 	var viz string
-	if m.showViz {
+	if m.showViz && !m.fullHelp {
 		viz = m.renderSpectrum(m.width, vizRows)
 	}
 
 	var body string
 	switch {
+	case m.fullHelp:
+		body = m.renderFullHelp(bodyHeight)
 	case m.overlay == overlayDevices:
 		body = m.renderDevices(m.width, bodyHeight)
 	case m.overlay == overlayInfo:
@@ -121,7 +126,7 @@ func (m Model) render() string {
 func (m Model) layout() (header, now, footer string, bodyHeight int) {
 	header, now, footer = m.renderHeader(), m.renderNowPlaying(), m.renderFooter()
 	used := lipgloss.Height(header) + lipgloss.Height(now) + lipgloss.Height(footer)
-	if m.showViz {
+	if m.showViz && !m.fullHelp {
 		used += vizRows
 	}
 	return header, now, footer, max(3, m.height-used)
@@ -268,7 +273,7 @@ func (m Model) renderPlaylistPanes(height int) string {
 		names[i] = fmt.Sprintf("%s (%d)", p.Name, len(p.Tracks))
 	}
 	if len(names) == 0 {
-		names = []string{dimStyle.Render("press c to create")}
+		names = []string{dimStyle.Render("press " + m.keys.playlists.Create.Help().Key + " to create")}
 	}
 	tracks := m.selectedPlaylistTracks()
 	lines := make([]string, len(tracks))
@@ -280,7 +285,7 @@ func (m Model) renderPlaylistPanes(height int) string {
 	}
 	leftTitle := "Playlists"
 	if m.overlay == overlayPicker {
-		leftTitle = "Save to playlist — enter to select"
+		leftTitle = "Save to playlist"
 	}
 	rightTitle := "Tracks"
 	if m.playlistCur < len(m.playlists) {
@@ -292,7 +297,7 @@ func (m Model) renderPlaylistPanes(height int) string {
 }
 
 func (m Model) renderPlaylistName(height int) string {
-	return pane("New playlist — enter to save, esc to cancel", []string{m.nameInput.View()}, -1, true, m.width, height)
+	return pane("New playlist", []string{m.nameInput.View()}, -1, true, m.width, height)
 }
 
 func (m Model) renderPanes(height int) string {
@@ -304,7 +309,7 @@ func (m Model) renderPanes(height int) string {
 		results[i] = resultLine(t, leftW-4)
 	}
 	if len(results) == 0 {
-		results = []string{dimStyle.Render("press / to search")}
+		results = []string{dimStyle.Render("press " + m.keys.global.Search.Help().Key + " to search")}
 	}
 
 	queue := make([]string, len(m.queue.entries))
@@ -312,7 +317,7 @@ func (m Model) renderPanes(height int) string {
 		queue[i] = m.queueLine(i, e, rightW-4)
 	}
 	if len(queue) == 0 {
-		queue = []string{dimStyle.Render("empty — press a on a result")}
+		queue = []string{dimStyle.Render("empty — press " + m.keys.results.Enqueue.Help().Key + " on a result")}
 	}
 
 	left := pane("Results", results, m.resultCur, m.focus == focusResults, leftW, height)
@@ -477,11 +482,11 @@ func (m Model) renderDevices(width, height int) string {
 	if len(lines) == 0 {
 		lines = []string{dimStyle.Render("no output devices")}
 	}
-	return pane("Output device — enter to switch, esc to cancel", lines, m.deviceCur, true, width, height)
+	return pane("Output device", lines, m.deviceCur, true, width, height)
 }
 
 func (m Model) renderInfo(height int) string {
-	return pane("Track info — y copy URL, esc to close", m.infoLines(), -1, true, m.width, height)
+	return pane("Track info", m.infoLines(), -1, true, m.width, height)
 }
 
 func (m Model) infoLines() []string {
@@ -552,29 +557,99 @@ func (m Model) renderFooter() string {
 	if m.statusErr {
 		status = errorStyle.Render(m.status)
 	}
-	viz := ""
-	if m.deps.Tap != nil {
-		viz = "v viz · "
+	if m.fullHelp {
+		return ansi.Truncate(status, m.width, "…") + "\n" + ansi.Truncate(m.help.ShortHelpView([]key.Binding{m.keys.closeHelp}), m.width, "…")
 	}
-	help := dimStyle.Render("/ search · enter play · a queue · s save · tab next pane · space pause · ←→ seek · n/p next/prev · +/- vol · N norm · o output · i info · " + viz + "r radio · q quit")
-	switch m.overlay {
-	case overlayPicker:
-		help = dimStyle.Render("enter save track · c new playlist · esc cancel · q quit")
-	case overlayName:
-		help = dimStyle.Render("enter create playlist · esc cancel")
-	case overlayInfo:
-		help = dimStyle.Render("y copy URL · esc close · space pause · ←→ seek · n/p next/prev · +/- vol")
-	case overlayNone:
-		switch m.focus {
-		case focusQueue:
-			help = dimStyle.Render("enter jump · s save track · S save queue · d remove · C clear queue · J/K move · i info · tab next pane · n/p next/prev · q quit")
-		case focusPlaylists:
-			help = dimStyle.Render("c create · enter browse · a queue all · D delete playlist · tab next pane · / search · q quit")
-		case focusPlaylistTracks:
-			help = dimStyle.Render("enter play · a queue · d remove saved track · esc back · tab next pane · / search · q quit")
+	// "? more" is rendered apart from the context entries, since truncation
+	// drops trailing entries and it must stay visible.
+	more := m.help.ShortHelpView([]key.Binding{m.keys.global.Help})
+	sep := m.help.Styles.ShortSeparator.Render(m.help.ShortSeparator)
+	line := more
+	if ctx := m.contextHelp(m.help.Width() - lipgloss.Width(sep+more)); ctx != "" {
+		line = ctx + sep + more
+	} else {
+		ellipsis := m.help.Styles.Ellipsis.Inline(true).Render(m.help.Ellipsis)
+		for _, separator := range []string{sep, " ", ""} {
+			candidate := ellipsis + separator + more
+			if lipgloss.Width(candidate) <= m.width {
+				line = candidate
+				break
+			}
 		}
 	}
-	return ansi.Truncate(status, m.width, "…") + "\n" + ansi.Truncate(help, m.width, "…")
+	return ansi.Truncate(status, m.width, "…") + "\n" + line
+}
+
+// bubbles help (v2.2.1) appends an overflowing entry when its " …" tail would
+// not fit either, so shrink the width until the output actually fits.
+func (m Model) contextHelp(width int) string {
+	_, keys := m.contextKeys()
+	h := m.help
+	if h.Width() == 0 {
+		return h.View(keys)
+	}
+	for w := width; w > 0; w-- {
+		h.SetWidth(w)
+		if s := h.View(keys); lipgloss.Width(s) <= width {
+			return s
+		}
+	}
+	return ""
+}
+
+func (m Model) renderFullHelp(height int) string {
+	ctxTitle, ctx := m.contextKeys()
+	fullHelpGlobal := m.keys.global
+	// q closes help here, while the normal-mode binding remains q quit.
+	fullHelpGlobal.Quit = m.keys.closeHelp
+	groups := []struct {
+		title string
+		keys  help.KeyMap
+	}{
+		{"Playback", m.keys.playback},
+		{"Navigation and global", fullHelpGlobal},
+		{ctxTitle, ctx},
+	}
+	columns := make([]string, 0, 2*len(groups)-1)
+	for i, g := range groups {
+		view := headStyle.Render(g.title) + "\n" + m.help.FullHelpView([][]key.Binding{slices.Concat(g.keys.FullHelp()...)})
+		if i > 0 {
+			columns = append(columns, "    ")
+		}
+		columns = append(columns, view)
+	}
+	if horizontal := lipgloss.JoinHorizontal(lipgloss.Top, columns...); lipgloss.Width(horizontal) <= m.width-paneFocus.GetHorizontalFrameSize() {
+		return pane("Keys", strings.Split(horizontal, "\n"), -1, true, m.width, height)
+	}
+
+	innerWidth := m.width - paneFocus.GetHorizontalFrameSize()
+	lines := make([]string, 0)
+	for _, g := range groups {
+		line := headStyle.Render(g.title)
+		hasEntry := false
+		for _, binding := range slices.Concat(g.keys.FullHelp()...) {
+			if !binding.Enabled() {
+				continue
+			}
+			details := binding.Help()
+			entry := m.help.Styles.FullKey.Inline(true).Render(details.Key) + " " + m.help.Styles.FullDesc.Inline(true).Render(details.Desc)
+			separator := "  "
+			if !hasEntry {
+				separator = " "
+			}
+			if lipgloss.Width(line+separator+entry) <= innerWidth {
+				line += separator + entry
+			} else {
+				lines = append(lines, line)
+				line = entry
+			}
+			hasEntry = true
+		}
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return pane("Keys", lines, -1, true, m.width, height)
 }
 
 func formatDuration(d time.Duration) string {
