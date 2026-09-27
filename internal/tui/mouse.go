@@ -5,7 +5,7 @@ import (
 )
 
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.focus == focusPlaylistName {
+	if m.overlay == overlayName {
 		return m, nil
 	}
 	mouse := msg.Mouse()
@@ -29,14 +29,14 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) click(x, y int) (tea.Model, tea.Cmd) {
-	if m.focus != focusDevices {
+	if m.overlay != overlayDevices {
 		switch row := m.tabsRow(); {
 		case y < row:
 			return m, m.focusSearch()
 		case y == row:
 			if f, ok := m.tabAt(x); ok {
 				m.input.Blur()
-				m.focus = f
+				m.overlay, m.focus = overlayNone, f
 			}
 			return m, nil
 		}
@@ -66,11 +66,11 @@ func (m *Model) focusPane(p listPane) bool {
 	case paneQueue:
 		m.focus = focusQueue
 	case panePlaylists:
-		if m.focus != focusPlaylistPicker {
+		if m.overlay != overlayPicker {
 			m.focus = focusPlaylists
 		}
 	case panePlaylistTracks:
-		if m.focus == focusPlaylistPicker || len(m.playlists) == 0 {
+		if m.overlay == overlayPicker || len(m.playlists) == 0 {
 			return false
 		}
 		m.focus = focusPlaylistTracks

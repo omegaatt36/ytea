@@ -4,8 +4,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"image"
-	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -21,7 +19,6 @@ import (
 	"github.com/omegaatt36/ytea/internal/library"
 	"github.com/omegaatt36/ytea/internal/mpris"
 	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/thumbnail"
 	"github.com/omegaatt36/ytea/internal/youtube"
 )
 
@@ -38,7 +35,6 @@ const (
 	importTimeout = 2 * time.Minute
 )
 
-// Searcher finds tracks. It is satisfied by youtube.Searcher.
 type Searcher interface {
 	Search(ctx context.Context, query string, limit int) ([]youtube.Track, error)
 	// Lookup resolves the tracks behind a YouTube URL; a positive limit caps the listing.
@@ -51,7 +47,6 @@ type Spectrum interface {
 	Levels() <-chan []float64
 }
 
-// Player provides the playback operations driven by the UI.
 type Player interface {
 	Events() <-chan mpv.Event
 	AudioDevices(context.Context) ([]mpv.AudioDevice, error)
@@ -92,15 +87,10 @@ const (
 	focusSearch focus = iota
 	focusResults
 	focusQueue
-	focusDevices
 	focusPlaylists
 	focusPlaylistTracks
-	focusPlaylistPicker
-	focusPlaylistName
-	focusInfo
 )
 
-// Model is the root Bubble Tea model.
 type Model struct {
 	deps Deps
 
@@ -110,10 +100,10 @@ type Model struct {
 	nameInput             textinput.Model
 	spinner               spinner.Model
 	focus                 focus
-	nameReturn            focus
-	saveReturn            focus
+	overlay               overlay
 	saveTrack             youtube.Track
 	nameTracks            []youtube.Track
+	nameSaves             bool
 	playlists             []library.Playlist
 	playlistCur           int
 	playlistTrackCur      int
@@ -124,26 +114,14 @@ type Model struct {
 	activeRequest  uint64
 	searchRequest  uint64
 	spinnerRequest uint64
-	queueTail      <-chan struct{}
 	results        []youtube.Track
 	resultCur      int
 	// imports lists link and radio lookups in trigger order, so a slow lookup
 	// cannot reorder the imports queued after it.
 	imports []pendingImport
 
-	queue           []mpv.PlaylistEntry
-	queueCur        int
-	queueProjection *queueProjection
-	// Once an edit has raced with playlist events, read mpv's current queue
-	// after later events instead of trusting payloads that may have been delayed.
-	queueAuthoritative   bool
-	queueEditsPending    int
-	queueInsertPending   bool
-	queueRefreshPending  bool
-	queueRevision        uint64
-	queueEventVersion    uint64
-	queueDebouncePending bool
-	pos                  int
+	queue    queueSync
+	queueCur int
 	// tracks remembers search metadata by URL, since mpv only knows filenames
 	// until yt-dlp resolves each entry.
 	tracks map[string]youtube.Track
@@ -162,61 +140,18 @@ type Model struct {
 	devices   []mpv.AudioDevice
 	deviceCur int
 
-	// stream is read when the info panel opens and again on each file-loaded
-	// while it stays open; infoReturn is the focus to restore on close.
-	stream     mpv.StreamInfo
-	infoReturn focus
+	stream mpv.StreamInfo
 
 	status    string
 	statusErr bool
 
-	graphics         graphicsSupport
-	probeKitty       bool
-	probePlaceholder bool
-	thumbID          int    // kitty image id in placeholder or direct mode
-	thumbArt         string // half-block rendering otherwise
-	thumbVideo       string
-	// placedAt is where the direct-mode image was last put; placed is false
-	// when it must be (re)placed.
-	placedAt image.Point
-	placed   bool
+	thumb thumbImage
 }
 
-// graphicsSupport is how thumbnails are drawn, decided by probing the terminal.
-type graphicsSupport int
-
-const (
-	graphicsUnknown graphicsSupport = iota
-	// graphicsPlaceholder uses kitty Unicode placeholders, which the cell
-	// renderer treats as text (Ghostty, kitty).
-	graphicsPlaceholder
-	// graphicsDirect puts the image at a cursor position, for kitty graphics
-	// implementations without placeholders (Zellij >= 0.45).
-	graphicsDirect
-	// graphicsNone falls back to half-block art (Zellij < 0.45, tmux).
-	graphicsNone
-)
-
-func (g graphicsSupport) String() string {
-	switch g {
-	case graphicsPlaceholder:
-		return "kitty placeholders"
-	case graphicsDirect:
-		return "kitty direct placement"
-	case graphicsNone:
-		return "half-blocks"
-	default:
-		return "unknown"
-	}
-}
-
-// pasteKeys read the OS clipboard directly. ctrl+shift+v and shift+insert are
-// normally consumed by the terminal as its own paste, but under a multiplexer
-// speaking the kitty keyboard protocol (Zellij) they can arrive as plain key
-// events instead, so treat them as paste requests too.
+// ctrl+shift+v and shift+insert are normally the terminal's own paste, but
+// under a kitty-keyboard multiplexer (Zellij) they arrive as key events.
 var pasteKeys = key.NewBinding(key.WithKeys("ctrl+v", "ctrl+shift+v", "shift+insert"))
 
-// New builds the root model.
 func New(deps Deps) Model {
 	in := textinput.New()
 	in.Placeholder = "search YouTube…"
@@ -250,7 +185,8 @@ func New(deps Deps) Model {
 		tracks:                tracks,
 		playlists:             playlists,
 		deletePlaylistPending: -1,
-		pos:                   -1,
+		queue:                 newQueueSync(deps.Player),
+		thumb:                 newThumbImage(deps.Thumbnails, deps.HTTP),
 		idle:                  true,
 		volume:                100,
 		normalize:             deps.Normalize,
@@ -258,10 +194,8 @@ func New(deps Deps) Model {
 	}
 }
 
-// KnownTrack returns metadata learned from search, import, or a prior session.
 func (m Model) KnownTrack(url string) youtube.Track { return m.tracks[url] }
 
-// Init starts the event pumps.
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		waitMPV(m.deps.Player.Events(), m.timePos),
@@ -270,9 +204,7 @@ func (m Model) Init() tea.Cmd {
 	if m.deps.Tap != nil {
 		cmds = append(cmds, waitLevels(m.deps.Tap.Levels()))
 	}
-	if m.deps.Thumbnails {
-		cmds = append(cmds, tea.Raw(thumbnail.Query()))
-	}
+	cmds = append(cmds, m.thumb.init())
 	return tea.Batch(cmds...)
 }
 
@@ -295,24 +227,10 @@ type (
 		limitHit  bool
 		err       error
 	}
-	queueActionDoneMsg struct {
-		requestID uint64
-		status    string
-		err       error
-		projected bool
-	}
-	queueRefreshMsg struct {
-		revision     uint64
-		eventVersion uint64
-		entries      []mpv.PlaylistEntry
-		pos          int
-		err          error
-	}
-	queueDebounceMsg struct{ version uint64 }
-	mpvEventMsg      mpv.Event
-	mpvClosedMsg     struct{}
-	levelsMsg        []float64
-	devicesMsg       struct {
+	mpvEventMsg  mpv.Event
+	mpvClosedMsg struct{}
+	levelsMsg    []float64
+	devicesMsg   struct {
 		devices []mpv.AudioDevice
 		open    bool
 		err     error
@@ -322,48 +240,21 @@ type (
 		open bool
 		err  error
 	}
-	errMsg   struct{ err error }
-	thumbMsg struct {
-		videoID string
-		img     image.Image
-		err     error
-	}
-	placeMsg struct {
-		id int
-		at image.Point
-	}
+	errMsg struct{ err error }
 )
 
-// placeDelay lets the renderer finish the frame (including any post-resize
-// screen clear) before the image is put on top of it.
-const placeDelay = 100 * time.Millisecond
-
-// syncPlacement schedules a direct-mode placement when the image is new, the
-// screen was cleared, or the now-playing box moved.
 func (m *Model) syncPlacement() tea.Cmd {
-	if m.graphics != graphicsDirect || m.thumbID == 0 {
-		return nil
-	}
 	if _, _, ok := m.current(); !ok {
 		return nil
 	}
-	at := m.thumbOrigin()
-	if m.placed && at == m.placedAt {
-		return nil
-	}
-	m.placed, m.placedAt = true, at
-	id := m.thumbID
-	return tea.Tick(placeDelay, func(time.Time) tea.Msg { return placeMsg{id: id, at: at} })
+	return m.thumb.syncPlacement(m.thumbOrigin)
 }
 
-// Update handles a message.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	nm := next.(Model)
-	// Any message can shift the layout under a directly placed image, so the
-	// placement is reconciled after every update rather than at each call site.
-	// Called before the return: Go leaves unspecified whether a return operand
-	// reading nm is evaluated before or after a call that mutates it.
+	// Any message can shift the layout under a directly placed image. Called
+	// before the return: Go leaves the order of nm's read vs. this mutation unspecified.
 	placeCmd := nm.syncPlacement()
 	return nm, tea.Batch(cmd, placeCmd)
 }
@@ -374,14 +265,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.input.SetWidth(max(10, m.width/2))
 		m.nameInput.SetWidth(max(1, m.width-paneFocus.GetHorizontalFrameSize()-lipgloss.Width(m.nameInput.Prompt)-1))
-		m.placed = false
-		return m, nil
+		return m, m.updateThumb(msg)
 
-	case placeMsg:
-		if m.graphics != graphicsDirect || msg.id != m.thumbID || msg.at != m.placedAt {
-			return m, nil
-		}
-		return m, tea.Raw(thumbnail.Put(msg.id, msg.at.X, msg.at.Y, thumbCols, thumbRows))
+	case placeMsg, uv.KittyGraphicsEvent, uv.PrimaryDeviceAttributesEvent, thumbMsg:
+		return m, m.updateThumb(msg)
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -390,45 +277,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouse(msg)
 
 	case tea.PasteMsg:
-		if m.focus == focusPlaylistName {
+		if m.overlay == overlayName {
 			var inputCmd tea.Cmd
 			m.nameInput, inputCmd = m.nameInput.Update(msg)
 			return m, inputCmd
 		}
-		// Terminal paste normally lands in the search box.
 		cmd := m.focusSearch()
 		var inputCmd tea.Cmd
 		m.input, inputCmd = m.input.Update(msg)
 		return m, tea.Batch(cmd, inputCmd)
-
-	case uv.KittyGraphicsEvent:
-		if m.graphics != graphicsUnknown {
-			return m, nil
-		}
-		ok := string(msg.Payload) == "OK"
-		switch msg.Options.ID {
-		case thumbnail.QueryID:
-			m.probeKitty = ok
-		case thumbnail.PlaceholderQueryID:
-			m.probePlaceholder = ok
-		}
-		return m, nil
-
-	case uv.PrimaryDeviceAttributesEvent:
-		// DA1 is answered after both probes, so every kitty reply is in by now.
-		if !m.deps.Thumbnails || m.graphics != graphicsUnknown {
-			return m, nil
-		}
-		switch {
-		case m.probePlaceholder:
-			m.graphics = graphicsPlaceholder
-		case m.probeKitty:
-			m.graphics = graphicsDirect
-		default:
-			m.graphics = graphicsNone
-		}
-		slog.Info("thumbnail rendering", "mode", m.graphics.String())
-		return m, m.refreshThumb()
 
 	case spinner.TickMsg:
 		if !m.searching {
@@ -468,19 +325,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.searching = false
 		}
 		// mpv may have accepted some entries before AppendAll returned an error.
-		// Keep their lookup metadata available to playback and MPRIS.
 		for _, t := range msg.tracks {
 			m.tracks[t.URL] = t
 		}
-		// Playback events may arrive while the append command is still running.
-		// Reconcile the current track now that its lookup metadata is known.
+		// Playback events may have arrived while the append was still running.
 		thumbCmd := m.refreshThumb()
 		m.syncMPRIS()
+		_, queueCmd := m.updateQueue(msg)
 		if msg.err != nil {
 			if msg.requestID == m.activeRequest {
 				m.setError(msg.err.Error())
 			}
-			return m, tea.Batch(thumbCmd, m.scheduleQueueRefresh())
+			return m, tea.Batch(thumbCmd, queueCmd)
 		}
 		if msg.requestID == m.activeRequest {
 			status := pluralize(len(msg.tracks), "track") + " queued"
@@ -489,12 +345,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.setStatus(status)
 		}
-		return m, tea.Batch(thumbCmd, m.scheduleQueueRefresh())
+		return m, tea.Batch(thumbCmd, queueCmd)
 
 	case queueActionDoneMsg:
-		if msg.projected {
-			m.queueEditsPending--
-		}
+		_, cmd := m.updateQueue(msg)
 		if msg.requestID == m.activeRequest {
 			if msg.err != nil {
 				m.setError(msg.err.Error())
@@ -502,36 +356,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.setStatus(msg.status)
 			}
 		}
-		return m, m.scheduleQueueRefresh()
+		return m, cmd
 
 	case queueRefreshMsg:
-		m.queueRefreshPending = false
-		if msg.revision != m.queueRevision || m.queueEditsPending > 0 {
-			return m, m.scheduleQueueRefresh()
+		synced, cmd := m.updateQueue(msg)
+		if synced {
+			m.syncMPRIS()
 		}
-		if msg.err != nil {
-			m.setError("refresh queue: " + msg.err.Error())
-			return m, nil
-		}
-		m.queueProjection = nil
-		m.queueAuthoritative = true
-		m.queueInsertPending = false
-		m.queue = msg.entries
-		m.queueCur = min(m.queueCur, max(0, len(m.queue)-1))
-		m.pos = msg.pos
-		m.syncMPRIS()
-		var refresh tea.Cmd
-		if m.queueEventVersion != msg.eventVersion {
-			refresh = m.scheduleQueueDebounce()
-		}
-		return m, tea.Batch(m.refreshThumb(), refresh)
+		return m, cmd
 
 	case queueDebounceMsg:
-		if msg.version != m.queueEventVersion {
-			return m, queueDebounce(m.queueEventVersion)
-		}
-		m.queueDebouncePending = false
-		return m, m.scheduleQueueRefresh()
+		_, cmd := m.updateQueue(msg)
+		return m, cmd
 
 	case mpvEventMsg:
 		cmd := m.applyEvent(mpv.Event(msg))
@@ -553,7 +389,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.devices = msg.devices
 		if msg.open {
-			m.focus = focusDevices
+			m.overlay = overlayDevices
 			m.deviceCur = max(0, slices.IndexFunc(m.devices, m.isCurrentDevice))
 		}
 		return m, nil
@@ -564,21 +400,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.stream = msg.info
-		if msg.open && m.focus != focusInfo {
-			m.infoReturn = m.focus
-			m.focus = focusInfo
+		if msg.open {
+			m.overlay = overlayInfo
 		}
 		return m, nil
-
-	case thumbMsg:
-		return m.applyThumb(msg)
 
 	case errMsg:
 		m.setError(msg.err.Error())
 		return m, nil
 	}
 
-	if m.focus == focusSearch {
+	if m.overlay == overlayNone && m.focus == focusSearch {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
@@ -586,8 +418,28 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) updateQueue(msg tea.Msg) (synced bool, cmd tea.Cmd) {
+	before := m.queue.synced
+	m.queue, cmd = m.queue.update(msg)
+	if m.queue.synced == before {
+		return false, cmd
+	}
+	m.queueCur = min(max(0, m.queueCur), max(0, len(m.queue.entries)-1))
+	return true, tea.Batch(cmd, m.refreshThumb())
+}
+
+func (m *Model) updateThumb(msg tea.Msg) tea.Cmd {
+	before := m.thumb.graphics
+	var cmd tea.Cmd
+	m.thumb, cmd = m.thumb.update(msg)
+	if m.thumb.graphics == before {
+		return cmd
+	}
+	return tea.Batch(cmd, m.refreshThumb())
+}
+
 func (m *Model) focusSearch() tea.Cmd {
-	m.focus = focusSearch
+	m.overlay, m.focus = overlayNone, focusSearch
 	return m.input.Focus()
 }
 
@@ -599,22 +451,19 @@ func (m *Model) setError(s string) {
 	m.status, m.statusErr = s, true
 }
 
-// current returns the playing playlist entry and its search metadata, if any.
 func (m Model) current() (mpv.PlaylistEntry, youtube.Track, bool) {
-	if m.idle || m.pos < 0 || m.pos >= len(m.queue) {
+	pos := m.queue.pos
+	if m.idle || pos < 0 || pos >= len(m.queue.entries) {
 		return mpv.PlaylistEntry{}, youtube.Track{}, false
 	}
-	e := m.queue[m.pos]
+	e := m.queue.entries[pos]
 	return e, m.tracks[e.Filename], true
 }
 
-// isCurrentDevice reports whether d is the device mpv plays through. An unset
-// device is mpv's "auto".
 func (m Model) isCurrentDevice(d mpv.AudioDevice) bool {
 	return d.Name == m.currentDeviceName()
 }
 
-// currentDeviceName is mpv's configured audio device, defaulting to auto.
 func (m Model) currentDeviceName() string {
 	if m.device == "" {
 		return "auto"
@@ -622,7 +471,6 @@ func (m Model) currentDeviceName() string {
 	return m.device
 }
 
-// currentDevice returns the device mpv is playing through, if it is listed.
 func (m Model) currentDevice() (mpv.AudioDevice, bool) {
 	name := m.currentDeviceName()
 	i := slices.IndexFunc(m.devices, func(d mpv.AudioDevice) bool { return d.Name == name })
@@ -640,8 +488,8 @@ func (m Model) syncMPRIS() {
 		Status:   mpris.Stopped,
 		Volume:   min(m.volume/100, 1),
 		Position: m.timePos,
-		CanPrev:  m.pos > 0,
-		CanNext:  m.pos >= 0 && m.pos < len(m.queue)-1,
+		CanPrev:  m.queue.pos > 0,
+		CanNext:  m.queue.pos >= 0 && m.queue.pos < len(m.queue.entries)-1,
 	}
 	if e, t, ok := m.current(); ok {
 		st.Status = mpris.Playing

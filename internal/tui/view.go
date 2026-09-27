@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/thumbnail"
 	"github.com/omegaatt36/ytea/internal/youtube"
 )
 
@@ -34,7 +33,6 @@ var (
 	vizGradient = []string{"#89b4fa", "#94e2d5", "#a6e3a1", "#f9e2af", "#fab387", "#f38ba8"}
 )
 
-// View renders the UI.
 func (m Model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
@@ -58,20 +56,17 @@ func (m Model) View() tea.View {
 	return v
 }
 
-// cursor places the terminal's cursor in the focused text input, in screen
-// cells. The terminal draws and blinks it itself, so an idle input costs no
-// renders. Positions follow the layout in render: the search box sits right of
-// the title on the first header row, and the name input on the first row
-// under the title of the full-width pane below the header.
+// The terminal draws and blinks the cursor itself, so an idle input costs no
+// renders. Positions must follow the layout in render.
 func (m Model) cursor() *tea.Cursor {
-	switch m.focus {
-	case focusSearch:
+	switch {
+	case m.overlay == overlayNone && m.focus == focusSearch:
 		c := m.input.Cursor()
 		if c != nil {
 			c.X += lipgloss.Width(renderTitle())
 		}
 		return c
-	case focusPlaylistName:
+	case m.overlay == overlayName:
 		c := m.nameInput.Cursor()
 		if c != nil {
 			c.X += paneFocus.GetBorderLeftSize()
@@ -100,14 +95,14 @@ func (m Model) render() string {
 	}
 
 	var body string
-	switch m.focus {
-	case focusDevices:
+	switch {
+	case m.overlay == overlayDevices:
 		body = m.renderDevices(m.width, bodyHeight)
-	case focusInfo:
+	case m.overlay == overlayInfo:
 		body = m.renderInfo(bodyHeight)
-	case focusPlaylistName:
+	case m.overlay == overlayName:
 		body = m.renderPlaylistName(bodyHeight)
-	case focusPlaylists, focusPlaylistTracks, focusPlaylistPicker:
+	case m.overlay == overlayPicker, m.focus == focusPlaylists, m.focus == focusPlaylistTracks:
 		body = m.renderPlaylistPanes(bodyHeight)
 	default:
 		body = m.renderPanes(bodyHeight)
@@ -121,9 +116,8 @@ func (m Model) render() string {
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
-// layout renders the fixed-height sections and returns the height left for the
-// list panes. thumbOrigin relies on it too, so the two cannot disagree about
-// where the now-playing box sits.
+// thumbOrigin relies on layout too, so the two cannot disagree about where
+// the now-playing box sits.
 func (m Model) layout() (header, now, footer string, bodyHeight int) {
 	header, now, footer = m.renderHeader(), m.renderNowPlaying(), m.renderFooter()
 	used := lipgloss.Height(header) + lipgloss.Height(now) + lipgloss.Height(footer)
@@ -133,8 +127,6 @@ func (m Model) layout() (header, now, footer string, bodyHeight int) {
 	return header, now, footer, max(3, m.height-used)
 }
 
-// thumbOrigin is the 0-based cell of the thumbnail's top-left corner: just
-// inside the now-playing box, which sits below the header and the list panes.
 func (m Model) thumbOrigin() image.Point {
 	header, _, _, bodyHeight := m.layout()
 	return image.Pt(paneStyle.GetBorderLeftSize(), lipgloss.Height(header)+bodyHeight+paneStyle.GetBorderTopSize())
@@ -160,17 +152,21 @@ func (m Model) renderHeader() string {
 	return lipgloss.JoinHorizontal(lipgloss.Center, title, search) + "\n" + strings.Join(m.tabLabels(), tabGap)
 }
 
-func (m Model) tabLabels() []string {
-	active, f := focusResults, m.focus
-	if f == focusInfo {
-		f = m.infoReturn
+func (m Model) activeTab() focus {
+	if m.overlay == overlayPicker {
+		return focusPlaylists
 	}
-	switch f {
+	switch m.focus {
 	case focusQueue:
-		active = focusQueue
-	case focusPlaylists, focusPlaylistTracks, focusPlaylistPicker, focusPlaylistName:
-		active = focusPlaylists
+		return focusQueue
+	case focusPlaylists, focusPlaylistTracks:
+		return focusPlaylists
 	}
+	return focusResults
+}
+
+func (m Model) tabLabels() []string {
+	active := m.activeTab()
 	labels := make([]string, len(tabs))
 	for i, t := range tabs {
 		labels[i] = t.name
@@ -208,12 +204,12 @@ const (
 )
 
 func (m Model) bodyPanes() (left, right listPane, leftW int) {
-	switch m.focus {
-	case focusDevices:
+	switch {
+	case m.overlay == overlayDevices:
 		return paneDevices, paneNone, m.width
-	case focusPlaylistName, focusInfo:
+	case m.overlay == overlayName, m.overlay == overlayInfo:
 		return paneNone, paneNone, m.width
-	case focusPlaylists, focusPlaylistTracks, focusPlaylistPicker:
+	case m.overlay == overlayPicker, m.focus == focusPlaylists, m.focus == focusPlaylistTracks:
 		return panePlaylists, panePlaylistTracks, m.width * 2 / 5
 	default:
 		return paneResults, paneQueue, m.width * 3 / 5
@@ -252,7 +248,7 @@ func (m Model) listCursor(p listPane) (cursor, n int) {
 	case paneResults:
 		return m.resultCur, len(m.results)
 	case paneQueue:
-		return m.queueCur, len(m.queue)
+		return m.queueCur, len(m.queue.entries)
 	case panePlaylists:
 		return m.playlistCur, len(m.playlists)
 	case panePlaylistTracks:
@@ -283,7 +279,7 @@ func (m Model) renderPlaylistPanes(height int) string {
 		lines = []string{dimStyle.Render("empty playlist")}
 	}
 	leftTitle := "Playlists"
-	if m.focus == focusPlaylistPicker {
+	if m.overlay == overlayPicker {
 		leftTitle = "Save to playlist — enter to select"
 	}
 	rightTitle := "Tracks"
@@ -311,8 +307,8 @@ func (m Model) renderPanes(height int) string {
 		results = []string{dimStyle.Render("press / to search")}
 	}
 
-	queue := make([]string, len(m.queue))
-	for i, e := range m.queue {
+	queue := make([]string, len(m.queue.entries))
+	for i, e := range m.queue.entries {
 		queue[i] = m.queueLine(i, e, rightW-4)
 	}
 	if len(queue) == 0 {
@@ -320,11 +316,10 @@ func (m Model) renderPanes(height int) string {
 	}
 
 	left := pane("Results", results, m.resultCur, m.focus == focusResults, leftW, height)
-	right := pane(fmt.Sprintf("Queue (%d)", len(m.queue)), queue, m.queueCur, m.focus == focusQueue, rightW, height)
+	right := pane(fmt.Sprintf("Queue (%d)", len(m.queue.entries)), queue, m.queueCur, m.focus == focusQueue, rightW, height)
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 }
 
-// pane draws a bordered, scrolling list that keeps the cursor in view.
 func pane(title string, lines []string, cursor int, focused bool, width, height int) string {
 	style := paneStyle
 	if focused {
@@ -371,7 +366,7 @@ func resultLine(t youtube.Track, width int) string {
 func (m Model) queueLine(i int, e mpv.PlaylistEntry, width int) string {
 	title := displayTitle(e, m.tracks[e.Filename])
 	marker := "  "
-	if i == m.pos {
+	if i == m.queue.pos {
 		marker = "▶ "
 		return playingStyle.Render(ansi.Truncate(marker+title, width, "…"))
 	}
@@ -399,15 +394,8 @@ func (m Model) renderNowPlaying() string {
 
 	textW := innerW
 	var thumb string
-	switch {
-	case !ok:
-	case m.thumbID != 0 && m.graphics == graphicsPlaceholder:
-		thumb = thumbnail.Placeholder(m.thumbID, thumbCols, thumbRows)
-	case m.thumbID != 0:
-		// Direct placement draws the image on top; reserve blank cells under it.
-		thumb = strings.TrimSuffix(strings.Repeat(strings.Repeat(" ", thumbCols)+"\n", thumbRows), "\n")
-	case m.thumbArt != "":
-		thumb = m.thumbArt
+	if ok {
+		thumb = m.thumb.view()
 	}
 	if thumb != "" {
 		thumb += " "
@@ -457,12 +445,10 @@ func (m Model) progressLine(live bool, width int) string {
 	return elapsed + " " + bar + " " + total + dimStyle.Render(vol)
 }
 
-// renderSpectrum maps the band levels onto width columns of eighth-block bars.
 func (m Model) renderSpectrum(width, height int) string {
 	blocks := []rune(" ▁▂▃▄▅▆▇█")
 	rows := make([]string, height)
 	for r := range height {
-		// Row 0 is the top; colour climbs the gradient with height.
 		color := vizGradient[min(len(vizGradient)-1, (height-1-r)*len(vizGradient)/height)]
 		var b strings.Builder
 		for x := range width {
@@ -498,8 +484,6 @@ func (m Model) renderInfo(height int) string {
 	return pane("Track info — y copy URL, esc to close", m.infoLines(), -1, true, m.width, height)
 }
 
-// infoLines lists what is known about the playing track: its YouTube
-// metadata, the format yt-dlp picked, and how mpv decodes and outputs it.
 func (m Model) infoLines() []string {
 	e, t, ok := m.current()
 	if !ok {
@@ -573,23 +557,22 @@ func (m Model) renderFooter() string {
 		viz = "v viz · "
 	}
 	help := dimStyle.Render("/ search · enter play · a queue · s save · tab next pane · space pause · ←→ seek · n/p next/prev · +/- vol · N norm · o output · i info · " + viz + "r radio · q quit")
-	if m.focus == focusQueue {
-		help = dimStyle.Render("enter jump · s save track · S save queue · d remove · C clear queue · J/K move · i info · tab next pane · n/p next/prev · q quit")
-	}
-	if m.focus == focusPlaylists {
-		help = dimStyle.Render("c create · enter browse · a queue all · D delete playlist · tab next pane · / search · q quit")
-	}
-	if m.focus == focusPlaylistTracks {
-		help = dimStyle.Render("enter play · a queue · d remove saved track · esc back · tab next pane · / search · q quit")
-	}
-	if m.focus == focusPlaylistPicker {
+	switch m.overlay {
+	case overlayPicker:
 		help = dimStyle.Render("enter save track · c new playlist · esc cancel · q quit")
-	}
-	if m.focus == focusPlaylistName {
+	case overlayName:
 		help = dimStyle.Render("enter create playlist · esc cancel")
-	}
-	if m.focus == focusInfo {
+	case overlayInfo:
 		help = dimStyle.Render("y copy URL · esc close · space pause · ←→ seek · n/p next/prev · +/- vol")
+	case overlayNone:
+		switch m.focus {
+		case focusQueue:
+			help = dimStyle.Render("enter jump · s save track · S save queue · d remove · C clear queue · J/K move · i info · tab next pane · n/p next/prev · q quit")
+		case focusPlaylists:
+			help = dimStyle.Render("c create · enter browse · a queue all · D delete playlist · tab next pane · / search · q quit")
+		case focusPlaylistTracks:
+			help = dimStyle.Render("enter play · a queue · d remove saved track · esc back · tab next pane · / search · q quit")
+		}
 	}
 	return ansi.Truncate(status, m.width, "…") + "\n" + ansi.Truncate(help, m.width, "…")
 }

@@ -11,8 +11,10 @@ import (
 
 func (m *Model) cycleTab(reverse bool) {
 	m.deletePlaylistPending = -1
+	tab := m.activeTab()
+	m.overlay = overlayNone
 	if reverse {
-		switch m.focus {
+		switch tab {
 		case focusResults:
 			m.focus = focusPlaylists
 		case focusQueue:
@@ -22,7 +24,7 @@ func (m *Model) cycleTab(reverse bool) {
 		}
 		return
 	}
-	switch m.focus {
+	switch tab {
 	case focusResults:
 		m.focus = focusQueue
 	case focusQueue:
@@ -37,22 +39,21 @@ func (m Model) openPlaylistPicker(track youtube.Track) (tea.Model, tea.Cmd) {
 		m.setError("local playlists are unavailable")
 		return m, nil
 	}
-	m.saveTrack, m.saveReturn = track, m.focus
+	m.saveTrack = track
 	if len(m.playlists) == 0 {
-		return m.openPlaylistName(focusPlaylistPicker)
+		return m.openPlaylistName([]youtube.Track{track}, true, "name the new playlist")
 	}
-	m.focus = focusPlaylistPicker
+	m.overlay = overlayPicker
 	m.setStatus("choose a playlist for " + quote(track.Title))
 	return m, nil
 }
 
-func (m Model) openPlaylistName(from focus) (tea.Model, tea.Cmd) {
-	m.nameReturn = from
-	m.nameTracks = nil
-	m.focus = focusPlaylistName
+func (m Model) openPlaylistName(tracks []youtube.Track, saves bool, status string) (tea.Model, tea.Cmd) {
+	m.nameTracks, m.nameSaves = tracks, saves
+	m.overlay = overlayName
 	m.nameInput.SetValue("")
 	m.input.Blur()
-	m.setStatus("name the new playlist")
+	m.setStatus(status)
 	return m, m.nameInput.Focus()
 }
 
@@ -61,11 +62,7 @@ func (m Model) handlePlaylistNameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.nameInput.Blur()
 		m.nameTracks = nil
-		if m.nameReturn == focusPlaylistPicker {
-			m.focus = m.saveReturn
-		} else {
-			m.focus = m.nameReturn
-		}
+		m.overlay = overlayNone
 		return m, nil
 	case "enter":
 		name := strings.TrimSpace(m.nameInput.Value())
@@ -73,11 +70,7 @@ func (m Model) handlePlaylistNameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.setError("playlist name is empty")
 			return m, nil
 		}
-		tracks := m.nameTracks
-		if m.nameReturn == focusPlaylistPicker {
-			tracks = []youtube.Track{m.saveTrack}
-		}
-		index, err := m.deps.Library.CreateWithTracks(name, tracks)
+		index, err := m.deps.Library.CreateWithTracks(name, m.nameTracks)
 		if err != nil {
 			m.setError(err.Error())
 			return m, nil
@@ -87,8 +80,8 @@ func (m Model) handlePlaylistNameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.playlistCur = index
 		m.playlistTrackCur = 0
 		m.playlists = m.deps.Library.Playlists()
-		if m.nameReturn == focusPlaylistPicker {
-			m.focus = m.saveReturn
+		m.overlay = overlayNone
+		if m.nameSaves {
 			m.setStatus("saved to " + quote(name))
 			return m, nil
 		}
@@ -134,21 +127,24 @@ func (m Model) handlePlaylistKey(key string) (tea.Model, tea.Cmd) {
 			m.playlistTrackCur = 0
 		}
 	case "esc":
-		switch m.focus {
-		case focusPlaylistPicker:
-			m.focus = m.saveReturn
-		case focusPlaylistTracks:
+		switch {
+		case m.overlay == overlayPicker:
+			m.overlay = overlayNone
+		case m.focus == focusPlaylistTracks:
 			m.focus = focusPlaylists
 		default:
 			m.focus = focusResults
 		}
 	case "c":
-		if m.focus != focusPlaylistTracks {
-			return m.openPlaylistName(m.focus)
+		switch {
+		case m.overlay == overlayPicker:
+			return m.openPlaylistName([]youtube.Track{m.saveTrack}, true, "name the new playlist")
+		case m.focus != focusPlaylistTracks:
+			return m.openPlaylistName(nil, false, "name the new playlist")
 		}
 	case "enter":
-		switch m.focus {
-		case focusPlaylistPicker:
+		switch {
+		case m.overlay == overlayPicker:
 			if m.playlistCur >= len(m.playlists) {
 				return m, nil
 			}
@@ -158,32 +154,30 @@ func (m Model) handlePlaylistKey(key string) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.playlists = m.deps.Library.Playlists()
-			m.focus = m.saveReturn
+			m.overlay = overlayNone
 			m.setStatus("saved to " + quote(name))
-		case focusPlaylists:
+		case m.focus == focusPlaylists:
 			if len(m.playlists) > 0 {
 				m.focus = focusPlaylistTracks
 			}
-		case focusPlaylistTracks:
+		case m.focus == focusPlaylistTracks:
 			if t, ok := m.selectedPlaylistTrack(); ok {
 				m.tracks[t.URL] = t
-				requestID, task := m.nextRequest(), m.reserveQueue()
-				m.expectQueue()
-				m.queueInsertPending = true
+				cmd := m.queue.playNow(m.nextRequest(), t)
 				m.setStatus("playing " + quote(t.Title) + "…")
-				return m, projectedQueueAction(task, requestID, "playing "+quote(t.Title), func(ctx context.Context) error { return m.deps.Player.PlayNow(ctx, t.URL) })
+				return m, cmd
 			}
 		}
 	case "a":
-		if m.focus == focusPlaylistPicker {
+		if m.overlay == overlayPicker {
 			return m, nil
 		}
 		if m.focus == focusPlaylistTracks {
 			if t, ok := m.selectedPlaylistTrack(); ok {
 				m.tracks[t.URL] = t
-				requestID, task := m.nextRequest(), m.reserveQueue()
+				cmd := m.queue.enqueue(m.nextRequest(), t)
 				m.setStatus("queueing " + quote(t.Title) + "…")
-				return m, queueAction(task, requestID, "queued "+quote(t.Title), func(ctx context.Context) error { return m.deps.Player.Append(ctx, t.URL) })
+				return m, cmd
 			}
 			return m, nil
 		}
@@ -191,7 +185,7 @@ func (m Model) handlePlaylistKey(key string) (tea.Model, tea.Cmd) {
 		if len(tracks) == 0 {
 			return m, nil
 		}
-		requestID, task := m.nextRequest(), m.reserveQueue()
+		requestID, task := m.nextRequest(), m.queue.reserve()
 		m.spinnerRequest = requestID
 		m.searching = true
 		m.setStatus("queueing " + quote(m.playlists[m.playlistCur].Name) + "…")

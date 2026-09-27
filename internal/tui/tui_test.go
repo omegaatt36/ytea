@@ -67,15 +67,14 @@ func TestApplyPlaylistPos(t *testing.T) {
 	}{
 		{name: "index", data: "2", want: 2},
 		{name: "none selected", data: "-1", want: -1},
-		// null must not decode to 0 and mark the first entry as playing.
 		{name: "unavailable", data: "null", want: -1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := New(Deps{})
 			m.applyProperty(mpv.Event{Name: "property-change", Prop: mpv.PropPlaylistPos, Data: json.RawMessage(tt.data)})
-			if m.pos != tt.want {
-				t.Errorf("pos = %d, want %d", m.pos, tt.want)
+			if m.queue.pos != tt.want {
+				t.Errorf("pos = %d, want %d", m.queue.pos, tt.want)
 			}
 		})
 	}
@@ -117,7 +116,6 @@ func TestWaitMPVDropsTimePosWithinShownSecond(t *testing.T) {
 			want:   mpvEventMsg(timePos("3.1")),
 		},
 		{
-			// null (no file) must still reset the shown position.
 			name:   "unavailable",
 			shown:  0,
 			events: []mpv.Event{timePos("null")},
@@ -162,7 +160,7 @@ func TestCursorFollowsFocusedInput(t *testing.T) {
 			m.input.CursorEnd()
 		}},
 		{name: "playlist name", setup: func(m *Model) {
-			m.focus = focusPlaylistName
+			m.overlay = overlayName
 			m.input.Blur()
 			m.nameInput.Focus()
 			m.nameInput.SetValue(typed)
@@ -183,12 +181,15 @@ func TestCursorFollowsFocusedInput(t *testing.T) {
 			if c.Y < 0 || c.Y >= len(lines) {
 				t.Fatalf("cursor row %d outside the %d rendered rows", c.Y, len(lines))
 			}
-			// The cursor sits in the cell right after the typed text.
 			if got := ansi.Strip(ansi.Cut(lines[c.Y], c.X-len(typed), c.X)); got != typed {
 				t.Errorf("cells before cursor (%d,%d) = %q, want %q", c.X, c.Y, got, typed)
 			}
 		})
 	}
+}
+
+func atPane(m Model, f focus) bool {
+	return m.overlay == overlayNone && m.focus == f
 }
 
 func TestNoCursorOrBlinkOutsideInputs(t *testing.T) {
@@ -257,35 +258,35 @@ func TestLocalPlaylistFlow(t *testing.T) {
 	m.results = []youtube.Track{first, second}
 	got, _ := m.handleResultKey("s")
 	m = got.(Model)
-	if m.focus != focusPlaylistName {
-		t.Fatalf("save without lists focused %v, want name input", m.focus)
+	if m.overlay != overlayName {
+		t.Fatalf("save without lists: overlay=%v, want name input", m.overlay)
 	}
 	m.nameInput.SetValue("Favorites")
 	got, _ = m.handlePlaylistNameKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = got.(Model)
-	if m.focus != focusResults || len(store.Playlists()) != 1 || len(store.Playlists()[0].Tracks) != 1 {
-		t.Fatalf("created playlist and saved song: focus=%v playlists=%+v", m.focus, store.Playlists())
+	if !atPane(m, focusResults) || len(store.Playlists()) != 1 || len(store.Playlists()[0].Tracks) != 1 {
+		t.Fatalf("created playlist and saved song: focus=%v overlay=%v playlists=%+v", m.focus, m.overlay, store.Playlists())
 	}
 	m.resultCur = 1
 	got, _ = m.handleResultKey("s")
 	m = got.(Model)
-	if m.focus != focusPlaylistPicker {
-		t.Fatalf("save with existing list focused %v", m.focus)
+	if m.overlay != overlayPicker {
+		t.Fatalf("save with existing list: overlay=%v, want picker", m.overlay)
 	}
 	got, _ = m.handlePlaylistKey("enter")
 	m = got.(Model)
-	if m.focus != focusResults || len(store.Playlists()[0].Tracks) != 2 {
-		t.Fatalf("saved second song: focus=%v playlists=%+v", m.focus, store.Playlists())
+	if !atPane(m, focusResults) || len(store.Playlists()[0].Tracks) != 2 {
+		t.Fatalf("saved second song: focus=%v overlay=%v playlists=%+v", m.focus, m.overlay, store.Playlists())
 	}
 	m.cycleTab(false)
 	m.cycleTab(false)
-	if m.focus != focusPlaylists {
-		t.Fatalf("two tabs from results = %v", m.focus)
+	if !atPane(m, focusPlaylists) {
+		t.Fatalf("two tabs from results: focus=%v overlay=%v", m.focus, m.overlay)
 	}
 	got, _ = m.handlePlaylistKey("enter")
 	m = got.(Model)
-	if m.focus != focusPlaylistTracks {
-		t.Fatalf("enter list = %v", m.focus)
+	if !atPane(m, focusPlaylistTracks) {
+		t.Fatalf("enter list: focus=%v overlay=%v", m.focus, m.overlay)
 	}
 	m.playlistTrackCur = 1
 	got, _ = m.handlePlaylistKey("d")
@@ -399,8 +400,8 @@ func TestPlaylistNamePasteStaysInNameInput(t *testing.T) {
 	m = got.(Model)
 	got, _ = m.Update(tea.PasteMsg{Content: "Morning"})
 	m = got.(Model)
-	if m.focus != focusPlaylistName || m.nameInput.Value() != "Morning" || m.input.Value() != "" {
-		t.Errorf("paste routing: focus=%v name=%q search=%q", m.focus, m.nameInput.Value(), m.input.Value())
+	if m.overlay != overlayName || m.nameInput.Value() != "Morning" || m.input.Value() != "" {
+		t.Errorf("paste routing: overlay=%v name=%q search=%q", m.overlay, m.nameInput.Value(), m.input.Value())
 	}
 }
 
@@ -413,22 +414,22 @@ func TestSaveQueueAsPlaylist(t *testing.T) {
 	m.focus = focusQueue
 	firstURL := "https://www.youtube.com/watch?v=one"
 	secondURL := "https://www.youtube.com/watch?v=two"
-	m.queue = []mpv.PlaylistEntry{
+	m.queue.entries = []mpv.PlaylistEntry{
 		{Filename: firstURL, Title: "First"},
 		{Filename: secondURL, Title: "Second"},
 		{Filename: firstURL, Title: "First"},
 	}
 	got, _ := m.handleQueueKey("S")
 	m = got.(Model)
-	if m.focus != focusPlaylistName {
-		t.Fatalf("save queue focused %v", m.focus)
+	if m.overlay != overlayName {
+		t.Fatalf("save queue: overlay=%v, want name input", m.overlay)
 	}
 	m.nameInput.SetValue("Imported")
 	got, _ = m.handlePlaylistNameKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = got.(Model)
 	playlists := store.Playlists()
-	if m.focus != focusPlaylists || len(playlists) != 1 || len(playlists[0].Tracks) != 2 || playlists[0].Tracks[0].URL != firstURL || playlists[0].Tracks[1].URL != secondURL {
-		t.Fatalf("saved queue = %+v, focus=%v", playlists, m.focus)
+	if !atPane(m, focusPlaylists) || len(playlists) != 1 || len(playlists[0].Tracks) != 2 || playlists[0].Tracks[0].URL != firstURL || playlists[0].Tracks[1].URL != secondURL {
+		t.Fatalf("saved queue = %+v, focus=%v overlay=%v", playlists, m.focus, m.overlay)
 	}
 }
 
@@ -461,7 +462,7 @@ func TestPasteGoesToSearch(t *testing.T) {
 
 	got, _ := m.Update(tea.PasteMsg{Content: "joe hisaishi"})
 	gm := got.(Model)
-	if gm.focus != focusSearch {
+	if !atPane(gm, focusSearch) {
 		t.Errorf("focus = %v, want focusSearch", gm.focus)
 	}
 	if v := gm.input.Value(); v != "joe hisaishi" {
@@ -495,14 +496,13 @@ func TestGraphicsProbe(t *testing.T) {
 			for _, ev := range tt.events {
 				m, _ = m.Update(ev)
 			}
-			if got := m.(Model).graphics; got != tt.want {
+			if got := m.(Model).thumb.graphics; got != tt.want {
 				t.Errorf("graphics = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-// devicePickerModel returns a model listing mpv's output devices.
 func devicePickerModel(device string) Model {
 	m := New(Deps{})
 	m.width, m.height = 80, 30
@@ -558,7 +558,6 @@ func TestRenderDevices(t *testing.T) {
 }
 
 func TestPasteKeysReadClipboard(t *testing.T) {
-	// Zellij forwards ctrl+shift+v as a kitty-protocol key event rather than a paste.
 	ctrlShiftV := tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl | tea.ModShift}
 	if got := ctrlShiftV.String(); got != "ctrl+shift+v" {
 		t.Fatalf("key string = %q, want ctrl+shift+v", got)
@@ -578,7 +577,7 @@ func TestPasteKeysReadClipboard(t *testing.T) {
 
 			got, cmd := m.Update(ctrlShiftV)
 			gm := got.(Model)
-			if gm.focus != focusSearch {
+			if !atPane(gm, focusSearch) {
 				t.Errorf("focus = %v, want focusSearch", gm.focus)
 			}
 			if cmd == nil {
@@ -591,16 +590,15 @@ func TestPasteKeysReadClipboard(t *testing.T) {
 	}
 }
 
-// playingModel returns a model mid-track with its thumbnail fetch in flight.
 func playingModel(g graphicsSupport) Model {
 	const url = "https://www.youtube.com/watch?v=abc"
 	m := New(Deps{Thumbnails: true})
-	m.graphics = g
+	m.thumb.graphics = g
 	m.width, m.height = 100, 30
-	m.idle, m.pos = false, 0
-	m.queue = []mpv.PlaylistEntry{{Filename: url}}
+	m.idle, m.queue.pos = false, 0
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: url}}
 	m.tracks[url] = youtube.Track{ID: "abc", Title: "Song", URL: url}
-	m.thumbVideo = "abc"
+	m.thumb.video = "abc"
 	return m
 }
 
@@ -618,16 +616,15 @@ func TestApplyThumbPicksRendering(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, cmd := playingModel(tt.graphics).applyThumb(thumbMsg{videoID: "abc", img: img})
+			got, cmd := playingModel(tt.graphics).update(thumbMsg{videoID: "abc", img: img})
 			gm := got.(Model)
 
-			if gotKitty := gm.thumbID != 0; gotKitty != tt.wantKitty {
+			if gotKitty := gm.thumb.id != 0; gotKitty != tt.wantKitty {
 				t.Errorf("kitty image = %v, want %v", gotKitty, tt.wantKitty)
 			}
-			if gotArt := gm.thumbArt != ""; gotArt == tt.wantKitty {
+			if gotArt := gm.thumb.art != ""; gotArt == tt.wantKitty {
 				t.Errorf("half-block art = %v, want %v", gotArt, !tt.wantKitty)
 			}
-			// Only kitty modes write escape sequences out of band.
 			if (cmd != nil) != tt.wantKitty {
 				t.Errorf("cmd = %v, want out-of-band transmit only for kitty", cmd)
 			}
@@ -641,11 +638,10 @@ func TestApplyThumbPicksRendering(t *testing.T) {
 func TestThumbOriginIsInsideNowPlayingBox(t *testing.T) {
 	for _, viz := range []bool{false, true} {
 		m := playingModel(graphicsDirect)
-		m.thumbID, m.showViz = 16, viz
+		m.thumb.id, m.showViz = 16, viz
 
 		at := m.thumbOrigin()
 		lines := strings.Split(ansi.Strip(m.render()), "\n")
-		// The box's top-left corner sits one cell up and left of the thumbnail.
 		if corner := []rune(lines[at.Y-1])[at.X-1]; corner != '╭' {
 			t.Errorf("viz=%v: cell above-left of thumbOrigin %v = %q, want box corner", viz, at, corner)
 		}
@@ -657,7 +653,7 @@ func TestThumbOriginIsInsideNowPlayingBox(t *testing.T) {
 
 func TestSyncPlacement(t *testing.T) {
 	m := playingModel(graphicsDirect)
-	m.thumbID = 16
+	m.thumb.id = 16
 
 	if cmd := m.syncPlacement(); cmd == nil {
 		t.Fatal("first sync: cmd = nil, want placement scheduled")
@@ -672,19 +668,21 @@ func TestSyncPlacement(t *testing.T) {
 	}
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	if !next.(Model).placed {
+	if !next.(Model).thumb.placed {
 		t.Error("after resize: placed = false, want a placement rescheduled by Update")
 	}
+	if _, cmd := m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height}); cmd == nil {
+		t.Error("same-size resize: cmd = nil, want re-placement since the terminal drops placed images")
+	}
 
-	if _, cmd := m.update(placeMsg{id: 99, at: m.placedAt}); cmd != nil {
+	if _, cmd := m.update(placeMsg{id: 99, at: m.thumb.placedAt}); cmd != nil {
 		t.Errorf("placeMsg for a replaced image: cmd = %v, want nil", cmd)
 	}
-	if _, cmd := m.update(placeMsg{id: 16, at: m.placedAt}); cmd == nil {
+	if _, cmd := m.update(placeMsg{id: 16, at: m.thumb.placedAt}); cmd == nil {
 		t.Error("placeMsg for the current image: cmd = nil, want Put")
 	}
 }
 
-// searchStub answers Lookup with canned tracks.
 type searchStub struct {
 	tracks []youtube.Track
 }
@@ -713,7 +711,7 @@ func TestSearchEnterImportsYouTubeLink(t *testing.T) {
 		t.Errorf("status = %q, want an importing note", gm.status)
 	}
 
-	if len(gm.imports) != 1 || gm.queueTail != nil {
+	if len(gm.imports) != 1 || gm.queue.tail != nil {
 		t.Fatalf("imports = %+v, want a pending lookup without a queue slot", gm.imports)
 	}
 
@@ -954,7 +952,6 @@ func TestQueueActionDoesNotDiscardPendingSearch(t *testing.T) {
 	}
 }
 
-// appendRecorder reports each AppendAll by its first URL; safe across goroutines.
 type appendRecorder struct {
 	*mpv.Player
 	writes chan string
@@ -1010,7 +1007,7 @@ func TestOverlappingImportsWriteInTriggerOrder(t *testing.T) {
 func TestRapidQueueMovesKeepSelectedTrack(t *testing.T) {
 	m := New(Deps{})
 	m.focus = focusQueue
-	m.queue = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
 	m.queueCur = 2
 
 	for range 2 {
@@ -1024,7 +1021,7 @@ func TestRapidQueueMovesKeepSelectedTrack(t *testing.T) {
 		t.Errorf("cursor = %d, want 0", m.queueCur)
 	}
 	want := []string{"C", "A", "B"}
-	for i, entry := range m.queue {
+	for i, entry := range m.queue.entries {
 		if entry.Filename != want[i] {
 			t.Fatalf("queue[%d] = %q, want %q", i, entry.Filename, want[i])
 		}
@@ -1032,11 +1029,11 @@ func TestRapidQueueMovesKeepSelectedTrack(t *testing.T) {
 	// mpv may report the first move after both keys were handled. That older
 	// event must not roll back the locally projected second move.
 	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"A"},{"filename":"C"},{"filename":"B"}]`)})
-	if m.queue[0].Filename != "C" {
-		t.Errorf("stale playlist event replaced projected queue: %+v", m.queue)
+	if m.queue.entries[0].Filename != "C" {
+		t.Errorf("stale playlist event replaced projected queue: %+v", m.queue.entries)
 	}
 	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"C"},{"filename":"A"},{"filename":"B"}]`)})
-	if m.queueProjection == nil {
+	if m.queue.projection == nil {
 		t.Error("projection cleared before command completion")
 	}
 }
@@ -1047,8 +1044,8 @@ func TestEmptyQueueNavigationCannotDelete(t *testing.T) {
 	for _, key := range []string{"down", "j", "G", "d", "J", "enter"} {
 		got, cmd := m.handleQueueKey(key)
 		m = got.(Model)
-		if cmd != nil || m.queueCur < 0 || len(m.queue) != 0 {
-			t.Fatalf("after %q: cursor=%d queue=%+v cmd=%v", key, m.queueCur, m.queue, cmd != nil)
+		if cmd != nil || m.queueCur < 0 || len(m.queue.entries) != 0 {
+			t.Fatalf("after %q: cursor=%d queue=%+v cmd=%v", key, m.queueCur, m.queue.entries, cmd != nil)
 		}
 	}
 }
@@ -1056,20 +1053,20 @@ func TestEmptyQueueNavigationCannotDelete(t *testing.T) {
 func TestClearQueueProjectsEmptyAndIgnoresStalePlaylist(t *testing.T) {
 	m := New(Deps{})
 	m.focus = focusQueue
-	m.queue = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
 	m.queueCur = 1
-	m.pos, m.idle = 0, false
+	m.queue.pos, m.idle = 0, false
 	m.timePos, m.duration = 10*time.Second, time.Minute
 	got, cmd := m.handleQueueKey("C")
 	m = got.(Model)
-	if cmd == nil || len(m.queue) != 0 || m.queueCur != 0 || m.pos != -1 || !m.idle || m.timePos != 0 || m.duration != 0 {
-		t.Fatalf("clear projection = queue %+v, cursor %d, pos %d, idle %v, time %v/%v", m.queue, m.queueCur, m.pos, m.idle, m.timePos, m.duration)
+	if cmd == nil || len(m.queue.entries) != 0 || m.queueCur != 0 || m.queue.pos != -1 || !m.idle || m.timePos != 0 || m.duration != 0 {
+		t.Fatalf("clear projection = queue %+v, cursor %d, pos %d, idle %v, time %v/%v", m.queue.entries, m.queueCur, m.queue.pos, m.idle, m.timePos, m.duration)
 	}
-	if m.queueEditsPending != 1 || m.queueProjection == nil {
+	if m.queue.editsPending != 1 || m.queue.projection == nil {
 		t.Fatal("clear did not reserve an authoritative queue refresh")
 	}
 	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"A"},{"filename":"B"}]`)})
-	if len(m.queue) != 0 {
+	if len(m.queue.entries) != 0 {
 		t.Fatal("stale playlist event repopulated cleared queue")
 	}
 	got, refresh := m.update(queueActionDoneMsg{requestID: m.activeRequest, status: "queue cleared", projected: true})
@@ -1077,10 +1074,10 @@ func TestClearQueueProjectsEmptyAndIgnoresStalePlaylist(t *testing.T) {
 	if refresh == nil || m.status != "queue cleared" {
 		t.Fatalf("clear completion = status %q, refresh %v", m.status, refresh != nil)
 	}
-	got, _ = m.update(queueRefreshMsg{revision: m.queueRevision, entries: nil, pos: -1})
+	got, _ = m.update(queueRefreshMsg{revision: m.queue.revision, entries: nil, pos: -1})
 	m = got.(Model)
-	if len(m.queue) != 0 || m.pos != -1 || m.queueProjection != nil {
-		t.Fatalf("clear refresh = queue %+v, pos %d, projection %v", m.queue, m.pos, m.queueProjection)
+	if len(m.queue.entries) != 0 || m.queue.pos != -1 || m.queue.projection != nil {
+		t.Fatalf("clear refresh = queue %+v, pos %d, projection %v", m.queue.entries, m.queue.pos, m.queue.projection)
 	}
 }
 
@@ -1096,7 +1093,6 @@ func TestClearQueueKeepsImportStillResolving(t *testing.T) {
 	got, clear := m.handleQueueKey("C")
 	m = got.(Model)
 	cleared := make(chan tea.Msg, 1)
-	// clear is a Batch with the thumbnail refresh, which is nil here.
 	go func() { cleared <- clear() }()
 	select {
 	case <-cleared:
@@ -1120,21 +1116,21 @@ func TestClearQueueKeepsImportStillResolving(t *testing.T) {
 func TestQueueEnterReservesSlotAfterProjectedMove(t *testing.T) {
 	m := New(Deps{})
 	m.focus = focusQueue
-	m.queue = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
 	m.queueCur = 1
 	got, move := m.handleQueueKey("K")
 	m = got.(Model)
 	if move == nil || m.queueCur != 0 {
 		t.Fatal("move did not project B to index 0")
 	}
-	moveDone := m.queueTail
+	moveDone := m.queue.tail
 	got, play := m.handleQueueKey("enter")
 	m = got.(Model)
-	if play == nil || m.queueTail == moveDone {
+	if play == nil || m.queue.tail == moveDone {
 		t.Fatal("play selection was not reserved behind the projected move")
 	}
-	if m.queueEditsPending != 1 {
-		t.Errorf("pending projected edits = %d, want 1", m.queueEditsPending)
+	if m.queue.editsPending != 1 {
+		t.Errorf("pending projected edits = %d, want 1", m.queue.editsPending)
 	}
 }
 
@@ -1142,42 +1138,42 @@ func TestPlayNowBlocksIndexEditsUntilQueueRefresh(t *testing.T) {
 	m := New(Deps{})
 	m.focus = focusResults
 	m.results = []youtube.Track{{URL: "D", Title: "D"}}
-	m.queue = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
 	m.queueCur = 1
 	got, play := m.handleResultKey("enter")
 	m = got.(Model)
-	if play == nil || !m.queueInsertPending || m.queueEditsPending != 1 {
+	if play == nil || !m.queue.insertPending || m.queue.editsPending != 1 {
 		t.Fatal("play-now did not reserve an insertion refresh")
 	}
 	m.focus = focusQueue
 	for _, key := range []string{"d", "K", "J", "enter"} {
 		got, cmd := m.handleQueueKey(key)
 		m = got.(Model)
-		if cmd != nil || len(m.queue) != 2 || m.queue[1].Filename != "B" {
+		if cmd != nil || len(m.queue.entries) != 2 || m.queue.entries[1].Filename != "B" {
 			t.Fatalf("%q edited a stale queue index", key)
 		}
 	}
 	got, refresh := m.update(queueActionDoneMsg{requestID: m.activeRequest, projected: true})
 	m = got.(Model)
-	if refresh == nil || !m.queueInsertPending {
+	if refresh == nil || !m.queue.insertPending {
 		t.Fatal("insertion was unblocked before mpv queue refresh")
 	}
-	got, _ = m.update(queueRefreshMsg{revision: m.queueRevision, entries: []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "D"}, {Filename: "B"}}, pos: 1})
+	got, _ = m.update(queueRefreshMsg{revision: m.queue.revision, entries: []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "D"}, {Filename: "B"}}, pos: 1})
 	m = got.(Model)
-	if m.queueInsertPending || len(m.queue) != 3 || m.queue[1].Filename != "D" {
-		t.Fatalf("insertion refresh = %+v; pending = %v", m.queue, m.queueInsertPending)
+	if m.queue.insertPending || len(m.queue.entries) != 3 || m.queue.entries[1].Filename != "D" {
+		t.Fatalf("insertion refresh = %+v; pending = %v", m.queue.entries, m.queue.insertPending)
 	}
 	got, edit := m.handleQueueKey("d")
 	m = got.(Model)
-	if edit == nil || len(m.queue) != 2 || m.queue[1].Filename != "B" {
-		t.Fatalf("delete did not target refreshed index: %+v", m.queue)
+	if edit == nil || len(m.queue.entries) != 2 || m.queue.entries[1].Filename != "B" {
+		t.Fatalf("delete did not target refreshed index: %+v", m.queue.entries)
 	}
 }
 
 func TestOpposingQueueMovesIgnoreOldAndIntermediateEvents(t *testing.T) {
 	m := New(Deps{})
 	m.focus = focusQueue
-	m.queue = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
 	m.queueCur = 2
 	for _, key := range []string{"K", "J"} {
 		got, cmd := m.handleQueueKey(key)
@@ -1186,16 +1182,16 @@ func TestOpposingQueueMovesIgnoreOldAndIntermediateEvents(t *testing.T) {
 		}
 		m = got.(Model)
 	}
-	if m.queueCur != 2 || m.queue[2].Filename != "C" {
-		t.Fatalf("projection = %+v cursor %d, want original order with C selected", m.queue, m.queueCur)
+	if m.queueCur != 2 || m.queue.entries[2].Filename != "C" {
+		t.Fatalf("projection = %+v cursor %d, want original order with C selected", m.queue.entries, m.queueCur)
 	}
 	for _, snapshot := range []string{
 		`[{"filename":"A"},{"filename":"B"},{"filename":"C"}]`, // before either move
 		`[{"filename":"A"},{"filename":"C"},{"filename":"B"}]`, // after only K
 	} {
 		m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(snapshot)})
-		if m.queue[2].Filename != "C" || m.queueCur != 2 {
-			t.Fatalf("stale event %s changed projected selection: %+v cursor %d", snapshot, m.queue, m.queueCur)
+		if m.queue.entries[2].Filename != "C" || m.queueCur != 2 {
+			t.Fatalf("stale event %s changed projected selection: %+v cursor %d", snapshot, m.queue.entries, m.queueCur)
 		}
 	}
 	for _, id := range []uint64{1, 2} {
@@ -1209,25 +1205,25 @@ func TestOpposingQueueMovesIgnoreOldAndIntermediateEvents(t *testing.T) {
 		`[{"filename":"A"},{"filename":"C"},{"filename":"B"}]`,
 	} {
 		m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(snapshot)})
-		if m.queue[2].Filename != "C" || m.queueCur != 2 {
-			t.Fatalf("late event %s changed projected selection: %+v cursor %d", snapshot, m.queue, m.queueCur)
+		if m.queue.entries[2].Filename != "C" || m.queueCur != 2 {
+			t.Fatalf("late event %s changed projected selection: %+v cursor %d", snapshot, m.queue.entries, m.queueCur)
 		}
 	}
-	got, _ := m.update(queueRefreshMsg{revision: m.queueRevision, entries: []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}, pos: -1})
+	got, _ := m.update(queueRefreshMsg{revision: m.queue.revision, entries: []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}, pos: -1})
 	m = got.(Model)
-	if m.queue[2].Filename != "C" || m.queueCur != 2 {
-		t.Errorf("authoritative refresh = %+v cursor %d, want C selected", m.queue, m.queueCur)
+	if m.queue.entries[2].Filename != "C" || m.queueCur != 2 {
+		t.Errorf("authoritative refresh = %+v cursor %d, want C selected", m.queue.entries, m.queueCur)
 	}
 	got, _ = m.handleQueueKey("K")
 	m = got.(Model)
-	if m.queue[1].Filename != "C" || m.queueCur != 1 {
-		t.Errorf("next move targeted wrong track: queue=%+v cursor=%d", m.queue, m.queueCur)
+	if m.queue.entries[1].Filename != "C" || m.queueCur != 1 {
+		t.Errorf("next move targeted wrong track: queue=%+v cursor=%d", m.queue.entries, m.queueCur)
 	}
 }
 
 func TestPlaylistEventBurstSchedulesOneAuthoritativeRead(t *testing.T) {
 	m := New(Deps{})
-	m.queueAuthoritative = true
+	m.queue.authoritative = true
 	event := mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"A"}]`)}
 	commands := 0
 	for range 200 {
@@ -1240,12 +1236,12 @@ func TestPlaylistEventBurstSchedulesOneAuthoritativeRead(t *testing.T) {
 	}
 	got, cmd := m.update(queueDebounceMsg{version: 1})
 	m = got.(Model)
-	if cmd == nil || !m.queueDebouncePending || m.queueRefreshPending {
+	if cmd == nil || !m.queue.debouncePending || m.queue.refreshPending {
 		t.Fatal("changed event generation did not extend debounce")
 	}
-	got, cmd = m.update(queueDebounceMsg{version: m.queueEventVersion})
+	got, cmd = m.update(queueDebounceMsg{version: m.queue.eventVersion})
 	m = got.(Model)
-	if cmd == nil || !m.queueRefreshPending {
+	if cmd == nil || !m.queue.refreshPending {
 		t.Fatal("settled burst did not schedule one authoritative read")
 	}
 }
@@ -1253,7 +1249,7 @@ func TestPlaylistEventBurstSchedulesOneAuthoritativeRead(t *testing.T) {
 func TestRapidQueueDeletesAdvanceToNextTrack(t *testing.T) {
 	m := New(Deps{})
 	m.focus = focusQueue
-	m.queue = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
 	m.queueCur = 0
 
 	for range 2 {
@@ -1263,15 +1259,15 @@ func TestRapidQueueDeletesAdvanceToNextTrack(t *testing.T) {
 		}
 		m = got.(Model)
 	}
-	if len(m.queue) != 1 || m.queue[0].Filename != "C" {
-		t.Errorf("queue = %+v, want only C", m.queue)
+	if len(m.queue.entries) != 1 || m.queue.entries[0].Filename != "C" {
+		t.Errorf("queue = %+v, want only C", m.queue.entries)
 	}
 }
 
 func TestStalePlaylistEventDoesNotRestoreDeletedEntry(t *testing.T) {
 	m := New(Deps{})
 	m.focus = focusQueue
-	m.queue = []mpv.PlaylistEntry{
+	m.queue.entries = []mpv.PlaylistEntry{
 		{Filename: "A"},
 		{Filename: "B"},
 		{Filename: "C"},
@@ -1284,47 +1280,46 @@ func TestStalePlaylistEventDoesNotRestoreDeletedEntry(t *testing.T) {
 	m = got.(Model)
 
 	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"id":1,"filename":"A"},{"id":2,"filename":"B"},{"id":3,"filename":"C"}]`)})
-	if len(m.queue) != 2 || m.queue[0].Filename != "B" {
-		t.Fatalf("stale event restored deleted A: %+v", m.queue)
+	if len(m.queue.entries) != 2 || m.queue.entries[0].Filename != "B" {
+		t.Fatalf("stale event restored deleted A: %+v", m.queue.entries)
 	}
-	// An unrelated insert can coexist with the projected deletion.
 	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"id":2,"filename":"B"},{"id":4,"filename":"D"},{"id":3,"filename":"C"}]`)})
-	if len(m.queue) != 2 || m.queue[0].Filename != "B" {
-		t.Errorf("event bypassed authoritative refresh: queue=%+v", m.queue)
+	if len(m.queue.entries) != 2 || m.queue.entries[0].Filename != "B" {
+		t.Errorf("event bypassed authoritative refresh: queue=%+v", m.queue.entries)
 	}
 	got, _ = m.update(queueActionDoneMsg{requestID: m.activeRequest, projected: true})
 	m = got.(Model)
-	got, _ = m.update(queueRefreshMsg{revision: m.queueRevision, entries: []mpv.PlaylistEntry{{Filename: "B"}, {Filename: "D"}, {Filename: "C"}}, pos: -1})
+	got, _ = m.update(queueRefreshMsg{revision: m.queue.revision, entries: []mpv.PlaylistEntry{{Filename: "B"}, {Filename: "D"}, {Filename: "C"}}, pos: -1})
 	m = got.(Model)
-	if len(m.queue) != 3 || m.queue[1].Filename != "D" {
-		t.Errorf("authoritative refresh missed insert: queue=%+v", m.queue)
+	if len(m.queue.entries) != 3 || m.queue.entries[1].Filename != "D" {
+		t.Errorf("authoritative refresh missed insert: queue=%+v", m.queue.entries)
 	}
 }
 
 func TestProjectedDeleteDistinguishesDuplicateURLs(t *testing.T) {
 	m := New(Deps{})
 	m.focus = focusQueue
-	m.queue = []mpv.PlaylistEntry{{Filename: "same"}, {Filename: "same"}}
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: "same"}, {Filename: "same"}}
 	got, _ := m.handleQueueKey("d")
 	m = got.(Model)
 	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"id":1,"filename":"same"},{"id":2,"filename":"same"}]`)})
-	if len(m.queue) != 1 || m.queue[0].Filename != "same" {
-		t.Errorf("stale duplicate event restored removed entry: %+v", m.queue)
+	if len(m.queue.entries) != 1 || m.queue.entries[0].Filename != "same" {
+		t.Errorf("stale duplicate event restored removed entry: %+v", m.queue.entries)
 	}
 	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"id":2,"filename":"same"},{"id":3,"filename":"same"}]`)})
-	if len(m.queue) != 1 {
-		t.Errorf("duplicate event bypassed authoritative refresh: queue=%+v", m.queue)
+	if len(m.queue.entries) != 1 {
+		t.Errorf("duplicate event bypassed authoritative refresh: queue=%+v", m.queue.entries)
 	}
 }
 
 func TestQueueWriteErrorIsReportedAfterWrite(t *testing.T) {
 	m := New(Deps{Thumbnails: true})
-	m.graphics = graphicsNone
+	m.thumb.graphics = graphicsNone
 	id := m.nextRequest()
-	task := m.reserveQueue()
+	task := m.queue.reserve()
 	want := errors.New("mpv rejected append")
 	tracks := []youtube.Track{{ID: "x", Title: "resolved first", URL: "x"}, {ID: "y", Title: "resolved second", URL: "y"}}
-	m.queue, m.pos, m.idle = []mpv.PlaylistEntry{{Filename: "x"}}, 0, false
+	m.queue.entries, m.queue.pos, m.idle = []mpv.PlaylistEntry{{Filename: "x"}}, 0, false
 	accepted := ""
 	msg := queueImport(func(tracks []youtube.Track) error {
 		accepted = tracks[0].URL // mpv accepted this entry before rejecting the next one.
@@ -1342,28 +1337,28 @@ func TestQueueWriteErrorIsReportedAfterWrite(t *testing.T) {
 	if !ok || playing.Title != "resolved first" {
 		t.Errorf("current track = %+v, available = %v, want metadata for accepted entry", playing, ok)
 	}
-	if m.thumbVideo != "x" {
-		t.Errorf("thumbnail target = %q, want accepted track x after metadata arrives", m.thumbVideo)
+	if m.thumb.video != "x" {
+		t.Errorf("thumbnail target = %q, want accepted track x after metadata arrives", m.thumb.video)
 	}
 }
 
 func TestQueueRefreshPreservesEntryTitlesWithDuplicateURLs(t *testing.T) {
 	m := New(Deps{})
-	m.queueAuthoritative = true
+	m.queue.authoritative = true
 	entries := []mpv.PlaylistEntry{
 		{Filename: "same", Title: "first title", Current: false},
 		{Filename: "same", Title: "second title", Current: true, Playing: true},
 	}
 	got, _ := m.update(queueRefreshMsg{entries: entries, pos: 1})
 	m = got.(Model)
-	if len(m.queue) != 2 || m.queue[0].Title != "first title" || m.queue[1].Title != "second title" {
-		t.Fatalf("refreshed entries = %+v, want distinct titles", m.queue)
+	if len(m.queue.entries) != 2 || m.queue.entries[0].Title != "first title" || m.queue.entries[1].Title != "second title" {
+		t.Fatalf("refreshed entries = %+v, want distinct titles", m.queue.entries)
 	}
-	if title := displayTitle(m.queue[1], youtube.Track{}); title != "second title" {
+	if title := displayTitle(m.queue.entries[1], youtube.Track{}); title != "second title" {
 		t.Errorf("display title = %q, want second title", title)
 	}
-	if m.pos != 1 || !m.queue[1].Playing {
-		t.Errorf("position = %d, playing = %v, want second entry playing", m.pos, m.queue[1].Playing)
+	if m.queue.pos != 1 || !m.queue.entries[1].Playing {
+		t.Errorf("position = %d, playing = %v, want second entry playing", m.queue.pos, m.queue.entries[1].Playing)
 	}
 }
 
@@ -1373,15 +1368,15 @@ func TestRestoredMetadataTitlesUnplayedQueueEntries(t *testing.T) {
 		url: {URL: url, ID: "abc", Title: "Saved song", Channel: "Artist"},
 	}})
 	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"https://www.youtube.com/watch?v=abc"}]`)})
-	if got := m.queueLine(0, m.queue[0], 60); !strings.Contains(got, "Saved song") || strings.Contains(got, url) {
+	if got := m.queueLine(0, m.queue.entries[0], 60); !strings.Contains(got, "Saved song") || strings.Contains(got, url) {
 		t.Errorf("restored queue line = %q, want saved title", got)
 	}
 }
 
 func TestFailedQueueActionReleasesNextWrite(t *testing.T) {
 	m := New(Deps{})
-	first := m.reserveQueue()
-	second := m.reserveQueue()
+	first := m.queue.reserve()
+	second := m.queue.reserve()
 	want := errors.New("first append failed")
 	order := make(chan string, 2)
 	secondDone := make(chan tea.Msg, 1)
@@ -1441,7 +1436,7 @@ func mouseModel() Model {
 		m.results = append(m.results, youtube.Track{Title: fmt.Sprintf("song %02d", i)})
 	}
 	for i := range 3 {
-		m.queue = append(m.queue, mpv.PlaylistEntry{Filename: fmt.Sprintf("u%d", i), Title: fmt.Sprintf("queued %d", i)})
+		m.queue.entries = append(m.queue.entries, mpv.PlaylistEntry{Filename: fmt.Sprintf("u%d", i), Title: fmt.Sprintf("queued %d", i)})
 	}
 	return m
 }
@@ -1456,46 +1451,44 @@ func TestClickSelectsRowUnderPointer(t *testing.T) {
 	m := mouseModel()
 	m.focus = focusResults
 	m.input.Blur()
-	// Deep enough that the results pane is scrolled.
 	m.resultCur = 35
 
 	m = click(m, cellAt(t, m, "song 30"))
-	if m.focus != focusResults || m.resultCur != 30 {
+	if !atPane(m, focusResults) || m.resultCur != 30 {
 		t.Errorf("click song 30: focus=%v resultCur=%d, want results/30", m.focus, m.resultCur)
 	}
 
 	m = click(m, cellAt(t, m, "queued 2"))
-	if m.focus != focusQueue || m.queueCur != 2 {
+	if !atPane(m, focusQueue) || m.queueCur != 2 {
 		t.Errorf("click queued 2: focus=%v queueCur=%d, want queue/2", m.focus, m.queueCur)
 	}
 
-	// Blank space below the last queue row focuses the pane but keeps the cursor.
 	m = click(m, cellAt(t, m, "queued 2").Add(image.Pt(0, 3)))
-	if m.focus != focusQueue || m.queueCur != 2 {
+	if !atPane(m, focusQueue) || m.queueCur != 2 {
 		t.Errorf("click below queue: focus=%v queueCur=%d, want queue/2", m.focus, m.queueCur)
 	}
 }
 
 func TestClickHeader(t *testing.T) {
 	m := mouseModel()
-	if m.focus != focusSearch {
+	if !atPane(m, focusSearch) {
 		t.Fatalf("new model focus = %v, want search", m.focus)
 	}
 
 	m = click(m, cellAt(t, m, "Queue"))
-	if m.focus != focusQueue || m.input.Focused() {
+	if !atPane(m, focusQueue) || m.input.Focused() {
 		t.Errorf("click Queue tab: focus=%v input focused=%v, want queue and blurred input", m.focus, m.input.Focused())
 	}
 	m = click(m, cellAt(t, m, "Playlists"))
-	if m.focus != focusPlaylists {
+	if !atPane(m, focusPlaylists) {
 		t.Errorf("click Playlists tab: focus=%v", m.focus)
 	}
 	m = click(m, cellAt(t, m, "Playlists").Sub(image.Pt(1, 0))) // the gap between tabs
-	if m.focus != focusPlaylists {
+	if !atPane(m, focusPlaylists) {
 		t.Errorf("click between tabs: focus=%v, want unchanged", m.focus)
 	}
 	m = click(m, cellAt(t, m, " / "))
-	if m.focus != focusSearch || !m.input.Focused() {
+	if !atPane(m, focusSearch) || !m.input.Focused() {
 		t.Errorf("click search box: focus=%v input focused=%v", m.focus, m.input.Focused())
 	}
 }
@@ -1505,7 +1498,7 @@ func TestWheelMovesCursorOfPaneUnderPointer(t *testing.T) {
 	at := cellAt(t, m, "queued 0")
 
 	m = wheel(m, at, tea.MouseWheelDown)
-	if m.focus != focusQueue || m.queueCur != 1 || m.input.Focused() {
+	if !atPane(m, focusQueue) || m.queueCur != 1 || m.input.Focused() {
 		t.Errorf("wheel down over queue: focus=%v queueCur=%d input focused=%v", m.focus, m.queueCur, m.input.Focused())
 	}
 	for range 5 {
@@ -1516,7 +1509,7 @@ func TestWheelMovesCursorOfPaneUnderPointer(t *testing.T) {
 	}
 
 	m = wheel(m, cellAt(t, m, "song 00"), tea.MouseWheelUp)
-	if m.focus != focusResults || m.resultCur != 0 {
+	if !atPane(m, focusResults) || m.resultCur != 0 {
 		t.Errorf("wheel up over results top: focus=%v resultCur=%d", m.focus, m.resultCur)
 	}
 }
@@ -1539,26 +1532,25 @@ func TestMouseInPlaylistPicker(t *testing.T) {
 	m = got.(Model)
 
 	m = click(m, cellAt(t, m, "Beta ("))
-	if m.focus != focusPlaylistPicker || m.playlistCur != 1 {
-		t.Errorf("click Beta in picker: focus=%v playlistCur=%d, want picker/1", m.focus, m.playlistCur)
+	if m.overlay != overlayPicker || m.playlistCur != 1 {
+		t.Errorf("click Beta in picker: overlay=%v playlistCur=%d, want picker/1", m.overlay, m.playlistCur)
 	}
 	m = click(m, cellAt(t, m, "Beta song"))
-	if m.focus != focusPlaylistPicker {
-		t.Errorf("click tracks pane in picker: focus=%v, want picker kept", m.focus)
+	if m.overlay != overlayPicker {
+		t.Errorf("click tracks pane in picker: overlay=%v, want picker kept", m.overlay)
 	}
 }
 
 func TestMouseIgnoredWhileNamingPlaylist(t *testing.T) {
 	m := mouseModel()
-	m.focus = focusPlaylistName
+	m.overlay = overlayName
 	m.input.Blur()
 	m = click(m, image.Pt(1, 0))
-	if m.focus != focusPlaylistName {
-		t.Errorf("click during name input: focus=%v, want name input kept", m.focus)
+	if m.overlay != overlayName {
+		t.Errorf("click during name input: overlay=%v, want name input kept", m.overlay)
 	}
 }
 
-// streamStub answers StreamInfo with a fixed file.
 type streamStub struct {
 	*mpv.Player
 	info mpv.StreamInfo
@@ -1576,16 +1568,16 @@ func TestInfoPanel(t *testing.T) {
 	m := New(Deps{Player: streamStub{info: info}})
 	m.width, m.height = 120, 40
 	m.focus = focusQueue
-	m.queue = []mpv.PlaylistEntry{{Filename: watch}}
-	m.pos, m.idle = 0, false
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: watch}}
+	m.queue.pos, m.idle = 0, false
 	m.tracks[watch] = youtube.Track{ID: "abc", Title: "Song", URL: watch}
 
 	got, cmd := m.update(tea.KeyPressMsg{Code: 'i'})
 	m = got.(Model)
 	got, _ = m.update(cmd())
 	m = got.(Model)
-	if m.focus != focusInfo {
-		t.Fatalf("focus = %v, want info panel", m.focus)
+	if m.overlay != overlayInfo {
+		t.Fatalf("overlay = %v, want info panel", m.overlay)
 	}
 	body := ansi.Strip(strings.Join(m.infoLines(), "\n"))
 	for _, want := range []string{watch, "Opus (Opus", "itag 251 · audio/webm", "160 kbps average", "3.8 MiB"} {
@@ -1594,8 +1586,7 @@ func TestInfoPanel(t *testing.T) {
 		}
 	}
 
-	// After a track change the stored stream belongs to the previous file.
-	m.queue = []mpv.PlaylistEntry{{Filename: "https://www.youtube.com/watch?v=next"}}
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: "https://www.youtube.com/watch?v=next"}}
 	if body := strings.Join(m.infoLines(), "\n"); strings.Contains(body, "itag") {
 		t.Errorf("info shows the previous track's stream:\n%s", body)
 	}
@@ -1604,7 +1595,117 @@ func TestInfoPanel(t *testing.T) {
 	}
 
 	got, _ = m.update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if m = got.(Model); m.focus != focusQueue {
-		t.Errorf("focus after esc = %v, want queue", m.focus)
+	if m = got.(Model); !atPane(m, focusQueue) {
+		t.Errorf("after esc: focus=%v overlay=%v, want queue", m.focus, m.overlay)
+	}
+}
+
+func overlayModel(t *testing.T, origin focus) Model {
+	t.Helper()
+	store, err := library.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const watch = "https://www.youtube.com/watch?v=abc"
+	if _, err := store.CreateWithTracks("Keep", []youtube.Track{{Title: "Kept", URL: watch}}); err != nil {
+		t.Fatal(err)
+	}
+	m := New(Deps{Library: store, Player: streamStub{info: mpv.StreamInfo{Path: watch}}})
+	m.width, m.height = 120, 40
+	m.input.Blur()
+	m.focus = origin
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: watch, Title: "Song"}}
+	m.queue.pos, m.idle = 0, false
+	m.tracks[watch] = youtube.Track{ID: "abc", Title: "Song", URL: watch}
+	m.devices = []mpv.AudioDevice{{Name: "auto", Description: "Autoselect device"}}
+	return m
+}
+
+func press(t *testing.T, m Model, k tea.KeyPressMsg) Model {
+	t.Helper()
+	got, cmd := m.update(k)
+	m = got.(Model)
+	if k.Code == 'i' && cmd != nil {
+		got, _ = m.update(cmd())
+		m = got.(Model)
+	}
+	return m
+}
+
+func TestDevicePickerCloseRestoresOriginPane(t *testing.T) {
+	for _, k := range []tea.KeyPressMsg{{Code: tea.KeyEscape}, {Code: 'o'}, {Code: 'q'}, {Code: tea.KeyEnter}} {
+		t.Run(k.String(), func(t *testing.T) {
+			m := overlayModel(t, focusQueue)
+			got, _ := m.update(devicesMsg{devices: m.devices, open: true})
+			m = got.(Model)
+			if m.overlay != overlayDevices {
+				t.Fatalf("overlay = %v, want device picker", m.overlay)
+			}
+			if m = press(t, m, k); !atPane(m, focusQueue) {
+				t.Errorf("after %s: focus=%v overlay=%v, want queue", k, m.focus, m.overlay)
+			}
+		})
+	}
+}
+
+func TestInfoCloseRestoresOriginPane(t *testing.T) {
+	for name, origin := range map[string]focus{"queue": focusQueue, "playlists": focusPlaylists} {
+		for _, k := range []tea.KeyPressMsg{{Code: tea.KeyEscape}, {Code: 'i'}, {Code: 'q'}} {
+			t.Run(name+"/"+k.String(), func(t *testing.T) {
+				m := press(t, overlayModel(t, origin), tea.KeyPressMsg{Code: 'i'})
+				if m.overlay != overlayInfo {
+					t.Fatalf("overlay = %v, want info", m.overlay)
+				}
+				got, _ := m.update(k)
+				if m = got.(Model); !atPane(m, origin) {
+					t.Errorf("after %s: focus=%v overlay=%v, want %v", k, m.focus, m.overlay, origin)
+				}
+			})
+		}
+	}
+}
+
+func TestPlaylistPickerCloseRestoresOriginPane(t *testing.T) {
+	m := press(t, overlayModel(t, focusQueue), tea.KeyPressMsg{Code: 's'})
+	if m.overlay != overlayPicker {
+		t.Fatalf("overlay = %v, want picker", m.overlay)
+	}
+	if m = press(t, m, tea.KeyPressMsg{Code: tea.KeyEscape}); !atPane(m, focusQueue) {
+		t.Errorf("after esc: focus=%v overlay=%v, want queue", m.focus, m.overlay)
+	}
+}
+
+func TestPlaylistNameCancelRestoresOriginPane(t *testing.T) {
+	tests := []struct {
+		name   string
+		origin focus
+		opens  []rune
+	}{
+		{name: "create from playlists", origin: focusPlaylists, opens: []rune{'c'}},
+		{name: "create from picker opened in queue", origin: focusQueue, opens: []rune{'s', 'c'}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := overlayModel(t, tt.origin)
+			for _, r := range tt.opens {
+				m = press(t, m, tea.KeyPressMsg{Code: r})
+			}
+			if m.overlay != overlayName {
+				t.Fatalf("overlay = %v, want name input", m.overlay)
+			}
+			if m = press(t, m, tea.KeyPressMsg{Code: tea.KeyEscape}); !atPane(m, tt.origin) {
+				t.Errorf("after esc: focus=%v overlay=%v, want %v", m.focus, m.overlay, tt.origin)
+			}
+		})
+	}
+}
+
+func TestReplacedOverlayKeepsFirstOriginPane(t *testing.T) {
+	m := press(t, overlayModel(t, focusQueue), tea.KeyPressMsg{Code: 's'})
+	if m = press(t, m, tea.KeyPressMsg{Code: 'i'}); m.overlay != overlayInfo {
+		t.Fatalf("overlay = %v, want info replacing picker", m.overlay)
+	}
+	if m = press(t, m, tea.KeyPressMsg{Code: tea.KeyEscape}); !atPane(m, focusQueue) {
+		t.Errorf("after esc: focus=%v overlay=%v, want queue", m.focus, m.overlay)
 	}
 }
