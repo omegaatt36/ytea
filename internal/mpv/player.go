@@ -3,6 +3,7 @@ package mpv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -329,6 +330,39 @@ func (p *Player) AudioDevices(ctx context.Context) ([]AudioDevice, error) {
 		return nil, err
 	}
 	return Decode[[]AudioDevice](data), nil
+}
+
+// StreamInfo describes the file mpv is playing. Like the device list it is
+// only read on demand, when the info panel opens.
+type StreamInfo struct {
+	// Path is the playlist entry, such as a watch URL.
+	Path string
+	// Opened is what mpv opened once yt-dlp resolved Path, often an edl://
+	// wrapper around the media URL.
+	Opened string
+	// Codec is the decoder's long name, e.g. "Opus (Opus Interactive Audio Codec)".
+	Codec string
+	// Bitrate is the decoder's running estimate in bits per second.
+	Bitrate int
+}
+
+// StreamInfo reads what mpv knows about the current file. Properties that are
+// unavailable, as while the file is still loading, are left zero.
+func (p *Player) StreamInfo(ctx context.Context) (StreamInfo, error) {
+	var info StreamInfo
+	for prop, set := range map[string]func(json.RawMessage){
+		"path":                 func(d json.RawMessage) { info.Path = Decode[string](d) },
+		"stream-open-filename": func(d json.RawMessage) { info.Opened = Decode[string](d) },
+		"audio-codec":          func(d json.RawMessage) { info.Codec = Decode[string](d) },
+		"audio-bitrate":        func(d json.RawMessage) { info.Bitrate = int(Decode[float64](d)) },
+	} {
+		data, err := p.client.Command(ctx, "get_property", prop)
+		if _, unavailable := errors.AsType[*CommandError](err); err != nil && !unavailable {
+			return StreamInfo{}, fmt.Errorf("read %s: %w", prop, err)
+		}
+		set(data)
+	}
+	return info, nil
 }
 
 // SetAudioDevice routes output to an mpv audio device from AudioDevices.

@@ -1557,3 +1557,54 @@ func TestMouseIgnoredWhileNamingPlaylist(t *testing.T) {
 		t.Errorf("click during name input: focus=%v, want name input kept", m.focus)
 	}
 }
+
+// streamStub answers StreamInfo with a fixed file.
+type streamStub struct {
+	*mpv.Player
+	info mpv.StreamInfo
+}
+
+func (p streamStub) StreamInfo(context.Context) (mpv.StreamInfo, error) { return p.info, nil }
+
+func TestInfoPanel(t *testing.T) {
+	const watch = "https://www.youtube.com/watch?v=abc"
+	info := mpv.StreamInfo{
+		Path:   watch,
+		Opened: "edl://!no_clip;%99%https://rr1.googlevideo.com/videoplayback?itag=251&mime=audio%2Fwebm&clen=4000000&dur=200",
+		Codec:  "Opus (Opus Interactive Audio Codec)",
+	}
+	m := New(Deps{Player: streamStub{info: info}})
+	m.width, m.height = 120, 40
+	m.focus = focusQueue
+	m.queue = []mpv.PlaylistEntry{{Filename: watch}}
+	m.pos, m.idle = 0, false
+	m.tracks[watch] = youtube.Track{ID: "abc", Title: "Song", URL: watch}
+
+	got, cmd := m.update(tea.KeyPressMsg{Code: 'i'})
+	m = got.(Model)
+	got, _ = m.update(cmd())
+	m = got.(Model)
+	if m.focus != focusInfo {
+		t.Fatalf("focus = %v, want info panel", m.focus)
+	}
+	body := ansi.Strip(strings.Join(m.infoLines(), "\n"))
+	for _, want := range []string{watch, "Opus (Opus", "itag 251 · audio/webm", "160 kbps average", "3.8 MiB"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("info lines missing %q:\n%s", want, body)
+		}
+	}
+
+	// After a track change the stored stream belongs to the previous file.
+	m.queue = []mpv.PlaylistEntry{{Filename: "https://www.youtube.com/watch?v=next"}}
+	if body := strings.Join(m.infoLines(), "\n"); strings.Contains(body, "itag") {
+		t.Errorf("info shows the previous track's stream:\n%s", body)
+	}
+	if cmd := m.applyEvent(mpv.Event{Name: "file-loaded"}); cmd == nil {
+		t.Error("file-loaded did not refresh the open info panel")
+	}
+
+	got, _ = m.update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m = got.(Model); m.focus != focusQueue {
+		t.Errorf("focus after esc = %v, want queue", m.focus)
+	}
+}

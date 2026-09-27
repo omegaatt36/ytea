@@ -56,6 +56,7 @@ type Player interface {
 	Events() <-chan mpv.Event
 	AudioDevices(context.Context) ([]mpv.AudioDevice, error)
 	SetAudioDevice(context.Context, string) error
+	StreamInfo(context.Context) (mpv.StreamInfo, error)
 	TogglePause(context.Context) error
 	Seek(context.Context, time.Duration) error
 	Next(context.Context) error
@@ -96,6 +97,7 @@ const (
 	focusPlaylistTracks
 	focusPlaylistPicker
 	focusPlaylistName
+	focusInfo
 )
 
 // Model is the root Bubble Tea model.
@@ -159,6 +161,11 @@ type Model struct {
 
 	devices   []mpv.AudioDevice
 	deviceCur int
+
+	// stream is read when the info panel opens and again on each file-loaded
+	// while it stays open; infoReturn is the focus to restore on close.
+	stream     mpv.StreamInfo
+	infoReturn focus
 
 	status    string
 	statusErr bool
@@ -309,6 +316,11 @@ type (
 		devices []mpv.AudioDevice
 		open    bool
 		err     error
+	}
+	streamMsg struct {
+		info mpv.StreamInfo
+		open bool
+		err  error
 	}
 	errMsg   struct{ err error }
 	thumbMsg struct {
@@ -543,6 +555,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.open {
 			m.focus = focusDevices
 			m.deviceCur = max(0, slices.IndexFunc(m.devices, m.isCurrentDevice))
+		}
+		return m, nil
+
+	case streamMsg:
+		if msg.err != nil {
+			m.setError("read stream info: " + msg.err.Error())
+			return m, nil
+		}
+		m.stream = msg.info
+		if msg.open && m.focus != focusInfo {
+			m.infoReturn = m.focus
+			m.focus = focusInfo
 		}
 		return m, nil
 

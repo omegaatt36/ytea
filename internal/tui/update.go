@@ -37,6 +37,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handlePlaylistNameKey(msg)
 	case focusDevices:
 		return m.handleDeviceKey(pressed)
+	case focusInfo:
+		return m.handleInfoKey(pressed)
 	}
 
 	if cmd, ok := m.handlePlaybackKey(pressed); ok {
@@ -53,6 +55,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "o":
 		return m, loadDevices(m.deps.Player, true)
+	case "i":
+		if _, _, ok := m.current(); !ok {
+			m.setStatus("nothing playing")
+			return m, nil
+		}
+		return m, loadStream(m.deps.Player, true)
 	case "v":
 		if m.deps.Tap != nil {
 			m.showViz = !m.showViz
@@ -288,6 +296,23 @@ func (m Model) handleDeviceKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handleInfoKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc", "i", "q":
+		m.focus = m.infoReturn
+		return m, nil
+	case "y":
+		if e, _, ok := m.current(); ok {
+			m.setStatus("copied " + e.Filename)
+			// OSC 52: the alt screen with mouse reporting leaves no way to select text.
+			return m, tea.SetClipboard(e.Filename)
+		}
+		return m, nil
+	}
+	cmd, _ := m.handlePlaybackKey(key)
+	return m, cmd
+}
+
 func (m Model) quit() (tea.Model, tea.Cmd) {
 	if m.thumbID != 0 {
 		return m, tea.Sequence(tea.Raw(thumbnail.Delete(m.thumbID)), tea.Quit)
@@ -311,6 +336,11 @@ func (m *Model) applyEvent(ev mpv.Event) tea.Cmd {
 		// Fired after every seek and track start; MPRIS clients resync on Seeked.
 		if m.deps.MPRIS != nil {
 			m.deps.MPRIS.Seeked(m.timePos)
+		}
+	case "file-loaded":
+		// The resolved stream is only known once the file is open.
+		if m.focus == focusInfo {
+			return loadStream(m.deps.Player, false)
 		}
 	case "end-file":
 		if ev.Reason == "error" {
@@ -677,6 +707,16 @@ func loadDevices(p Player, open bool) tea.Cmd {
 		defer cancel()
 		devices, err := p.AudioDevices(ctx)
 		return devicesMsg{devices: devices, open: open, err: err}
+	}
+}
+
+// loadStream reads what mpv knows about the playing file.
+func loadStream(p Player, open bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+		defer cancel()
+		info, err := p.StreamInfo(ctx)
+		return streamMsg{info: info, open: open, err: err}
 	}
 }
 

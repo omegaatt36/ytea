@@ -103,6 +103,8 @@ func (m Model) render() string {
 	switch m.focus {
 	case focusDevices:
 		body = m.renderDevices(m.width, bodyHeight)
+	case focusInfo:
+		body = m.renderInfo(bodyHeight)
 	case focusPlaylistName:
 		body = m.renderPlaylistName(bodyHeight)
 	case focusPlaylists, focusPlaylistTracks, focusPlaylistPicker:
@@ -159,8 +161,11 @@ func (m Model) renderHeader() string {
 }
 
 func (m Model) tabLabels() []string {
-	active := focusResults
-	switch m.focus {
+	active, f := focusResults, m.focus
+	if f == focusInfo {
+		f = m.infoReturn
+	}
+	switch f {
 	case focusQueue:
 		active = focusQueue
 	case focusPlaylists, focusPlaylistTracks, focusPlaylistPicker, focusPlaylistName:
@@ -206,7 +211,7 @@ func (m Model) bodyPanes() (left, right listPane, leftW int) {
 	switch m.focus {
 	case focusDevices:
 		return paneDevices, paneNone, m.width
-	case focusPlaylistName:
+	case focusPlaylistName, focusInfo:
 		return paneNone, paneNone, m.width
 	case focusPlaylists, focusPlaylistTracks, focusPlaylistPicker:
 		return panePlaylists, panePlaylistTracks, m.width * 2 / 5
@@ -489,6 +494,75 @@ func (m Model) renderDevices(width, height int) string {
 	return pane("Output device — enter to switch, esc to cancel", lines, m.deviceCur, true, width, height)
 }
 
+func (m Model) renderInfo(height int) string {
+	return pane("Track info — y copy URL, esc to close", m.infoLines(), -1, true, m.width, height)
+}
+
+// infoLines lists what is known about the playing track: its YouTube
+// metadata, the format yt-dlp picked, and how mpv decodes and outputs it.
+func (m Model) infoLines() []string {
+	e, t, ok := m.current()
+	if !ok {
+		return []string{dimStyle.Render("nothing playing")}
+	}
+	length := formatDuration(m.duration)
+	if t.Live {
+		length = "LIVE"
+	}
+	rows := [][2]string{
+		{"Title", displayTitle(e, t)},
+		{"Channel", t.Channel},
+		{"URL", e.Filename},
+		{"Video ID", t.ID},
+		{"Length", length},
+	}
+
+	// A stream read before a track change describes the previous file.
+	stream := m.stream
+	if stream.Path != e.Filename {
+		stream = mpv.StreamInfo{}
+	}
+	codec := stream.Codec
+	if codec == "" {
+		codec = m.codec
+	}
+	rows = append(rows, [2]string{"Codec", codec})
+	if yt, ok := youtube.StreamOf(stream.Opened); ok {
+		format := "itag " + yt.Itag
+		if yt.MIME != "" {
+			format += " · " + yt.MIME
+		}
+		rows = append(rows, [2]string{"Format", format})
+		if b := yt.Bitrate(); b > 0 {
+			rows = append(rows, [2]string{"Bitrate", fmt.Sprintf("%d kbps average", b/1000)})
+		}
+		if yt.Size > 0 {
+			rows = append(rows, [2]string{"Size", fmt.Sprintf("%.1f MiB", float64(yt.Size)/(1<<20))})
+		}
+	} else if stream.Bitrate > 0 {
+		rows = append(rows, [2]string{"Bitrate", fmt.Sprintf("%d kbps", stream.Bitrate/1000)})
+	}
+	if m.params.SampleRate > 0 {
+		rows = append(rows, [2]string{"Decoded", fmt.Sprintf("%gkHz · %s · %s", float64(m.params.SampleRate)/1000, m.params.Channels, m.params.Format)})
+	}
+	if d, ok := m.currentDevice(); ok {
+		rows = append(rows, [2]string{"Output", d.Label()})
+	}
+	norm := "off"
+	if m.normalize {
+		norm = "on"
+	}
+	rows = append(rows, [2]string{"Normalize", norm})
+
+	lines := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if r[1] != "" {
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("%-10s", r[0]))+r[1])
+		}
+	}
+	return lines
+}
+
 func (m Model) renderFooter() string {
 	status := dimStyle.Render(m.status)
 	if m.statusErr {
@@ -498,9 +572,9 @@ func (m Model) renderFooter() string {
 	if m.deps.Tap != nil {
 		viz = "v viz · "
 	}
-	help := dimStyle.Render("/ search · enter play · a queue · s save · tab next pane · space pause · ←→ seek · n/p next/prev · +/- vol · N norm · o output · " + viz + "r radio · q quit")
+	help := dimStyle.Render("/ search · enter play · a queue · s save · tab next pane · space pause · ←→ seek · n/p next/prev · +/- vol · N norm · o output · i info · " + viz + "r radio · q quit")
 	if m.focus == focusQueue {
-		help = dimStyle.Render("enter jump · s save track · S save queue · d remove · C clear queue · J/K move · tab next pane · n/p next/prev · q quit")
+		help = dimStyle.Render("enter jump · s save track · S save queue · d remove · C clear queue · J/K move · i info · tab next pane · n/p next/prev · q quit")
 	}
 	if m.focus == focusPlaylists {
 		help = dimStyle.Render("c create · enter browse · a queue all · D delete playlist · tab next pane · / search · q quit")
@@ -513,6 +587,9 @@ func (m Model) renderFooter() string {
 	}
 	if m.focus == focusPlaylistName {
 		help = dimStyle.Render("enter create playlist · esc cancel")
+	}
+	if m.focus == focusInfo {
+		help = dimStyle.Render("y copy URL · esc close · space pause · ←→ seek · n/p next/prev · +/- vol")
 	}
 	return ansi.Truncate(status, m.width, "…") + "\n" + ansi.Truncate(help, m.width, "…")
 }

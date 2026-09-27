@@ -64,6 +64,7 @@ go install -trimpath -ldflags="-s -w" github.com/omegaatt36/ytea/cmd/ytea@latest
 | `N` | toggle loudness leveling |
 | `r` | radio: queue a mix seeded by the current track |
 | `o` | choose output device (`enter` to switch, `esc` to cancel) |
+| `i` | track info: URL, YouTube format (itag, bitrate, size), codec, output (`y` copies the URL, `esc` closes) |
 | `v` | toggle spectrum (Linux with PipeWire; hidden elsewhere) |
 | `q`, `ctrl+c` | quit |
 
