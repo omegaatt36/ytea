@@ -125,6 +125,9 @@ type Model struct {
 	queueTail      <-chan struct{}
 	results        []youtube.Track
 	resultCur      int
+	// imports lists link and radio lookups in trigger order, so a slow lookup
+	// cannot reorder the imports queued after it.
+	imports []pendingImport
 
 	queue           []mpv.PlaylistEntry
 	queueCur        int
@@ -271,6 +274,12 @@ type (
 		requestID uint64
 		query     string
 		tracks    []youtube.Track
+		err       error
+	}
+	lookupDoneMsg struct {
+		requestID uint64
+		tracks    []youtube.Track
+		limitHit  bool
 		err       error
 	}
 	queueDoneMsg struct {
@@ -438,6 +447,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus(pluralize(len(msg.tracks), "result") + " for " + quote(msg.query))
 		}
 		return m, nil
+
+	case lookupDoneMsg:
+		return m, m.resolveImport(msg)
 
 	case queueDoneMsg:
 		if msg.requestID == m.spinnerRequest {

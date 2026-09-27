@@ -84,11 +84,9 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.focus = focusResults
 		m.input.Blur()
 		if link, ok := youtube.RefOf(query); ok {
-			task := m.reserveQueue()
+			m.imports = append(m.imports, pendingImport{requestID: requestID})
 			m.setStatus("importing " + quote(link.URL) + "…")
-			return m, tea.Batch(m.spinner.Tick, fetchQueue(m.deps.Searcher, func(tracks []youtube.Track) error {
-				return appendTracks(m.deps.Player, tracks)
-			}, link, requestID, task))
+			return m, tea.Batch(m.spinner.Tick, fetchQueue(m.deps.Searcher, link, requestID))
 		}
 		m.setStatus("searching " + quote(query) + "…")
 		m.searchRequest = requestID
@@ -232,8 +230,9 @@ func (m Model) handleQueueKey(key string) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 	case "C":
-		// Clear follows any in-flight import or edit, even when the displayed
-		// queue is already empty. The authoritative refresh settles its result.
+		// Clear follows any in-flight edit, even when the displayed queue is
+		// already empty. The authoritative refresh settles its result. Imports
+		// still resolving take a slot once resolved, so they land after it.
 		cmd := projectedQueueAction(m.reserveQueue(), m.nextRequest(), "queue cleared", func(ctx context.Context) error { return p.Stop(ctx) })
 		m.queue = nil
 		m.queueCur = 0
@@ -575,17 +574,55 @@ func (m Model) startRadio() (tea.Model, tea.Cmd) {
 		m.setStatus("nothing playing to seed a radio from")
 		return m, nil
 	}
-	requestID, task := m.nextRequest(), m.reserveQueue()
+	requestID := m.nextRequest()
+	m.imports = append(m.imports, pendingImport{requestID: requestID})
 	m.spinnerRequest = requestID
 	m.searching = true
 	m.setStatus("fetching radio…")
-	return m, tea.Batch(m.spinner.Tick, fetchRadio(m.deps.Searcher, func(tracks []youtube.Track) error {
-		return appendTracks(m.deps.Player, tracks)
-	}, t.ID, requestID, task))
+	return m, tea.Batch(m.spinner.Tick, fetchRadio(m.deps.Searcher, t.ID, requestID))
+}
+
+// pendingImport is a link or radio lookup awaiting its queue write.
+type pendingImport struct {
+	requestID uint64
+	lookup    *lookupDoneMsg // nil while the lookup runs
+}
+
+// resolveImport records a finished lookup, then queues every resolved import
+// at the head of the trigger order. Slots are reserved only now, so queue
+// edits made during a lookup neither wait on the network nor act on its tracks.
+func (m *Model) resolveImport(msg lookupDoneMsg) tea.Cmd {
+	i := slices.IndexFunc(m.imports, func(p pendingImport) bool { return p.requestID == msg.requestID })
+	if i < 0 {
+		return nil
+	}
+	m.imports = slices.Clone(m.imports)
+	m.imports[i].lookup = &msg
+	var cmds []tea.Cmd
+	for len(m.imports) > 0 && m.imports[0].lookup != nil {
+		cmds = append(cmds, queueImport(func(tracks []youtube.Track) error {
+			return appendTracks(m.deps.Player, tracks)
+		}, *m.imports[0].lookup, m.reserveQueue()))
+		m.imports = m.imports[1:]
+	}
+	return tea.Batch(cmds...)
+}
+
+// queueImport writes a resolved lookup into its reserved queue slot.
+func queueImport(appendQueue func([]youtube.Track) error, lookup lookupDoneMsg, task queueTask) tea.Cmd {
+	return func() tea.Msg {
+		err := task.run(func() error {
+			if lookup.err != nil || len(lookup.tracks) == 0 {
+				return lookup.err
+			}
+			return appendQueue(lookup.tracks)
+		})
+		return queueDoneMsg{requestID: lookup.requestID, tracks: lookup.tracks, limitHit: lookup.limitHit, err: err}
+	}
 }
 
 // fetchQueue resolves the tracks behind a pasted link so update can queue them.
-func fetchQueue(s Searcher, appendQueue func([]youtube.Track) error, link youtube.Link, requestID uint64, task queueTask) tea.Cmd {
+func fetchQueue(s Searcher, link youtube.Link, requestID uint64) tea.Cmd {
 	return func() tea.Msg {
 		limit := 0
 		if link.Mix {
@@ -602,18 +639,12 @@ func fetchQueue(s Searcher, appendQueue func([]youtube.Track) error, link youtub
 			tracks = tracks[:youtube.MaxPlaylistItems]
 		}
 		limitHit := !link.Mix && len(tracks) == youtube.MaxPlaylistItems
-		err = task.run(func() error {
-			if err != nil || len(tracks) == 0 {
-				return err
-			}
-			return appendQueue(tracks)
-		})
-		return queueDoneMsg{requestID: requestID, tracks: tracks, limitHit: limitHit, err: err}
+		return lookupDoneMsg{requestID: requestID, tracks: tracks, limitHit: limitHit, err: err}
 	}
 }
 
 // fetchRadio resolves YouTube's mix for the track with seedID.
-func fetchRadio(s Searcher, appendQueue func([]youtube.Track) error, seedID string, requestID uint64, task queueTask) tea.Cmd {
+func fetchRadio(s Searcher, seedID string, requestID uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), searchTimeout)
 		defer cancel()
@@ -624,13 +655,7 @@ func fetchRadio(s Searcher, appendQueue func([]youtube.Track) error, seedID stri
 		if len(tracks) > radioLimit {
 			tracks = tracks[:radioLimit]
 		}
-		err = task.run(func() error {
-			if err != nil || len(tracks) == 0 {
-				return err
-			}
-			return appendQueue(tracks)
-		})
-		return queueDoneMsg{requestID: requestID, tracks: tracks, err: err}
+		return lookupDoneMsg{requestID: requestID, tracks: tracks, err: err}
 	}
 }
 

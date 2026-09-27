@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -311,6 +312,16 @@ func (p *spyPlaylistPlayer) PlayNow(_ context.Context, url string) error {
 
 func (p *spyPlaylistPlayer) Append(_ context.Context, url string) error {
 	p.calls = append(p.calls, "append "+url)
+	return p.err
+}
+
+func (p *spyPlaylistPlayer) AppendAll(_ context.Context, urls []string) error {
+	p.calls = append(p.calls, "append "+strings.Join(urls, ","))
+	return p.err
+}
+
+func (p *spyPlaylistPlayer) Stop(context.Context) error {
+	p.calls = append(p.calls, "stop")
 	return p.err
 }
 
@@ -678,16 +689,17 @@ type searchStub struct {
 	tracks []youtube.Track
 }
 
-func (s searchStub) Search(ctx context.Context, query string, limit int) ([]youtube.Track, error) {
+func (s searchStub) Search(_ context.Context, _ string, _ int) ([]youtube.Track, error) {
 	return nil, errors.New("unexpected search")
 }
 
-func (s searchStub) Lookup(ctx context.Context, url string, limit int) ([]youtube.Track, error) {
+func (s searchStub) Lookup(_ context.Context, _ string, _ int) ([]youtube.Track, error) {
 	return s.tracks, nil
 }
 
 func TestSearchEnterImportsYouTubeLink(t *testing.T) {
-	m := New(Deps{Searcher: searchStub{tracks: []youtube.Track{
+	player := &spyPlaylistPlayer{}
+	m := New(Deps{Player: player, Searcher: searchStub{tracks: []youtube.Track{
 		{ID: "x1", Title: "one", URL: "https://www.youtube.com/watch?v=x1"},
 	}}})
 	m.input.SetValue("https://youtu.be/x1")
@@ -701,13 +713,24 @@ func TestSearchEnterImportsYouTubeLink(t *testing.T) {
 		t.Errorf("status = %q, want an importing note", gm.status)
 	}
 
-	task := queueTask{done: make(chan struct{})}
-	qm := fetchQueue(gm.deps.Searcher, func([]youtube.Track) error { return nil }, youtube.Link{URL: "https://www.youtube.com/watch?v=x1"}, gm.activeRequest, task)()
-	resolved, ok := qm.(queueDoneMsg)
-	if !ok {
-		t.Fatalf("msg = %T, want queueDoneMsg", qm)
+	if len(gm.imports) != 1 || gm.queueTail != nil {
+		t.Fatalf("imports = %+v, want a pending lookup without a queue slot", gm.imports)
 	}
-	got, cmd := gm.update(resolved)
+
+	lm, ok := fetchQueue(gm.deps.Searcher, youtube.Link{URL: "https://www.youtube.com/watch?v=x1"}, gm.activeRequest)().(lookupDoneMsg)
+	if !ok {
+		t.Fatal("fetchQueue did not return a lookupDoneMsg")
+	}
+	got, write := gm.update(lm)
+	gm = got.(Model)
+	if write == nil || len(gm.imports) != 0 {
+		t.Fatalf("write = %v, imports = %+v, want the resolved import queued", write != nil, gm.imports)
+	}
+	qm, ok := write().(queueDoneMsg)
+	if !ok || !slices.Equal(player.calls, []string{"append https://www.youtube.com/watch?v=x1"}) {
+		t.Fatalf("calls = %v, want the resolved track appended", player.calls)
+	}
+	got, cmd := gm.update(qm)
 	gm = got.(Model)
 	if gm.searching {
 		t.Error("searching = true, want the fetch finished")
@@ -766,9 +789,9 @@ func TestFetchQueueCapsMixes(t *testing.T) {
 	}
 
 	link := youtube.Link{URL: "https://www.youtube.com/watch?v=seed&list=RDseed", Mix: true}
-	qm, ok := fetchQueue(searchStub{tracks: tracks}, func([]youtube.Track) error { return nil }, link, 1, queueTask{done: make(chan struct{})})().(queueDoneMsg)
+	qm, ok := fetchQueue(searchStub{tracks: tracks}, link, 1)().(lookupDoneMsg)
 	if !ok {
-		t.Fatalf("msg = %T, want queueDoneMsg", qm)
+		t.Fatalf("msg = %T, want lookupDoneMsg", qm)
 	}
 	if len(qm.tracks) != radioLimit {
 		t.Errorf("tracks = %d, want %d", len(qm.tracks), radioLimit)
@@ -778,9 +801,9 @@ func TestFetchQueueCapsMixes(t *testing.T) {
 	}
 
 	link = youtube.Link{URL: "https://www.youtube.com/playlist?list=PL123"}
-	qm, ok = fetchQueue(searchStub{tracks: tracks}, func([]youtube.Track) error { return nil }, link, 2, queueTask{done: make(chan struct{})})().(queueDoneMsg)
+	qm, ok = fetchQueue(searchStub{tracks: tracks}, link, 2)().(lookupDoneMsg)
 	if !ok {
-		t.Fatalf("msg = %T, want queueDoneMsg", qm)
+		t.Fatalf("msg = %T, want lookupDoneMsg", qm)
 	}
 	if len(qm.tracks) != radioLimit+5 {
 		t.Errorf("tracks = %d, want the whole playlist", len(qm.tracks))
@@ -794,14 +817,14 @@ func TestFetchQueueCapsLargePlaylistAndShowsLimit(t *testing.T) {
 	}
 	appended := 0
 	link := youtube.Link{URL: "https://www.youtube.com/playlist?list=PL123"}
-	msg := fetchQueue(searchStub{tracks: tracks}, func(got []youtube.Track) error {
+	lookup, ok := fetchQueue(searchStub{tracks: tracks}, link, 1)().(lookupDoneMsg)
+	if !ok {
+		t.Fatal("fetchQueue did not return a lookupDoneMsg")
+	}
+	qm := queueImport(func(got []youtube.Track) error {
 		appended = len(got)
 		return nil
-	}, link, 1, queueTask{done: make(chan struct{})})()
-	qm, ok := msg.(queueDoneMsg)
-	if !ok {
-		t.Fatalf("msg = %T, want queueDoneMsg", msg)
-	}
+	}, lookup, queueTask{done: make(chan struct{})})().(queueDoneMsg)
 	if len(qm.tracks) != youtube.MaxPlaylistItems || appended != youtube.MaxPlaylistItems || !qm.limitHit {
 		t.Fatalf("queued %d tracks, appended %d, limitHit %v", len(qm.tracks), appended, qm.limitHit)
 	}
@@ -848,10 +871,10 @@ func TestFetchRadioDropsSeedAndCaps(t *testing.T) {
 		tracks = append(tracks, youtube.Track{ID: id, URL: "https://www.youtube.com/watch?v=" + id})
 	}
 
-	msg := fetchRadio(searchStub{tracks: tracks}, func([]youtube.Track) error { return nil }, "seed", 1, queueTask{done: make(chan struct{})})()
-	qm, ok := msg.(queueDoneMsg)
+	msg := fetchRadio(searchStub{tracks: tracks}, "seed", 1)()
+	qm, ok := msg.(lookupDoneMsg)
 	if !ok {
-		t.Fatalf("msg = %T, want queueDoneMsg", msg)
+		t.Fatalf("msg = %T, want lookupDoneMsg", msg)
 	}
 	if qm.err != nil {
 		t.Fatalf("err = %v", qm.err)
@@ -931,67 +954,45 @@ func TestQueueActionDoesNotDiscardPendingSearch(t *testing.T) {
 	}
 }
 
-// lookupGateStub lets a test finish independent lookups in reverse order.
-type lookupGateStub struct {
-	started  chan string
-	returned chan string
-	finish   map[string]chan struct{}
+// appendRecorder reports each AppendAll by its first URL; safe across goroutines.
+type appendRecorder struct {
+	*mpv.Player
+	writes chan string
 }
 
-func (s lookupGateStub) Search(context.Context, string, int) ([]youtube.Track, error) {
-	return nil, errors.New("unexpected search")
-}
-
-func (s lookupGateStub) Lookup(_ context.Context, url string, _ int) ([]youtube.Track, error) {
-	s.started <- url
-	<-s.finish[url]
-	s.returned <- url
-	return []youtube.Track{{ID: url, URL: url}}, nil
+func (p appendRecorder) AppendAll(_ context.Context, urls []string) error {
+	p.writes <- urls[0]
+	return nil
 }
 
 func TestOverlappingImportsWriteInTriggerOrder(t *testing.T) {
-	stub := lookupGateStub{
-		started:  make(chan string, 2),
-		returned: make(chan string, 2),
-		finish:   map[string]chan struct{}{"first": make(chan struct{}), "second": make(chan struct{})},
+	player := appendRecorder{writes: make(chan string, 2)}
+	m := New(Deps{Player: player})
+	first, second := m.nextRequest(), m.nextRequest()
+	m.imports = []pendingImport{{requestID: first}, {requestID: second}}
+
+	got, cmd := m.update(lookupDoneMsg{requestID: second, tracks: []youtube.Track{{URL: "second"}}})
+	m = got.(Model)
+	if cmd != nil {
+		t.Fatal("second import was queued before first resolved")
 	}
-	m := New(Deps{})
-	first := m.reserveQueue()
-	second := m.reserveQueue()
-	writes := make(chan string, 2)
-	appendQueue := func(tracks []youtube.Track) error {
-		writes <- tracks[0].URL
-		return nil
+	got, cmd = m.update(lookupDoneMsg{requestID: first, tracks: []youtube.Track{{URL: "first"}}})
+	m = got.(Model)
+	if cmd == nil || len(m.imports) != 0 {
+		t.Fatalf("pending imports = %+v, want both queued", m.imports)
 	}
-	firstDone := make(chan tea.Msg, 1)
-	secondDone := make(chan tea.Msg, 1)
-	go func() { firstDone <- fetchQueue(stub, appendQueue, youtube.Link{URL: "first"}, 1, first)() }()
-	go func() { secondDone <- fetchQueue(stub, appendQueue, youtube.Link{URL: "second"}, 2, second)() }()
-	for range 2 {
-		select {
-		case <-stub.started:
-		case <-time.After(time.Second):
-			t.Fatal("lookups did not start")
-		}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("cmd = %v, want both writes batched", batch)
 	}
-	close(stub.finish["second"])
-	select {
-	case got := <-stub.returned:
-		if got != "second" {
-			t.Fatalf("lookup returned %q, want second before first is released", got)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("second lookup did not return")
+	// Start the writes in reverse: their reserved slots still keep trigger order.
+	done := make(chan tea.Msg, 2)
+	for _, write := range slices.Backward(batch) {
+		go func() { done <- write() }()
 	}
-	select {
-	case write := <-writes:
-		t.Fatalf("second import wrote %q before first resolved", write)
-	default:
-	}
-	close(stub.finish["first"])
 	for _, want := range []string{"first", "second"} {
 		select {
-		case got := <-writes:
+		case got := <-player.writes:
 			if got != want {
 				t.Fatalf("write = %q, want %q", got, want)
 			}
@@ -999,14 +1000,9 @@ func TestOverlappingImportsWriteInTriggerOrder(t *testing.T) {
 			t.Fatalf("timed out waiting for %q write", want)
 		}
 	}
-	for _, done := range []<-chan tea.Msg{firstDone, secondDone} {
-		select {
-		case msg := <-done:
-			if err := msg.(queueDoneMsg).err; err != nil {
-				t.Fatalf("import error = %v", err)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("import command did not finish")
+	for range 2 {
+		if err := (<-done).(queueDoneMsg).err; err != nil {
+			t.Fatalf("import error = %v", err)
 		}
 	}
 }
@@ -1088,14 +1084,36 @@ func TestClearQueueProjectsEmptyAndIgnoresStalePlaylist(t *testing.T) {
 	}
 }
 
-func TestClearQueueFollowsPendingImportEvenWhenDisplayEmpty(t *testing.T) {
-	m := New(Deps{})
-	m.focus = focusQueue
-	importTask := m.reserveQueue()
-	got, cmd := m.handleQueueKey("C")
+func TestClearQueueKeepsImportStillResolving(t *testing.T) {
+	player := &spyPlaylistPlayer{}
+	m := New(Deps{Player: player})
+	m.input.SetValue("https://youtu.be/x1")
+	got, _ := m.update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = got.(Model)
-	if cmd == nil || m.queueTail == importTask.done {
-		t.Fatal("clear did not reserve a slot after the pending import")
+	importID := m.activeRequest
+
+	m.focus = focusQueue
+	got, clear := m.handleQueueKey("C")
+	m = got.(Model)
+	cleared := make(chan tea.Msg, 1)
+	// clear is a Batch with the thumbnail refresh, which is nil here.
+	go func() { cleared <- clear() }()
+	select {
+	case <-cleared:
+	case <-time.After(time.Second):
+		t.Fatal("clear waited on the unresolved import lookup")
+	}
+
+	got, write := m.update(lookupDoneMsg{requestID: importID, tracks: []youtube.Track{{URL: "x1"}}})
+	m = got.(Model)
+	if write == nil {
+		t.Fatal("resolved import was not queued after clear")
+	}
+	if err := write().(queueDoneMsg).err; err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"stop", "append x1"}; !slices.Equal(player.calls, want) {
+		t.Errorf("calls = %v, want %v", player.calls, want)
 	}
 }
 
@@ -1308,10 +1326,10 @@ func TestQueueWriteErrorIsReportedAfterWrite(t *testing.T) {
 	tracks := []youtube.Track{{ID: "x", Title: "resolved first", URL: "x"}, {ID: "y", Title: "resolved second", URL: "y"}}
 	m.queue, m.pos, m.idle = []mpv.PlaylistEntry{{Filename: "x"}}, 0, false
 	accepted := ""
-	msg := fetchQueue(searchStub{tracks: tracks}, func(tracks []youtube.Track) error {
+	msg := queueImport(func(tracks []youtube.Track) error {
 		accepted = tracks[0].URL // mpv accepted this entry before rejecting the next one.
 		return want
-	}, youtube.Link{URL: "x"}, id, task)()
+	}, lookupDoneMsg{requestID: id, tracks: tracks}, task)()
 	got, _ := m.update(msg)
 	m = got.(Model)
 	if !m.statusErr || m.status != want.Error() {
