@@ -38,6 +38,7 @@ var (
 func (m Model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
+	v.Cursor = m.cursor()
 	v.WindowTitle = "ytea"
 	if e, t, ok := m.current(); ok {
 		v.WindowTitle = "ytea — " + displayTitle(e, t)
@@ -52,6 +53,35 @@ func (m Model) View() tea.View {
 		}
 	}
 	return v
+}
+
+// cursor places the terminal's cursor in the focused text input, in screen
+// cells. The terminal draws and blinks it itself, so an idle input costs no
+// renders. Positions follow the layout in render: the search box sits right of
+// the title on the first header row, and the name input on the first row
+// under the title of the full-width pane below the header.
+func (m Model) cursor() *tea.Cursor {
+	switch m.focus {
+	case focusSearch:
+		c := m.input.Cursor()
+		if c != nil {
+			c.X += lipgloss.Width(renderTitle())
+		}
+		return c
+	case focusPlaylistName:
+		c := m.nameInput.Cursor()
+		if c != nil {
+			c.X += paneFocus.GetBorderLeftSize()
+			c.Y += lipgloss.Height(m.renderHeader()) + paneFocus.GetBorderTopSize() + 1
+		}
+		return c
+	default:
+		return nil
+	}
+}
+
+func renderTitle() string {
+	return titleStyle.Render("ytea")
 }
 
 func (m Model) render() string {
@@ -106,7 +136,7 @@ func (m Model) thumbOrigin() image.Point {
 }
 
 func (m Model) renderHeader() string {
-	title := titleStyle.Render("ytea")
+	title := renderTitle()
 	search := m.input.View()
 	if m.searching {
 		search += " " + m.spinner.View()

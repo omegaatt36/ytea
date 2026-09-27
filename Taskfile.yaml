@@ -17,3 +17,7 @@ tasks:
   test:
     cmds:
       - go test -race ./...
+  install:
+    desc: install a release-sized ytea (no debug info or symbol table)
+    cmds:
+      - go install -trimpath -ldflags="-s -w" ./cmd/ytea

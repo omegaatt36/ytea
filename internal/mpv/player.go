@@ -109,6 +109,8 @@ func (cfg Config) args() []string {
 		"--idle=yes",
 		"--no-video",
 		"--no-terminal",
+		"--osc=no",
+		"--load-stats-overlay=no",
 		"--audio-client-name=" + cfg.ClientName,
 		"--input-ipc-server=" + cfg.Socket,
 		"--ytdl-format=bestaudio/best",

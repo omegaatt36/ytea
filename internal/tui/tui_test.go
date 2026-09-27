@@ -93,6 +93,115 @@ func TestApplyAFTracksNormalize(t *testing.T) {
 	}
 }
 
+func TestWaitMPVDropsTimePosWithinShownSecond(t *testing.T) {
+	timePos := func(data string) mpv.Event {
+		return mpv.Event{Name: "property-change", Prop: mpv.PropTimePos, Data: json.RawMessage(data)}
+	}
+	tests := []struct {
+		name   string
+		shown  time.Duration
+		events []mpv.Event
+		want   tea.Msg
+	}{
+		{
+			name:   "same second is dropped",
+			shown:  12 * time.Second,
+			events: []mpv.Event{timePos("12.2"), timePos("12.4"), timePos("12.6")},
+			want:   mpvEventMsg(timePos("12.6")),
+		},
+		{
+			name:   "backward seek into a new second",
+			shown:  12 * time.Second,
+			events: []mpv.Event{timePos("3.1")},
+			want:   mpvEventMsg(timePos("3.1")),
+		},
+		{
+			// null (no file) must still reset the shown position.
+			name:   "unavailable",
+			shown:  0,
+			events: []mpv.Event{timePos("null")},
+			want:   mpvEventMsg(timePos("null")),
+		},
+		{
+			name:   "other events pass",
+			shown:  12 * time.Second,
+			events: []mpv.Event{timePos("12.1"), {Name: "playback-restart"}},
+			want:   mpvEventMsg(mpv.Event{Name: "playback-restart"}),
+		},
+		{
+			name:   "closed after dropped events",
+			shown:  12 * time.Second,
+			events: []mpv.Event{timePos("12.1")},
+			want:   mpvClosedMsg{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ch := make(chan mpv.Event, len(tt.events))
+			for _, ev := range tt.events {
+				ch <- ev
+			}
+			close(ch)
+			got := waitMPV(ch, tt.shown)()
+			if fmt.Sprint(got) != fmt.Sprint(tt.want) {
+				t.Errorf("waitMPV() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCursorFollowsFocusedInput(t *testing.T) {
+	const typed = "lofi beats"
+	tests := []struct {
+		name  string
+		setup func(m *Model)
+	}{
+		{name: "search", setup: func(m *Model) {
+			m.input.SetValue(typed)
+			m.input.CursorEnd()
+		}},
+		{name: "playlist name", setup: func(m *Model) {
+			m.focus = focusPlaylistName
+			m.input.Blur()
+			m.nameInput.Focus()
+			m.nameInput.SetValue(typed)
+			m.nameInput.CursorEnd()
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			next, _ := New(Deps{}).Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+			m := next.(Model)
+			tt.setup(&m)
+
+			c := m.View().Cursor
+			if c == nil {
+				t.Fatal("View().Cursor = nil, want the input's cursor")
+			}
+			lines := strings.Split(m.render(), "\n")
+			if c.Y < 0 || c.Y >= len(lines) {
+				t.Fatalf("cursor row %d outside the %d rendered rows", c.Y, len(lines))
+			}
+			// The cursor sits in the cell right after the typed text.
+			if got := ansi.Strip(ansi.Cut(lines[c.Y], c.X-len(typed), c.X)); got != typed {
+				t.Errorf("cells before cursor (%d,%d) = %q, want %q", c.X, c.Y, got, typed)
+			}
+		})
+	}
+}
+
+func TestNoCursorOrBlinkOutsideInputs(t *testing.T) {
+	m := New(Deps{})
+	if cmd := m.focusSearch(); cmd != nil {
+		t.Error("focusing search returned a command, want none: the terminal blinks the cursor")
+	}
+	m.focus = focusResults
+	m.input.Blur()
+	if c := m.View().Cursor; c != nil {
+		t.Errorf("View().Cursor = %+v with a list focused, want nil", c)
+	}
+}
+
 func TestRenderSpectrumSize(t *testing.T) {
 	m := New(Deps{})
 	m.levels = []float64{0, 0.25, 0.5, 1}

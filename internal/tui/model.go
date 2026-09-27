@@ -14,6 +14,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/omegaatt36/ytea/internal/library"
@@ -211,8 +212,7 @@ func New(deps Deps) Model {
 	in.Prompt = " / "
 	in.CharLimit = 200
 	in.KeyMap.Paste = pasteKeys
-	// Focus here, not in Init: Init has a value receiver, so focusing there
-	// would only change a copy and keystrokes would be ignored.
+	in.SetVirtualCursor(false)
 	in.Focus()
 
 	sp := spinner.New()
@@ -222,6 +222,7 @@ func New(deps Deps) Model {
 	nameInput.Prompt = " name: "
 	nameInput.CharLimit = 100
 	nameInput.KeyMap.Paste = pasteKeys
+	nameInput.SetVirtualCursor(false)
 
 	tracks := make(map[string]youtube.Track, len(deps.InitialTracks))
 	for url, track := range deps.InitialTracks {
@@ -254,8 +255,7 @@ func (m Model) KnownTrack(url string) youtube.Track { return m.tracks[url] }
 // Init starts the event pumps.
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
-		textinput.Blink,
-		waitMPV(m.deps.Player.Events()),
+		waitMPV(m.deps.Player.Events(), m.timePos),
 		loadDevices(m.deps.Player, false),
 	}
 	if m.deps.Tap != nil {
@@ -353,7 +353,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.input.SetWidth(max(10, m.width/2))
-		// The renderer clears the screen after a resize, which drops placements.
+		m.nameInput.SetWidth(max(1, m.width-paneFocus.GetHorizontalFrameSize()-lipgloss.Width(m.nameInput.Prompt)-1))
 		m.placed = false
 		return m, nil
 
@@ -510,7 +510,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mpvEventMsg:
 		cmd := m.applyEvent(mpv.Event(msg))
 		m.syncMPRIS()
-		return m, tea.Batch(cmd, waitMPV(m.deps.Player.Events()))
+		return m, tea.Batch(cmd, waitMPV(m.deps.Player.Events(), m.timePos))
 
 	case mpvClosedMsg:
 		m.setError("mpv exited")
@@ -540,8 +540,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// The text input has private messages of its own: cursor blinks and the
-	// clipboard contents read by its ctrl+v binding.
 	if m.focus == focusSearch {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)

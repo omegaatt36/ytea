@@ -655,13 +655,16 @@ func loadDevices(p Player, open bool) tea.Cmd {
 	}
 }
 
-func waitMPV(ch <-chan mpv.Event) tea.Cmd {
+func waitMPV(ch <-chan mpv.Event, shown time.Duration) tea.Cmd {
 	return func() tea.Msg {
-		ev, ok := <-ch
-		if !ok {
-			return mpvClosedMsg{}
+		for ev := range ch {
+			if ev.Name == "property-change" && ev.Prop == mpv.PropTimePos && string(ev.Data) != "null" &&
+				seconds(mpv.Decode[float64](ev.Data)).Round(time.Second) == shown.Round(time.Second) {
+				continue
+			}
+			return mpvEventMsg(ev)
 		}
-		return mpvEventMsg(ev)
+		return mpvClosedMsg{}
 	}
 }
 

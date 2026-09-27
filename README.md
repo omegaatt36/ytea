@@ -45,7 +45,7 @@ Keep yt-dlp current. YouTube changes regularly break old versions, and the sympt
 ## Install
 
 ```sh
-go install github.com/omegaatt36/ytea/cmd/ytea@latest
+go install -trimpath -ldflags="-s -w" github.com/omegaatt36/ytea/cmd/ytea@latest
 ```
 
 ## Keys
