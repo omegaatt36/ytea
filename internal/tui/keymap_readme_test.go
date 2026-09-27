@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textinput"
 )
 
 type readmeFullHelpMap interface {
@@ -41,6 +42,7 @@ func TestREADMEKeysMatchFullHelpKeymap(t *testing.T) {
 	contexts := []Model{
 		{keys: keys, focus: focusSearch, overlay: overlayNone},
 		{keys: keys, focus: focusResults, overlay: overlayNone},
+		readmeFilterInputModel(keys),
 		{keys: keys, focus: focusQueue, overlay: overlayNone},
 		{keys: keys, focus: focusPlaylists, overlay: overlayNone},
 		{keys: keys, focus: focusPlaylistTracks, overlay: overlayNone},
@@ -107,6 +109,29 @@ func TestREADMEKeysMatchFullHelpKeymap(t *testing.T) {
 	if !strings.Contains(section, closeHelpNote) {
 		t.Errorf("README Keys section does not state that ? and q close full help without quitting")
 	}
+}
+
+// R6 [derived]: session.json also carries repeat mode, restored on launch.
+func TestREADMEDocumentsRepeatInSession(t *testing.T) {
+	readme, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(readme), "\n") {
+		if strings.Contains(line, "`session.json`") {
+			if !strings.Contains(line, "repeat mode") {
+				t.Errorf("README session.json paragraph does not mention repeat mode: %q", line)
+			}
+			return
+		}
+	}
+	t.Fatal("README does not describe session.json")
+}
+
+func readmeFilterInputModel(keys keyMap) Model {
+	m := Model{keys: keys, focus: focusResults, overlay: overlayNone, filterInput: textinput.New()}
+	m.filterInput.Focus()
+	return m
 }
 
 func readmeKeysSection(t *testing.T, markdown string) string {

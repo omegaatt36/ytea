@@ -25,6 +25,7 @@ type State struct {
 	URLs     []string            `json:"urls"`
 	Index    int                 `json:"index"`
 	Volume   float64             `json:"volume"`
+	Repeat   string              `json:"repeat,omitempty"`
 	Metadata map[string]Metadata `json:"metadata,omitempty"`
 }
 

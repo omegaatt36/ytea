@@ -21,7 +21,8 @@ and cover art in the terminal, including inside Zellij.
 - **Search while you listen.** Queue results with `a`, or play one right after the current track with `enter`. The queue is mpv's own playlist, so the next track is resolved ahead of time and track changes are near-gapless.
 - **Paste a link.** A playlist URL pasted into search imports its first 200 tracks straight into the queue, a mix queues its first 25 with the seed playing first, and a single video URL queues just that video. `r` queues a mix seeded by the track playing now.
 - **Keep local playlists.** Save a result or queued track with `s`, or save the whole queue with `S`. Create named playlists and queue a saved track or an entire playlist later. Playlists are stored on this device and do not modify your YouTube account.
-- **Resume your session.** On exit, ytea saves the queue, selected track, and volume locally. On the next launch it restores them with playback paused.
+- **Resume your session.** On exit, ytea saves the queue, selected track, volume, and repeat mode locally. On the next launch it restores them with playback paused.
+- **Repeat and shuffle.** `L` cycles repeat through off, all, and one; the now-playing line shows `repeat all` or `repeat one` while it is on. `Z` in the Queue shuffles the tracks after the current one.
 - **Audio-only, best quality.** Streams `bestaudio` (usually Opus, ~130 kbps; 256 kbps with [YouTube Premium](#youtube-premium-audio)) to the audio output mpv picked: PipeWire on Linux, Core Audio on macOS. No video is fetched.
 - **Loudness leveling.** An on/off `dynaudnorm` filter (`N`) evens out volume between uploads.
 - **Output switching.** Pick any device mpv can output to with `o` — PipeWire sinks on Linux, Core Audio devices on macOS. The choice applies only to ytea, not to the system default.
@@ -62,6 +63,7 @@ go install -trimpath -ldflags="-s -w" github.com/omegaatt36/ytea/cmd/ytea@latest
 | `+` `=` | vol up (`=` is the unshifted volume up alias) |
 | `-` | vol down |
 | `N` | toggle loudness leveling |
+| `L` | cycle repeat: off → all → one |
 
 ### Navigation and global
 
@@ -99,6 +101,17 @@ While full help is open, `?`, `esc`, or `q` closes it; `q` does not quit.
 | `enter` | play now (inserted after the current track) |
 | `a` | queue at the end |
 | `s` | save to a local playlist |
+| `f` | filter the results by title or channel |
+| `esc` | clear filter (shown while a filter is applied) |
+
+### Results filter
+
+| Key | Action |
+|---|---|
+| `↑` `ctrl+k` | up (move while typing) |
+| `↓` `ctrl+j` | down (move while typing) |
+| `enter` | apply filter and return to the list |
+| `esc` | clear filter |
 
 ### Queue
 
@@ -113,6 +126,7 @@ While full help is open, `?`, `esc`, or `q` closes it; `q` does not quit.
 | `C` | clear queue and stop playback |
 | `K` `shift+↑` | move up |
 | `J` `shift+↓` | move down |
+| `Z` | shuffle the tracks after the current one |
 | `s` | save track to a local playlist |
 | `S` | save queue as a new local playlist |
 
@@ -205,7 +219,7 @@ Click the search box, a tab, or a list row to focus or select it, and scroll the
 Every flag can also come from an environment variable (`--audio-device` reads `YTEA_AUDIO_DEVICE`) or from the config file. A flag wins over the environment, which wins over the config file.
 
 Logs go to `$XDG_STATE_HOME/ytea/` (`ytea.log`, `mpv.log`), since the TUI owns the terminal.
-The previous queue, known song titles and artists, selected track, and volume are stored in `session.json` in the same directory. Playback resumes paused from the start of the selected track.
+The previous queue, known song titles and artists, selected track, volume, and repeat mode are stored in `session.json` in the same directory. Playback resumes paused from the start of the selected track.
 Named local playlists are stored separately in `playlists.json` in that directory, so clearing the queue or replacing the last session does not remove them.
 Edit local playlists from one ytea instance at a time; simultaneous instances can overwrite each other's playlist changes.
 

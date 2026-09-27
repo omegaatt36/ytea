@@ -13,6 +13,7 @@ type PlaybackState struct {
 	Entries []PlaylistEntry
 	Index   int
 	Volume  float64
+	Repeat  Repeat
 }
 
 // Snapshot reads the authoritative playlist and playback settings from mpv.
@@ -31,6 +32,16 @@ func (p *Player) Snapshot(ctx context.Context) (PlaybackState, error) {
 		return PlaybackState{}, fmt.Errorf("read volume: %w", err)
 	}
 	state.Volume = Decode[float64](data)
+
+	loopPlaylist, err := p.client.Command(ctx, "get_property", PropLoopPlaylist)
+	if err != nil {
+		return PlaybackState{}, fmt.Errorf("read loop-playlist: %w", err)
+	}
+	loopFile, err := p.client.Command(ctx, "get_property", PropLoopFile)
+	if err != nil {
+		return PlaybackState{}, fmt.Errorf("read loop-file: %w", err)
+	}
+	state.Repeat = RepeatFrom(LoopOn(loopPlaylist), LoopOn(loopFile))
 	return state, nil
 }
 
@@ -70,6 +81,9 @@ func (p *Player) Restore(ctx context.Context, state PlaybackState) (retErr error
 
 	if err := p.SetVolume(ctx, state.Volume); err != nil {
 		return fmt.Errorf("restore volume: %w", err)
+	}
+	if err := p.SetRepeat(ctx, state.Repeat); err != nil {
+		return fmt.Errorf("restore repeat: %w", err)
 	}
 	if len(state.URLs) == 0 {
 		return nil

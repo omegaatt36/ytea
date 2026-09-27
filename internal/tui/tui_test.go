@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"math/rand/v2"
 	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
@@ -164,6 +166,14 @@ func TestCursorFollowsFocusedInput(t *testing.T) {
 			m.input.SetValue(typed)
 			m.input.CursorEnd()
 		}},
+		{name: "results filter", setup: func(m *Model) {
+			m.results = []youtube.Track{{Title: "song"}}
+			m.focus = focusResults
+			m.input.Blur()
+			m.filterInput.Focus()
+			m.filterInput.SetValue(typed)
+			m.filterInput.CursorEnd()
+		}},
 		{name: "playlist name", setup: func(m *Model) {
 			m.overlay = overlayName
 			m.input.Blur()
@@ -260,14 +270,22 @@ func helpContexts(t *testing.T) []struct {
 		}
 		return m
 	}
+	filtered := at(focusResults, overlayNone)
+	filtered.filterInput.SetValue("song")
+	typing := at(focusResults, overlayNone)
+	typing.filterInput.Focus()
 	k := newKeyMap()
+	unfiltered := k.results
+	unfiltered.ClearFilter.SetEnabled(false)
 	return []struct {
 		name  string
 		model Model
 		keys  help.KeyMap
 	}{
 		{"search", at(focusSearch, overlayNone), k.search},
-		{"results", at(focusResults, overlayNone), k.results},
+		{"results", at(focusResults, overlayNone), unfiltered},
+		{"results filtered", filtered, k.results},
+		{"results filter input", typing, k.filter},
 		{"queue", at(focusQueue, overlayNone), k.queue},
 		{"playlists", at(focusPlaylists, overlayNone), k.playlists},
 		{"playlist tracks", at(focusPlaylistTracks, overlayNone), k.playlistTracks},
@@ -290,7 +308,7 @@ func TestShortHelpListsContextActionsWithoutPlaybackKeys(t *testing.T) {
 				t.Errorf("help %q does not end with %q", got, "? more")
 			}
 			for _, b := range tc.keys.ShortHelp() {
-				if !strings.Contains(got, helpEntry(b)) {
+				if b.Enabled() && !strings.Contains(got, helpEntry(b)) {
 					t.Errorf("help %q is missing the context action %q", got, helpEntry(b))
 				}
 			}
@@ -2303,7 +2321,7 @@ func listsEntry(rendered string, b key.Binding) bool {
 func TestFullHelpShowsPlaybackGlobalAndContextColumns(t *testing.T) {
 	k := newKeyMap()
 	for _, tc := range helpContexts(t) {
-		if tc.name == "search" || tc.name == "playlist name" {
+		if tc.name == "search" || tc.name == "playlist name" || tc.name == "results filter input" {
 			continue
 		}
 		t.Run(tc.name, func(t *testing.T) {
@@ -2718,5 +2736,816 @@ func TestFullHelpListsVizOnlyWithSpectrum(t *testing.T) {
 				t.Errorf("full help lists %q = %v, want %v", helpEntry(viz), got, tc.want)
 			}
 		})
+	}
+}
+
+type spyOrderPlayer struct {
+	*mpv.Player
+	calls     []string
+	repeats   []mpv.Repeat
+	orders    [][]int
+	reorderEr error
+	playlist  []mpv.PlaylistEntry
+}
+
+func (p *spyOrderPlayer) SetRepeat(_ context.Context, r mpv.Repeat) error {
+	p.calls = append(p.calls, "set repeat")
+	p.repeats = append(p.repeats, r)
+	return nil
+}
+
+func (p *spyOrderPlayer) Reorder(_ context.Context, _ int, _ string, order []int) error {
+	p.calls = append(p.calls, "reorder")
+	p.orders = append(p.orders, order)
+	return p.reorderEr
+}
+
+func (p *spyOrderPlayer) Playlist(context.Context) ([]mpv.PlaylistEntry, int, error) {
+	p.calls = append(p.calls, "playlist")
+	return p.playlist, 1, nil
+}
+
+func (p *spyOrderPlayer) PlayIndex(context.Context, int) error {
+	p.calls = append(p.calls, "play index")
+	return nil
+}
+
+func (p *spyOrderPlayer) Seek(context.Context, time.Duration) error {
+	p.calls = append(p.calls, "seek")
+	return nil
+}
+
+// R1, R2: L asks mpv for the next mode; only mpv's loop-* reports change the display.
+func TestRepeatKeyCyclesThroughMPV(t *testing.T) {
+	for _, f := range []focus{focusResults, focusQueue, focusPlaylists} {
+		player := &spyOrderPlayer{}
+		m := New(Deps{Player: player})
+		m.focus = f
+		got, cmd := m.handleKey(keyPress("L"))
+		m = got.(Model)
+		if cmd == nil {
+			t.Fatalf("focus %d: L returned no command", f)
+		}
+		cmd()
+		if !slices.Equal(player.repeats, []mpv.Repeat{mpv.RepeatAll}) {
+			t.Fatalf("focus %d: SetRepeat calls = %v, want [all]", f, player.repeats)
+		}
+		if strings.Contains(m.audioLine(), "repeat") {
+			t.Fatalf("focus %d: display changed before mpv reported: %q", f, m.audioLine())
+		}
+	}
+
+	player := &spyOrderPlayer{}
+	m := New(Deps{Player: player})
+	m.focus = focusResults
+	steps := []struct {
+		prop, value string
+		display     string
+		next        mpv.Repeat
+	}{
+		{mpv.PropLoopPlaylist, `"inf"`, "repeat all", mpv.RepeatOne},
+		{mpv.PropLoopFile, `"inf"`, "repeat one", mpv.RepeatOff},
+		{mpv.PropLoopPlaylist, `false`, "repeat one", mpv.RepeatOff},
+		{mpv.PropLoopFile, `false`, "", mpv.RepeatAll},
+	}
+	for _, step := range steps {
+		m.applyProperty(mpv.Event{Name: "property-change", Prop: step.prop, Data: json.RawMessage(step.value)})
+		line := m.audioLine()
+		if step.display == "" && strings.Contains(line, "repeat") || step.display != "" && !strings.Contains(line, step.display) {
+			t.Fatalf("after %s=%s audio line = %q, want %q", step.prop, step.value, line, step.display)
+		}
+		got, cmd := m.handleKey(keyPress("L"))
+		m = got.(Model)
+		cmd()
+		if last := player.repeats[len(player.repeats)-1]; last != step.next {
+			t.Fatalf("after %s=%s L requested %v, want %v", step.prop, step.value, last, step.next)
+		}
+	}
+}
+
+func shuffleModel(player Player, pos int, names ...string) Model {
+	m := New(Deps{Player: player})
+	m.focus = focusQueue
+	m.rng = rand.New(rand.NewPCG(1, 2))
+	for _, n := range names {
+		m.queue.entries = append(m.queue.entries, mpv.PlaylistEntry{Filename: n})
+	}
+	m.queue.pos = pos
+	m.idle = pos < 0
+	return m
+}
+
+func filenames(entries []mpv.PlaylistEntry) []string {
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Filename
+	}
+	return names
+}
+
+// R4, R5: the prefix and current track stay put, the tail is permuted, and nothing restarts playback.
+func TestShuffleKeepsCurrentAndPrefix(t *testing.T) {
+	player := &spyOrderPlayer{}
+	m := shuffleModel(player, 1, "A", "B", "C", "D", "E")
+	m.queueCur = 1
+	got, cmd := m.handleKey(keyPress("Z"))
+	m = got.(Model)
+	if cmd == nil {
+		t.Fatal("Z returned no command")
+	}
+	view := filenames(m.queue.entries)
+	if view[0] != "A" || view[1] != "B" {
+		t.Fatalf("view = %v, want A, B in place", view)
+	}
+	if tail := slices.Sorted(slices.Values(view[2:])); !slices.Equal(tail, []string{"C", "D", "E"}) {
+		t.Fatalf("view tail = %v, want a permutation of C, D, E", view[2:])
+	}
+	if cur, _, ok := m.current(); !ok || cur.Filename != "B" || m.queue.pos != 1 {
+		t.Fatalf("current = %+v (pos %d), want B at 1", cur, m.queue.pos)
+	}
+	if m.queue.editsPending != 1 || m.queue.projection == nil {
+		t.Fatal("shuffle was not projected through the queue-sync write path")
+	}
+	msg := cmd().(queueActionDoneMsg)
+	if msg.err != nil || !msg.projected {
+		t.Fatalf("reorder msg = %+v", msg)
+	}
+	if !slices.Equal(player.calls, []string{"reorder"}) {
+		t.Fatalf("player calls = %v, want only reorder", player.calls)
+	}
+	order := player.orders[0]
+	for i, from := range order {
+		if view[i] != []string{"A", "B", "C", "D", "E"}[from] {
+			t.Fatalf("view %v disagrees with sent order %v", view, order)
+		}
+	}
+	// A playlist event from before the reorder must not undo the projected order.
+	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"A"},{"filename":"B"},{"filename":"C"},{"filename":"D"},{"filename":"E"}]`)})
+	if !slices.Equal(filenames(m.queue.entries), view) {
+		t.Fatalf("stale event replaced shuffled view: %v", filenames(m.queue.entries))
+	}
+}
+
+// R4: with nothing playing the whole queue is shuffled.
+func TestShuffleWithoutCurrentShufflesAll(t *testing.T) {
+	names := []string{"A", "B", "C", "D", "E", "F", "G", "H"}
+	moved := false
+	for seed := range uint64(20) {
+		player := &spyOrderPlayer{}
+		m := shuffleModel(player, -1, names...)
+		m.rng = rand.New(rand.NewPCG(seed, seed))
+		got, cmd := m.handleKey(keyPress("Z"))
+		m = got.(Model)
+		if cmd == nil {
+			t.Fatal("Z returned no command")
+		}
+		view := filenames(m.queue.entries)
+		if !slices.Equal(slices.Sorted(slices.Values(view)), names) {
+			t.Fatalf("view = %v, want a permutation of %v", view, names)
+		}
+		if view[0] != "A" {
+			moved = true
+		}
+	}
+	if !moved {
+		t.Error("index 0 never moved across 20 seeds; the whole queue was not shuffled")
+	}
+}
+
+// R5: the cursor follows the selected track to its new index.
+func TestShuffleKeepsSelectionOnTrack(t *testing.T) {
+	for seed := range uint64(10) {
+		m := shuffleModel(&spyOrderPlayer{}, 0, "A", "B", "C", "D", "E", "F")
+		m.rng = rand.New(rand.NewPCG(seed, 7))
+		m.queueCur = 3
+		got, _ := m.handleKey(keyPress("Z"))
+		m = got.(Model)
+		if sel := m.queue.entries[m.queueCur].Filename; sel != "D" {
+			t.Fatalf("seed %d: selection = %q at %d, want D", seed, sel, m.queueCur)
+		}
+	}
+}
+
+// R5: fewer than two tracks to reorder leaves the queue alone with a status message.
+func TestShuffleNeedsTwoTracks(t *testing.T) {
+	for _, tt := range []struct {
+		pos   int
+		names []string
+	}{
+		{1, []string{"A", "B", "C"}},
+		{2, []string{"A", "B", "C"}},
+		{-1, []string{"A"}},
+		{-1, nil},
+	} {
+		player := &spyOrderPlayer{}
+		m := shuffleModel(player, tt.pos, tt.names...)
+		m.status = ""
+		got, cmd := m.handleKey(keyPress("Z"))
+		m = got.(Model)
+		if cmd != nil || len(player.calls) != 0 || m.queue.editsPending != 0 {
+			t.Fatalf("pos %d %v: shuffle issued a write", tt.pos, tt.names)
+		}
+		if !slices.Equal(filenames(m.queue.entries), filenames(shuffleModel(nil, tt.pos, tt.names...).queue.entries)) {
+			t.Fatalf("pos %d %v: queue changed to %v", tt.pos, tt.names, filenames(m.queue.entries))
+		}
+		if m.status == "" {
+			t.Fatalf("pos %d %v: no status message", tt.pos, tt.names)
+		}
+	}
+}
+
+// R5: a failed reorder reports the error and resyncs the queue from mpv.
+func TestShuffleErrorResyncsFromMPV(t *testing.T) {
+	want := errors.New("playlist-move failed")
+	original := []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}, {Filename: "D"}}
+	player := &spyOrderPlayer{reorderEr: want, playlist: original}
+	m := shuffleModel(player, 1, "A", "B", "C", "D")
+	got, cmd := m.handleKey(keyPress("Z"))
+	m = got.(Model)
+	if cmd == nil {
+		t.Fatal("Z returned no command")
+	}
+	got, refresh := m.update(cmd())
+	m = got.(Model)
+	if !m.statusErr || !strings.Contains(m.status, want.Error()) {
+		t.Fatalf("status = %q (err %v), want reorder error", m.status, m.statusErr)
+	}
+	if refresh == nil {
+		t.Fatal("failed reorder scheduled no resync")
+	}
+	got, _ = m.update(refresh())
+	m = got.(Model)
+	if !slices.Equal(filenames(m.queue.entries), filenames(original)) || m.queue.projection != nil {
+		t.Fatalf("queue after resync = %v, want mpv's %v", filenames(m.queue.entries), filenames(original))
+	}
+}
+
+// R5: playlist-pos only follows moves once mpv reports them, so Z waits until
+// earlier edits are confirmed instead of shuffling from a stale current index.
+func TestShuffleWaitsForPendingEdits(t *testing.T) {
+	player := &spyOrderPlayer{}
+	m := shuffleModel(player, 0, "A", "B", "C", "D", "E")
+	m.queueCur = 0
+	got, _ := m.handleKey(keyPress("J"))
+	m = got.(Model)
+	moved := filenames(m.queue.entries)
+
+	got, cmd := m.handleKey(keyPress("Z"))
+	m = got.(Model)
+	if cmd != nil || len(player.orders) != 0 || !slices.Equal(filenames(m.queue.entries), moved) {
+		t.Fatalf("Z during a pending move issued a reorder: cmd %v, orders %v, view %v", cmd != nil, player.orders, filenames(m.queue.entries))
+	}
+
+	got, _ = m.update(queueActionDoneMsg{projected: true})
+	m = got.(Model)
+	got, cmd = m.handleKey(keyPress("Z"))
+	m = got.(Model)
+	if cmd != nil || len(player.orders) != 0 || !slices.Equal(filenames(m.queue.entries), moved) {
+		t.Fatalf("Z before the move was read back issued a reorder: cmd %v, orders %v, view %v", cmd != nil, player.orders, filenames(m.queue.entries))
+	}
+}
+
+func TestShuffleKeyOnlyInQueuePane(t *testing.T) {
+	for _, f := range []focus{focusResults, focusPlaylists, focusPlaylistTracks} {
+		player := &spyOrderPlayer{}
+		m := shuffleModel(player, 0, "A", "B", "C", "D")
+		m.focus = f
+		got, cmd := m.handleKey(keyPress("Z"))
+		m = got.(Model)
+		if cmd != nil || len(player.calls) != 0 || !slices.Equal(filenames(m.queue.entries), []string{"A", "B", "C", "D"}) {
+			t.Fatalf("focus %d: Z acted outside the Queue pane", f)
+		}
+	}
+}
+
+// R6 [derived]: L is a playback binding and Z a Queue binding; both appear in full help, not the footer.
+func TestFullHelpListsRepeatAndQueueShuffle(t *testing.T) {
+	m := press(t, overlayModel(t, focusQueue), keyPress("?"))
+	got := rendered(m)
+	for _, entry := range []key.Binding{
+		key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "repeat")),
+		key.NewBinding(key.WithKeys("Z"), key.WithHelp("Z", "shuffle")),
+	} {
+		if !listsEntry(got, entry) {
+			t.Errorf("Queue full help is missing %q:\n%s", helpEntry(entry), got)
+		}
+	}
+	footer := footerHelp(overlayModel(t, focusQueue))
+	for _, entry := range []string{"L repeat", "Z shuffle"} {
+		if strings.Contains(footer, entry) {
+			t.Errorf("Queue short help %q lists %q", footer, entry)
+		}
+	}
+}
+
+func filterModel() (Model, *spyPlaylistPlayer) {
+	player := &spyPlaylistPlayer{}
+	m := New(Deps{Player: player})
+	m.width, m.height = 100, 30
+	m.input.Blur()
+	m.focus = focusResults
+	m.results = []youtube.Track{
+		{Title: "lofi", URL: "a"},
+		{Title: "rock", URL: "b"},
+		{Title: "lofi beats", URL: "c"},
+	}
+	return m, player
+}
+
+func typeText(t *testing.T, m Model, s string) Model {
+	t.Helper()
+	for _, r := range s {
+		m = press(t, m, keyPress(string(r)))
+	}
+	return m
+}
+
+func selectedTitle(m Model) string {
+	tr, _ := m.selectedResult()
+	return tr.Title
+}
+
+func renderedRows(m Model) string {
+	return ansi.Strip(m.render())
+}
+
+var (
+	escKey   = tea.KeyPressMsg{Code: tea.KeyEscape}
+	upKey    = tea.KeyPressMsg{Code: tea.KeyUp}
+	ctrlJKey = tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl}
+	ctrlKKey = tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl}
+)
+
+// R1
+func TestFilterKeyIgnoredWithoutResults(t *testing.T) {
+	m, _ := filterModel()
+	m.results = nil
+	m = press(t, m, keyPress("f"))
+	if m.filterInput.Focused() || m.filterInput.Value() != "" {
+		t.Errorf("f without results: filter focused=%v value=%q, want closed and empty", m.filterInput.Focused(), m.filterInput.Value())
+	}
+}
+
+// R1
+func TestFilterKeyOpensAndFocusesInput(t *testing.T) {
+	m, _ := filterModel()
+	m = press(t, m, keyPress("f"))
+	if !m.filterInput.Focused() || !atPane(m, focusResults) {
+		t.Fatalf("after f: filter focused=%v focus=%v, want focused filter in results", m.filterInput.Focused(), m.focus)
+	}
+	if m.filterInput.Value() != "" {
+		t.Errorf("filter value = %q, want empty: f opens, it is not typed", m.filterInput.Value())
+	}
+}
+
+// R2
+func TestFilterNarrowsOnEveryKeystroke(t *testing.T) {
+	m, _ := filterModel()
+	m = press(t, m, keyPress("f"))
+	m = typeText(t, m, "l")
+	if got := renderedRows(m); strings.Contains(got, "rock") || !strings.Contains(got, "lofi beats") {
+		t.Errorf("after typing l: rows = %q, want rock hidden and lofi beats shown", got)
+	}
+	m = typeText(t, m, "ofi b")
+	if got := renderedRows(m); strings.Contains(got, "rock") || !strings.Contains(got, "lofi beats") {
+		t.Errorf("after typing lofi b: rows = %q, want only lofi beats", got)
+	}
+	if got := selectedTitle(m); got != "lofi beats" {
+		t.Errorf("selected = %q, want the only visible row lofi beats", got)
+	}
+}
+
+// R3
+func TestFilterInputMovesSelectionWithoutLeaving(t *testing.T) {
+	m, _ := filterModel()
+	m = press(t, m, keyPress("f"))
+	m = typeText(t, m, "lofi")
+	steps := []struct {
+		key  tea.KeyPressMsg
+		want string
+	}{
+		{keyPress("down"), "lofi beats"},
+		{upKey, "lofi"},
+		{ctrlJKey, "lofi beats"},
+		{ctrlKKey, "lofi"},
+	}
+	for _, s := range steps {
+		m = press(t, m, s.key)
+		if got := selectedTitle(m); got != s.want {
+			t.Errorf("after %s: selected = %q, want %q", s.key, got, s.want)
+		}
+		if !m.filterInput.Focused() || m.filterInput.Value() != "lofi" {
+			t.Errorf("after %s: filter focused=%v value=%q, want still typing lofi", s.key, m.filterInput.Focused(), m.filterInput.Value())
+		}
+	}
+}
+
+func TestFilterInputBlocksGlobalKeys(t *testing.T) {
+	m, player := filterModel()
+	m = press(t, m, keyPress("f"))
+	got, cmd := m.update(keyPress("q"))
+	m = got.(Model)
+	if cmd != nil {
+		t.Errorf("q in filter returned a command, want it typed")
+	}
+	m = typeText(t, m, "/a?")
+	if m.filterInput.Value() != "q/a?" || !m.filterInput.Focused() || !atPane(m, focusResults) || m.fullHelp {
+		t.Errorf("filter value=%q focused=%v focus=%v fullHelp=%v, want q/a? typed into the open filter",
+			m.filterInput.Value(), m.filterInput.Focused(), m.focus, m.fullHelp)
+	}
+	if len(player.calls) != 0 {
+		t.Errorf("player calls = %v, want none", player.calls)
+	}
+}
+
+// R4
+func TestFilterEnterCommitsAndKeepsFilter(t *testing.T) {
+	m, _ := filterModel()
+	m = press(t, m, keyPress("f"))
+	m = typeText(t, m, "lofi")
+	m = press(t, m, keyPress("enter"))
+	if m.filterInput.Focused() || !atPane(m, focusResults) {
+		t.Errorf("after enter: filter focused=%v focus=%v, want results list focused", m.filterInput.Focused(), m.focus)
+	}
+	if m.filterInput.Value() != "lofi" || strings.Contains(renderedRows(m), "rock") {
+		t.Errorf("after enter: value=%q, want lofi kept and rock hidden", m.filterInput.Value())
+	}
+}
+
+// R4
+func TestFilterEscClearsFromInputAndList(t *testing.T) {
+	m, _ := filterModel()
+	m.filterInput.Focus()
+	m.filterInput.SetValue("lofi")
+	m = press(t, m, escKey)
+	if m.filterInput.Focused() || m.filterInput.Value() != "" || !strings.Contains(renderedRows(m), "rock") {
+		t.Errorf("esc in input: focused=%v value=%q, want closed, cleared, rock shown", m.filterInput.Focused(), m.filterInput.Value())
+	}
+
+	m.filterInput.SetValue("lofi")
+	m = press(t, m, escKey)
+	if m.filterInput.Value() != "" || !strings.Contains(renderedRows(m), "rock") || !atPane(m, focusResults) {
+		t.Errorf("esc in list: value=%q focus=%v, want cleared, rock shown, results focused", m.filterInput.Value(), m.focus)
+	}
+}
+
+// R5
+func TestFilteredEnqueueUsesVisibleRow(t *testing.T) {
+	m, player := filterModel()
+	m = press(t, m, keyPress("f"))
+	m = typeText(t, m, "lofi")
+	m = press(t, m, keyPress("enter"))
+	m = press(t, m, keyPress("j"))
+	_, cmd := m.update(keyPress("a"))
+	if cmd == nil {
+		t.Fatal("a returned no command, want an append")
+	}
+	done := make(chan struct{})
+	go func() { cmd(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("append did not run")
+	}
+	if !slices.Equal(player.calls, []string{"append c"}) {
+		t.Errorf("calls = %v, want C (lofi beats) appended", player.calls)
+	}
+}
+
+// R5
+func TestFilteredNavigationBounds(t *testing.T) {
+	m, _ := filterModel()
+	m.filterInput.SetValue("lofi")
+	m = press(t, m, keyPress("G"))
+	if got := selectedTitle(m); got != "lofi beats" || m.resultCur != 1 {
+		t.Errorf("G: selected=%q cur=%d, want lofi beats at row 1", got, m.resultCur)
+	}
+	m = press(t, m, keyPress("j"))
+	if m.resultCur != 1 {
+		t.Errorf("j past end: cur=%d, want 1", m.resultCur)
+	}
+	m = press(t, m, keyPress("g"))
+	if got := selectedTitle(m); got != "lofi" {
+		t.Errorf("g: selected=%q, want lofi", got)
+	}
+}
+
+// R5
+func TestFilteredClickSelectsShownTrack(t *testing.T) {
+	m := mouseModel()
+	m.focus = focusResults
+	m.input.Blur()
+	m.filterInput.SetValue("3")
+	m = click(m, cellAt(t, m, "song 35"))
+	if got := selectedTitle(m); !atPane(m, focusResults) || got != "song 35" {
+		t.Errorf("click song 35: focus=%v selected=%q, want results/song 35", m.focus, got)
+	}
+}
+
+// R5
+func TestFilteredWheelBoundedByVisibleRows(t *testing.T) {
+	m := mouseModel()
+	m.focus = focusResults
+	m.input.Blur()
+	m.filterInput.SetValue("3")
+	at := cellAt(t, m, "song 30")
+	for range 20 {
+		m = wheel(m, at, tea.MouseWheelDown)
+	}
+	if got := selectedTitle(m); m.resultCur != 12 || got != "song 39" {
+		t.Errorf("wheel past end: cur=%d selected=%q, want row 12 song 39 (13 rows contain 3)", m.resultCur, got)
+	}
+}
+
+// R6
+func TestNewSearchClearsFilter(t *testing.T) {
+	m, _ := filterModel()
+	m.filterInput.Focus()
+	m.filterInput.SetValue("lofi")
+	m.searchRequest = m.nextRequest()
+	got, _ := m.update(searchDoneMsg{requestID: m.searchRequest, query: "new", tracks: []youtube.Track{
+		{Title: "jazz", URL: "j"}, {Title: "blues", URL: "k"},
+	}})
+	m = got.(Model)
+	if m.filterInput.Value() != "" || !m.filterInput.Focused() {
+		t.Errorf("after new results: filter value=%q focused=%v, want cleared and still focused", m.filterInput.Value(), m.filterInput.Focused())
+	}
+	if rows := renderedRows(m); !strings.Contains(rows, "jazz") || !strings.Contains(rows, "blues") {
+		t.Errorf("rows = %q, want all new results shown", rows)
+	}
+}
+
+func resultsTitleLine(t *testing.T, m Model) string {
+	t.Helper()
+	for line := range strings.SplitSeq(renderedRows(m), "\n") {
+		if strings.Contains(line, "│"+resultsTitle) {
+			return line
+		}
+	}
+	t.Fatalf("no Results title line in %q", renderedRows(m))
+	return ""
+}
+
+// R3
+func TestFilterTitleCountsMatchedOverTotal(t *testing.T) {
+	m, _ := filterModel()
+	m = press(t, m, keyPress("f"))
+	m = typeText(t, m, "lofi")
+	if got := resultsTitleLine(t, m); !strings.Contains(got, "2/3") {
+		t.Errorf("title = %q, want count 2/3", got)
+	}
+}
+
+// R3
+func TestFilterWithoutMatchesSaysSo(t *testing.T) {
+	m, _ := filterModel()
+	m = press(t, m, keyPress("f"))
+	m = typeText(t, m, "jazz")
+	if got := resultsTitleLine(t, m); !strings.Contains(got, "0/3") {
+		t.Errorf("title = %q, want count 0/3", got)
+	}
+	if got := renderedRows(m); !strings.Contains(got, "no matches") {
+		t.Errorf("rows = %q, want no matches", got)
+	}
+}
+
+// R3
+func TestFilterHighlightsMatchedSubstrings(t *testing.T) {
+	m, _ := filterModel()
+	m.results[2].Channel = "Lofi Girl"
+	m = press(t, m, keyPress("f"))
+	m = typeText(t, m, "lofi")
+	raw := m.render()
+	if want := matchStyle.Render("lofi") + " beats"; !strings.Contains(raw, want) {
+		t.Errorf("render lacks %q: lofi highlighted, beats plain", want)
+	}
+	if want := matchStyle.Inherit(dimStyle).Render("Lofi"); !strings.Contains(raw, want) {
+		t.Errorf("render lacks %q: channel match highlighted over dim", want)
+	}
+	if want := matchStyle.Inherit(cursorStyle).Render("lofi"); !strings.Contains(raw, want) {
+		t.Errorf("render lacks %q: selected row keeps its highlight", want)
+	}
+	if strings.Contains(raw, matchStyle.Render(" beats")) || strings.Contains(raw, matchStyle.Render("lofi beats")) {
+		t.Error("non-matching text is highlighted")
+	}
+}
+
+// R3
+func TestNoCountOrHighlightWithoutFilter(t *testing.T) {
+	m, _ := filterModel()
+	if got := resultsTitleLine(t, m); strings.Contains(got, "/3") {
+		t.Errorf("title = %q, want no count without a filter", got)
+	}
+	if strings.Contains(m.render(), matchStyle.Render("lofi")) {
+		t.Error("render highlights lofi without a filter")
+	}
+}
+
+// R3
+func TestFilterHighlightSurvivesTruncation(t *testing.T) {
+	m, _ := filterModel()
+	m = resize(m, 60)
+	m.results[2].Title = "lofi " + strings.Repeat("x", 100) + " tail"
+	m = press(t, m, keyPress("f"))
+	m = typeText(t, m, "lofi tail")
+	_, _, leftW := m.bodyPanes()
+	pane := m.renderPanes(20)
+	for i, line := range strings.Split(pane, "\n") {
+		if w := lipgloss.Width(line); w != m.width {
+			t.Errorf("line %d width = %d, want %d: %q", i, w, m.width, ansi.Strip(line))
+		}
+		if left := ansi.Cut(line, 0, leftW); lipgloss.Width(left) > leftW {
+			t.Errorf("line %d results part wider than pane %d", i, leftW)
+		}
+	}
+	if lipgloss.Height(pane) != 20 {
+		t.Errorf("pane height = %d, want 20", lipgloss.Height(pane))
+	}
+	if !strings.Contains(pane, matchStyle.Inherit(cursorStyle).Render("lofi")) {
+		t.Error("truncated row lost the lofi highlight")
+	}
+	if row := ansi.Strip(strings.Split(pane, "\n")[2]); !strings.HasPrefix(row, "│lofi xxx") || strings.Contains(row, "tail") {
+		t.Errorf("row = %q, want lofi truncated before tail", row)
+	}
+}
+
+// R7
+func TestResultsHelpListsFilterAndClearOnlyWhenFiltered(t *testing.T) {
+	m, _ := filterModel()
+	got := footerHelp(resize(m, 500))
+	if !strings.Contains(got, "f filter") {
+		t.Errorf("results help %q is missing f filter", got)
+	}
+	if strings.Contains(got, "esc clear filter") {
+		t.Errorf("results help %q offers esc clear filter with no filter applied", got)
+	}
+
+	m.filterInput.SetValue("lofi")
+	got = footerHelp(resize(m, 500))
+	if !strings.Contains(got, "f filter") || !strings.Contains(got, "esc clear filter") {
+		t.Errorf("filtered results help %q, want f filter and esc clear filter", got)
+	}
+
+	m.fullHelp = true
+	full := ansi.Strip(m.renderFullHelp(30))
+	for _, b := range []key.Binding{m.keys.results.Filter, m.keys.results.ClearFilter} {
+		if !listsEntry(full, b) {
+			t.Errorf("filtered results full help is missing %q:\n%s", helpEntry(b), full)
+		}
+	}
+}
+
+// R7
+func TestFilterInputHelpShowsFilterKeysNotResultKeys(t *testing.T) {
+	m, _ := filterModel()
+	m = press(t, m, keyPress("f"))
+	got := footerHelp(resize(m, 500))
+	for _, want := range []string{"↑/ctrl+k up", "↓/ctrl+j down", "enter apply filter", "esc clear filter", "? more"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("filter input help %q is missing %q", got, want)
+		}
+	}
+	for _, unwanted := range []string{"a queue", "s save", "f filter", "enter play now"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("filter input help %q shows the results key %q", got, unwanted)
+		}
+	}
+}
+
+func newResults(t *testing.T, m Model) Model {
+	t.Helper()
+	m.searchRequest = m.nextRequest()
+	got, _ := m.update(searchDoneMsg{requestID: m.searchRequest, query: "new", tracks: []youtube.Track{
+		{Title: "jazz", URL: "j"}, {Title: "blues", URL: "k"},
+	}})
+	return got.(Model)
+}
+
+// R6
+func TestNewSearchKeepsTypingInFilter(t *testing.T) {
+	m, player := filterModel()
+	m = press(t, m, keyPress("f"))
+	m = typeText(t, m, "lo")
+	m = newResults(t, m)
+	got, cmd := m.update(keyPress("q"))
+	m = got.(Model)
+	if cmd != nil {
+		t.Error("q after new results returned a command, want it typed into the filter")
+	}
+	if m.filterInput.Value() != "q" || !m.filterInput.Focused() || !atPane(m, focusResults) {
+		t.Errorf("filter value=%q focused=%v focus=%v, want q typed into the still-open filter",
+			m.filterInput.Value(), m.filterInput.Focused(), m.focus)
+	}
+	if len(player.calls) != 0 {
+		t.Errorf("player calls = %v, want none", player.calls)
+	}
+}
+
+// R6
+func TestNewSearchLeavesUnfocusedFilterClosed(t *testing.T) {
+	m, _ := filterModel()
+	m.filterInput.SetValue("lofi")
+	m = newResults(t, m)
+	if m.filterInput.Value() != "" || m.filterInput.Focused() || m.filterOpen() {
+		t.Errorf("filter value=%q focused=%v, want cleared and closed", m.filterInput.Value(), m.filterInput.Focused())
+	}
+}
+
+func TestFilterPasteReadsClipboardIntoFilter(t *testing.T) {
+	m, _ := filterModel()
+	m = press(t, m, keyPress("f"))
+	got, cmd := m.update(tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl})
+	m = got.(Model)
+	// textinput.Paste reads the system clipboard, so compare instead of running it.
+	if cmd == nil || reflect.ValueOf(cmd).Pointer() != reflect.ValueOf(textinput.Paste).Pointer() {
+		t.Fatal("ctrl+v in filter: cmd is not the clipboard read")
+	}
+	if !m.filterInput.Focused() || !atPane(m, focusResults) {
+		t.Fatalf("ctrl+v left the filter: focused=%v focus=%v", m.filterInput.Focused(), m.focus)
+	}
+
+	// The clipboard result type is unexported; build one carrying known text.
+	msg := reflect.New(reflect.TypeOf(textinput.Paste())).Elem()
+	if msg.Kind() != reflect.String {
+		t.Skipf("clipboard unavailable: %v", msg.Type())
+	}
+	msg.SetString("lofi")
+	got, _ = m.update(msg.Interface())
+	m = got.(Model)
+	if m.filterInput.Value() != "lofi" || m.input.Value() != "" {
+		t.Errorf("clipboard paste: filter=%q search=%q, want lofi in the filter only", m.filterInput.Value(), m.input.Value())
+	}
+}
+
+func TestFilterWidthIgnoresTabAtResize(t *testing.T) {
+	m, _ := filterModel()
+	want := resize(m, 100).filterInput.Width()
+	m.focus = focusPlaylists
+	m = resize(m, 100)
+	m.focus = focusResults
+	m = press(t, m, keyPress("f"))
+	if got := m.filterInput.Width(); got != want {
+		t.Errorf("filter width after resizing on Playlists = %d, want %d as when resized on Results", got, want)
+	}
+}
+
+// R4
+func TestFilterClearKeepsSelectedTrack(t *testing.T) {
+	for _, commit := range []bool{false, true} {
+		m, _ := filterModel()
+		m = press(t, m, keyPress("f"))
+		m = typeText(t, m, "lofi")
+		m = press(t, m, keyPress("down"))
+		if commit {
+			m = press(t, m, keyPress("enter"))
+		}
+		m = press(t, m, escKey)
+		if m.resultCur != 2 || selectedTitle(m) != "lofi beats" {
+			t.Errorf("commit=%v: after esc cur=%d selected=%q, want lofi beats at 2", commit, m.resultCur, selectedTitle(m))
+		}
+	}
+}
+
+func TestHighlightSurvivesControlBytes(t *testing.T) {
+	tests := []struct {
+		name  string
+		s     string
+		spans []span
+		width int
+		want  int
+	}{
+		{"trailing escape", "abcdef\x1b[0m", nil, 5, 5},
+		{"inner escapes", "abc\x1b[31mred\x1b[0m tail", nil, 3, 3},
+		{"escape before span", "x\x1b[0mlofi", []span{{5, 9}}, 20, 8},
+		{"wide runes", "日本語日本語", nil, 5, 5},
+		{"fits", "ab\x07c", nil, 5, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := highlight(tt.s, tt.spans, tt.width, lipgloss.NewStyle())
+			visible := ansi.Strip(got)
+			if strings.ContainsFunc(visible, unicode.IsControl) {
+				t.Errorf("highlight(%q) = %q, want no control bytes", tt.s, got)
+			}
+			if w := lipgloss.Width(got); w != tt.want {
+				t.Errorf("highlight(%q, %d) width = %d (%q), want %d", tt.s, tt.width, w, visible, tt.want)
+			}
+			if tt.spans != nil && !strings.Contains(got, matchStyle.Render("lofi")) {
+				t.Errorf("highlight(%q) = %q, want lofi highlighted", tt.s, got)
+			}
+		})
+	}
+}
+
+func TestResultsRenderWithEscapeInChannel(t *testing.T) {
+	m, _ := filterModel()
+	m = resize(m, 100)
+	m.results[0].Channel = "chanchanchanchanchan1\x1b[0m"
+	m.results[1].Title = "abc\x1b[31mred\x1b[0m tail"
+	pane := m.renderPanes(20)
+	for i, line := range strings.Split(pane, "\n") {
+		if w := lipgloss.Width(line); w != m.width {
+			t.Errorf("line %d width = %d, want %d: %q", i, w, m.width, ansi.Strip(line))
+		}
 	}
 }

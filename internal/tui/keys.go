@@ -11,6 +11,7 @@ type keyMap struct {
 	closeHelp      key.Binding
 	search         searchKeyMap
 	results        resultKeyMap
+	filter         filterKeyMap
 	queue          queueKeyMap
 	playlists      playlistKeyMap
 	playlistTracks playlistTrackKeyMap
@@ -25,7 +26,7 @@ type globalKeyMap struct {
 }
 
 type playbackKeyMap struct {
-	Pause, SeekBack, SeekForward, Next, Prev, VolumeUp, VolumeDown, Normalize key.Binding
+	Pause, SeekBack, SeekForward, Next, Prev, VolumeUp, VolumeDown, Normalize, Repeat key.Binding
 }
 
 type searchKeyMap struct {
@@ -38,12 +39,16 @@ type navKeyMap struct {
 
 type resultKeyMap struct {
 	navKeyMap
-	Play, Enqueue, Save key.Binding
+	Play, Enqueue, Save, Filter, ClearFilter key.Binding
+}
+
+type filterKeyMap struct {
+	Up, Down, Apply, Clear key.Binding
 }
 
 type queueKeyMap struct {
 	navKeyMap
-	Jump, Remove, Clear, MoveUp, MoveDown, Save, SaveQueue key.Binding
+	Jump, Remove, Clear, MoveUp, MoveDown, Shuffle, Save, SaveQueue key.Binding
 }
 
 type playlistKeyMap struct {
@@ -108,16 +113,25 @@ func newKeyMap() keyMap {
 			VolumeUp:    key.NewBinding(key.WithKeys("+", "="), key.WithHelp("+", "vol up")),
 			VolumeDown:  key.NewBinding(key.WithKeys("-"), key.WithHelp("-", "vol down")),
 			Normalize:   key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "leveling")),
+			Repeat:      key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "repeat")),
 		},
 		search: searchKeyMap{
 			Submit: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "search")),
 			Leave:  key.NewBinding(key.WithKeys("esc", "tab"), key.WithHelp("esc", "leave")),
 		},
 		results: resultKeyMap{
-			navKeyMap: nav,
-			Play:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "play now")),
-			Enqueue:   key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "queue")),
-			Save:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "save")),
+			navKeyMap:   nav,
+			Play:        key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "play now")),
+			Enqueue:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "queue")),
+			Save:        key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "save")),
+			Filter:      key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "filter")),
+			ClearFilter: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear filter")),
+		},
+		filter: filterKeyMap{
+			Up:    key.NewBinding(key.WithKeys("up", "ctrl+k"), key.WithHelp("↑/ctrl+k", "up")),
+			Down:  key.NewBinding(key.WithKeys("down", "ctrl+j"), key.WithHelp("↓/ctrl+j", "down")),
+			Apply: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "apply filter")),
+			Clear: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear filter")),
 		},
 		queue: queueKeyMap{
 			navKeyMap: nav,
@@ -126,6 +140,7 @@ func newKeyMap() keyMap {
 			Clear:     key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "clear queue")),
 			MoveUp:    key.NewBinding(key.WithKeys("K", "shift+up"), key.WithHelp("K", "move up")),
 			MoveDown:  key.NewBinding(key.WithKeys("J", "shift+down"), key.WithHelp("J", "move down")),
+			Shuffle:   key.NewBinding(key.WithKeys("Z"), key.WithHelp("Z", "shuffle")),
 			Save:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "save track")),
 			SaveQueue: key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "save queue")),
 		},
@@ -190,7 +205,12 @@ func (m Model) contextKeys() (string, help.KeyMap) {
 		return "Playlist tracks", m.keys.playlistTracks
 	case focusResults:
 	}
-	return "Results", m.keys.results
+	if m.filterInput.Focused() {
+		return "Results filter", m.keys.filter
+	}
+	results := m.keys.results
+	results.ClearFilter.SetEnabled(m.filterInput.Value() != "")
+	return "Results", results
 }
 
 func (k globalKeyMap) ShortHelp() []key.Binding {
@@ -213,7 +233,7 @@ func (k playbackKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Pause, k.SeekBack, k.SeekForward},
 		{k.Next, k.Prev},
-		{k.VolumeUp, k.VolumeDown, k.Normalize},
+		{k.VolumeUp, k.VolumeDown, k.Normalize, k.Repeat},
 	}
 }
 
@@ -230,7 +250,7 @@ func (k navKeyMap) bindings() []key.Binding {
 }
 
 func (k resultKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Play, k.Enqueue, k.Save}
+	return []key.Binding{k.Play, k.Enqueue, k.Save, k.Filter, k.ClearFilter}
 }
 
 func (k resultKeyMap) FullHelp() [][]key.Binding {
@@ -245,7 +265,7 @@ func (k queueKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		k.bindings(),
 		{k.Jump, k.Remove, k.Clear},
-		{k.MoveUp, k.MoveDown},
+		{k.MoveUp, k.MoveDown, k.Shuffle},
 		{k.Save, k.SaveQueue},
 	}
 }
@@ -295,5 +315,13 @@ func (k nameKeyMap) ShortHelp() []key.Binding {
 }
 
 func (k nameKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{k.ShortHelp()}
+}
+
+func (k filterKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Up, k.Down, k.Apply, k.Clear}
+}
+
+func (k filterKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{k.ShortHelp()}
 }

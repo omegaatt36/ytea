@@ -21,6 +21,10 @@ func TestSnapshotAndRestore(t *testing.T) {
 			data = `1`
 		case PropVolume:
 			data = `65`
+		case PropLoopPlaylist:
+			data = `"inf"`
+		case PropLoopFile:
+			data = `false`
 		}
 		return fmt.Sprintf(`{"request_id":%d,"error":"success","data":%s}`, req.RequestID, data)
 	})
@@ -28,11 +32,11 @@ func TestSnapshotAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(state.URLs, []string{"u1", "u2"}) || len(state.Entries) != 2 || state.Entries[0].Title != "first song" || state.Index != 1 || state.Volume != 65 {
+	if !slices.Equal(state.URLs, []string{"u1", "u2"}) || len(state.Entries) != 2 || state.Entries[0].Title != "first song" || state.Index != 1 || state.Volume != 65 || state.Repeat != RepeatAll {
 		t.Fatalf("snapshot = %+v", state)
 	}
-	if len(sourceOps) != 3 {
-		t.Errorf("read operations = %v, want three properties", sourceOps)
+	if len(sourceOps) != 5 {
+		t.Errorf("read operations = %v, want five properties", sourceOps)
 	}
 
 	dest := newFakePair(t, func(req request) string {
@@ -44,6 +48,8 @@ func TestSnapshotAndRestore(t *testing.T) {
 	}
 	want := [][]any{
 		{"set_property", PropVolume, float64(65)},
+		{"set_property", PropLoopFile, "no"},
+		{"set_property", PropLoopPlaylist, "inf"},
 		{"set_property", PropPause, true},
 		{"loadfile", "u1", "append"},
 		{"loadfile", "u2", "append"},

@@ -25,6 +25,9 @@ const (
 	PropAudioParams = "audio-params"
 	PropAudioDevice = "audio-device"
 	PropAF          = "af"
+	// PropLoopPlaylist and PropLoopFile carry the Repeat mode.
+	PropLoopPlaylist = "loop-playlist"
+	PropLoopFile     = "loop-file"
 )
 
 // PropAudioDeviceList lists the devices of the audio output mpv picked. Unlike
@@ -34,6 +37,7 @@ const PropAudioDeviceList = "audio-device-list"
 var observed = []string{
 	PropTimePos, PropDuration, PropPause, PropVolume, PropPlaylist,
 	PropPlaylistPos, PropIdle, PropCodec, PropAudioParams, PropAudioDevice, PropAF,
+	PropLoopPlaylist, PropLoopFile,
 }
 
 // normalizeFilter evens out loudness across uploads, which on YouTube can

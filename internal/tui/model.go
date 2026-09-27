@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math/rand/v2"
 	"net/http"
 	"slices"
 	"time"
@@ -64,6 +65,8 @@ type Player interface {
 	PlayIndex(context.Context, int) error
 	Remove(context.Context, int) error
 	Move(context.Context, int, int) error
+	Reorder(ctx context.Context, pos int, current string, order []int) error
+	SetRepeat(context.Context, mpv.Repeat) error
 	Stop(context.Context) error
 	Playlist(context.Context) ([]mpv.PlaylistEntry, int, error)
 }
@@ -100,6 +103,7 @@ type Model struct {
 
 	input                 textinput.Model
 	nameInput             textinput.Model
+	filterInput           textinput.Model
 	spinner               spinner.Model
 	focus                 focus
 	overlay               overlay
@@ -135,6 +139,8 @@ type Model struct {
 	params            mpv.AudioParams
 	device            string
 	normalize         bool
+	loopPlaylist      bool
+	loopFile          bool
 
 	levels   []float64
 	showViz  bool
@@ -149,6 +155,8 @@ type Model struct {
 	statusErr bool
 
 	thumb thumbImage
+
+	rng *rand.Rand
 }
 
 func New(deps Deps) Model {
@@ -173,6 +181,12 @@ func New(deps Deps) Model {
 	nameInput.CharLimit = 100
 	nameInput.KeyMap.Paste = keys.global.Paste
 	nameInput.SetVirtualCursor(false)
+	filterInput := textinput.New()
+	filterInput.Placeholder = "filter results"
+	filterInput.Prompt = " filter: "
+	filterInput.CharLimit = 100
+	filterInput.KeyMap.Paste = keys.global.Paste
+	filterInput.SetVirtualCursor(false)
 
 	tracks := make(map[string]youtube.Track, len(deps.InitialTracks))
 	maps.Copy(tracks, deps.InitialTracks)
@@ -186,6 +200,7 @@ func New(deps Deps) Model {
 		help:                  hm,
 		input:                 in,
 		nameInput:             nameInput,
+		filterInput:           filterInput,
 		spinner:               sp,
 		focus:                 focusSearch,
 		tracks:                tracks,
@@ -197,6 +212,7 @@ func New(deps Deps) Model {
 		volume:                100,
 		normalize:             deps.Normalize,
 		showViz:               deps.Tap != nil,
+		rng:                   rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
 	}
 }
 
@@ -272,6 +288,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.help.SetWidth(m.width)
 		m.input.SetWidth(max(10, m.width/2))
 		m.nameInput.SetWidth(max(1, m.width-paneFocus.GetHorizontalFrameSize()-lipgloss.Width(m.nameInput.Prompt)-1))
+		m.filterInput.SetWidth(max(1, m.resultsWidth()-paneFocus.GetHorizontalFrameSize()-lipgloss.Width(fmt.Sprintf("%s %d/%d%s", resultsTitle, searchLimit, searchLimit, m.filterInput.Prompt))-1))
 		return m, m.updateThumb(msg)
 
 	case placeMsg, uv.KittyGraphicsEvent, uv.PrimaryDeviceAttributesEvent, thumbMsg:
@@ -291,6 +308,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var inputCmd tea.Cmd
 			m.nameInput, inputCmd = m.nameInput.Update(msg)
 			return m, inputCmd
+		}
+		if m.inFilter() {
+			return m, m.updateFilter(msg)
 		}
 		cmd := m.focusSearch()
 		var inputCmd tea.Cmd
@@ -319,6 +339,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.results, m.resultCur = msg.tracks, 0
+		m.filterInput.Reset()
+		if len(m.results) == 0 {
+			m.filterInput.Blur()
+		}
 		for _, t := range msg.tracks {
 			m.tracks[t.URL] = t
 		}
@@ -425,6 +449,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
 	}
+	if m.inFilter() {
+		return m, m.updateFilter(msg)
+	}
 	return m, nil
 }
 
@@ -450,6 +477,7 @@ func (m *Model) updateThumb(msg tea.Msg) tea.Cmd {
 
 func (m *Model) focusSearch() tea.Cmd {
 	m.overlay, m.focus = overlayNone, focusSearch
+	m.filterInput.Blur()
 	return m.input.Focus()
 }
 
@@ -468,6 +496,10 @@ func (m Model) current() (mpv.PlaylistEntry, youtube.Track, bool) {
 	}
 	e := m.queue.entries[pos]
 	return e, m.tracks[e.Filename], true
+}
+
+func (m Model) repeat() mpv.Repeat {
+	return mpv.RepeatFrom(m.loopPlaylist, m.loopFile)
 }
 
 func (m Model) isCurrentDevice(d mpv.AudioDevice) bool {

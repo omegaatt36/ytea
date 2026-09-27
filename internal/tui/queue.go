@@ -177,6 +177,20 @@ func (q *queueSync) move(requestID uint64, from, to int) tea.Cmd {
 	return cmd
 }
 
+// reorder projects order[i] as the entry now at i; entries before the first
+// displaced one, including the current track, keep their slots.
+func (q *queueSync) reorder(requestID uint64, pos int, current string, order []int) tea.Cmd {
+	p := q.player
+	cmd := projectedQueueAction(q.reserve(), requestID, "queue shuffled", func(ctx context.Context) error { return p.Reorder(ctx, pos, current, order) })
+	entries := make([]mpv.PlaylistEntry, len(order))
+	for i, from := range order {
+		entries[i] = q.entries[from]
+	}
+	q.entries = entries
+	q.expect()
+	return cmd
+}
+
 // clear follows any in-flight edit, even on an empty mirror; the authoritative
 // refresh settles its result.
 func (q *queueSync) clear(requestID uint64) tea.Cmd {

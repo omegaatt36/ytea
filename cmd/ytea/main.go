@@ -163,9 +163,7 @@ func run(ctx context.Context, opts options) error {
 		slog.Warn("load previous session", "error", err)
 	} else if saved.Version != 0 {
 		restoreCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := player.Restore(restoreCtx, mpv.PlaybackState{
-			URLs: saved.URLs, Index: saved.Index, Volume: saved.Volume,
-		})
+		err := player.Restore(restoreCtx, playbackFromSession(saved))
 		cancel()
 		if err != nil {
 			slog.Warn("restore previous session", "error", err)
@@ -240,8 +238,15 @@ func tracksFromSession(saved session.State) map[string]youtube.Track {
 	return tracks
 }
 
+func playbackFromSession(saved session.State) mpv.PlaybackState {
+	return mpv.PlaybackState{URLs: saved.URLs, Index: saved.Index, Volume: saved.Volume, Repeat: mpv.ParseRepeat(saved.Repeat)}
+}
+
 func sessionFromSnapshot(snapshot mpv.PlaybackState, model tui.Model) session.State {
 	state := session.State{URLs: snapshot.URLs, Index: snapshot.Index, Volume: snapshot.Volume}
+	if snapshot.Repeat != mpv.RepeatOff {
+		state.Repeat = snapshot.Repeat.String()
+	}
 	for i, url := range snapshot.URLs {
 		track := model.KnownTrack(url)
 		info := session.Metadata{ID: track.ID, Title: track.Title, Channel: track.Channel, Live: track.Live}

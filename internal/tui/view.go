@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
@@ -32,6 +33,7 @@ var (
 	playingStyle  = lipgloss.NewStyle().Foreground(playing)
 	errorStyle    = lipgloss.NewStyle().Foreground(danger)
 	nowTitleStyle = lipgloss.NewStyle().Bold(true)
+	matchStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#f9e2af"))
 
 	vizGradient = []string{"#89b4fa", "#94e2d5", "#a6e3a1", "#f9e2af", "#fab387", "#f38ba8"}
 )
@@ -67,6 +69,13 @@ func (m Model) cursor() *tea.Cursor {
 		c := m.input.Cursor()
 		if c != nil {
 			c.X += lipgloss.Width(renderTitle())
+		}
+		return c
+	case m.inFilter():
+		c := m.filterInput.Cursor()
+		if c != nil {
+			c.X += paneFocus.GetBorderLeftSize() + lipgloss.Width(m.resultsHeading())
+			c.Y += lipgloss.Height(m.renderHeader()) + paneFocus.GetBorderTopSize()
 		}
 		return c
 	case m.overlay == overlayName:
@@ -217,8 +226,12 @@ func (m Model) bodyPanes() (left, right listPane, leftW int) {
 	case m.overlay == overlayPicker, m.focus == focusPlaylists, m.focus == focusPlaylistTracks:
 		return panePlaylists, panePlaylistTracks, m.width * 2 / 5
 	default:
-		return paneResults, paneQueue, m.width * 3 / 5
+		return paneResults, paneQueue, m.resultsWidth()
 	}
+}
+
+func (m Model) resultsWidth() int {
+	return m.width * 3 / 5
 }
 
 func (m Model) paneAt(x, y int) (listPane, int) {
@@ -251,7 +264,7 @@ func (m Model) paneAt(x, y int) (listPane, int) {
 func (m Model) listCursor(p listPane) (cursor, n int) {
 	switch p {
 	case paneResults:
-		return m.resultCur, len(m.results)
+		return m.resultCur, len(m.resultRows())
 	case paneQueue:
 		return m.queueCur, len(m.queue.entries)
 	case panePlaylists:
@@ -278,7 +291,7 @@ func (m Model) renderPlaylistPanes(height int) string {
 	tracks := m.selectedPlaylistTracks()
 	lines := make([]string, len(tracks))
 	for i, t := range tracks {
-		lines[i] = resultLine(t, rightW-4)
+		lines[i] = resultLine(t, rightW-4, filterMatch{}, false)
 	}
 	if len(lines) == 0 {
 		lines = []string{dimStyle.Render("empty playlist")}
@@ -300,17 +313,11 @@ func (m Model) renderPlaylistName(height int) string {
 	return pane("New playlist", []string{m.nameInput.View()}, -1, true, m.width, height)
 }
 
+const resultsTitle = "Results"
+
 func (m Model) renderPanes(height int) string {
 	_, _, leftW := m.bodyPanes()
 	rightW := m.width - leftW
-
-	results := make([]string, len(m.results))
-	for i, t := range m.results {
-		results[i] = resultLine(t, leftW-4)
-	}
-	if len(results) == 0 {
-		results = []string{dimStyle.Render("press " + m.keys.global.Search.Help().Key + " to search")}
-	}
 
 	queue := make([]string, len(m.queue.entries))
 	for i, e := range m.queue.entries {
@@ -320,12 +327,56 @@ func (m Model) renderPanes(height int) string {
 		queue = []string{dimStyle.Render("empty — press " + m.keys.results.Enqueue.Help().Key + " on a result")}
 	}
 
-	left := pane("Results", results, m.resultCur, m.focus == focusResults, leftW, height)
+	title := m.resultsHeading()
+	if m.filterOpen() {
+		title += m.filterInput.View()
+	}
+	focused := m.focus == focusResults
+	var left string
+	switch rows := m.resultRows(); {
+	case len(m.results) == 0:
+		left = pane(title, []string{dimStyle.Render("press " + m.keys.global.Search.Help().Key + " to search")}, m.resultCur, focused, leftW, height)
+	case len(rows) == 0:
+		left = pane(title, []string{dimStyle.Render("no matches")}, -1, focused, leftW, height)
+	default:
+		left = rowsPane(title, len(rows), func(i, innerW int, selected bool) string {
+			line := ansi.Truncate(resultLine(m.results[rows[i].index], leftW-4, rows[i], selected), innerW, "…")
+			if pad := innerW - lipgloss.Width(line); selected && pad > 0 {
+				line += cursorStyle.Render(strings.Repeat(" ", pad))
+			}
+			return line
+		}, m.resultCur, focused, leftW, height)
+	}
 	right := pane(fmt.Sprintf("Queue (%d)", len(m.queue.entries)), queue, m.queueCur, m.focus == focusQueue, rightW, height)
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 }
 
+func (m Model) filterOpen() bool {
+	return m.filterInput.Focused() || m.filterInput.Value() != ""
+}
+
+// resultsHeading is the Results title before the filter input; model.go
+// reserves room for the widest count when sizing that input.
+func (m Model) resultsHeading() string {
+	if !m.filterOpen() {
+		return resultsTitle
+	}
+	return fmt.Sprintf("%s %d/%d", resultsTitle, len(m.resultRows()), len(m.results))
+}
+
 func pane(title string, lines []string, cursor int, focused bool, width, height int) string {
+	return rowsPane(title, len(lines), func(i, innerW int, selected bool) string {
+		line := ansi.Truncate(lines[i], innerW, "…")
+		if selected {
+			line = cursorStyle.Width(innerW).Render(ansi.Strip(line))
+		}
+		return line
+	}, cursor, focused, width, height)
+}
+
+// rowsPane lets a row render its own selection, so styled spans inside a row
+// can survive the cursor bar.
+func rowsPane(title string, n int, row func(i, innerW int, selected bool) string, cursor int, focused bool, width, height int) string {
 	style := paneStyle
 	if focused {
 		style = paneFocus
@@ -334,15 +385,11 @@ func pane(title string, lines []string, cursor int, focused bool, width, height 
 	innerH := listRows(height)
 
 	start := scrollStart(cursor, innerH)
-	end := min(len(lines), start+max(innerH, 0))
+	end := min(n, start+max(innerH, 0))
 
 	rows := []string{headStyle.Render(title)}
 	for i := start; i < end; i++ {
-		line := ansi.Truncate(lines[i], innerW, "…")
-		if focused && i == cursor {
-			line = cursorStyle.Width(innerW).Render(ansi.Strip(line))
-		}
-		rows = append(rows, line)
+		rows = append(rows, row(i, innerW, focused && i == cursor))
 	}
 	return style.Width(width).Height(height).Render(strings.Join(rows, "\n"))
 }
@@ -358,14 +405,86 @@ func scrollStart(cursor, visible int) int {
 	return 0
 }
 
-func resultLine(t youtube.Track, width int) string {
+func resultLine(t youtube.Track, width int, match filterMatch, selected bool) string {
+	text, dim := lipgloss.NewStyle(), dimStyle
+	if selected {
+		text, dim = cursorStyle, cursorStyle
+	}
 	meta := formatDuration(t.Duration)
 	if t.Live {
 		meta = "LIVE"
 	}
-	right := dimStyle.Render(fmt.Sprintf(" %s · %s", ansi.Truncate(t.Channel, 20, "…"), meta))
+	right := dim.Render(" ") + highlight(t.Channel, match.channel, 20, dim) + dim.Render(" · "+meta)
 	titleW := max(8, width-lipgloss.Width(right))
-	return ansi.Truncate(t.Title, titleW, "…") + right
+	return highlight(t.Title, match.title, titleW, text) + right
+}
+
+// highlight cuts s to width on a grapheme boundary of s itself, so the byte
+// spans stay valid, and styles each segment separately. Control bytes in
+// remote titles render as nothing, so they cannot move the cursor or restyle.
+func highlight(s string, spans []span, width int, base lipgloss.Style) string {
+	keep, tail := cutAt(s, width), ""
+	if keep < len(s) {
+		tail = "…"
+	}
+	var b strings.Builder
+	styled := func(style lipgloss.Style, text string) {
+		if text = stripControl(text); text != "" {
+			b.WriteString(style.Render(text))
+		}
+	}
+	at := 0
+	for _, sp := range mergeSpans(spans) {
+		start, end := max(sp.start, at), min(sp.end, keep)
+		if start >= end {
+			continue
+		}
+		styled(base, s[at:start])
+		styled(matchStyle.Inherit(base), s[start:end])
+		at = end
+	}
+	styled(base, s[at:keep]+tail)
+	return b.String()
+}
+
+// cutAt is the byte length of the longest prefix of s that fits width cells,
+// leaving a cell for "…" when s does not fit whole.
+func cutAt(s string, width int) int {
+	if ansi.StringWidth(stripControl(s)) <= width {
+		return len(s)
+	}
+	cut, used := 0, 0
+	for cut < len(s) {
+		c, _ := ansi.FirstGraphemeCluster(s[cut:], ansi.GraphemeWidth)
+		w := ansi.StringWidth(stripControl(c))
+		if used+w > width-1 {
+			break
+		}
+		cut, used = cut+len(c), used+w
+	}
+	return cut
+}
+
+func stripControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func mergeSpans(spans []span) []span {
+	sorted := slices.SortedFunc(slices.Values(spans), func(a, b span) int { return a.start - b.start })
+	var out []span
+	for _, sp := range sorted {
+		if last := len(out) - 1; last >= 0 && sp.start <= out[last].end {
+			out[last].end = max(out[last].end, sp.end)
+			continue
+		}
+		out = append(out, sp)
+	}
+	return out
 }
 
 func (m Model) queueLine(i int, e mpv.PlaylistEntry, width int) string {
@@ -428,6 +547,9 @@ func (m Model) audioLine() string {
 	}
 	if m.normalize {
 		parts = append(parts, "norm")
+	}
+	if r := m.repeat(); r != mpv.RepeatOff {
+		parts = append(parts, "repeat "+r.String())
 	}
 	return strings.Join(parts, " · ")
 }

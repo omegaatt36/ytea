@@ -33,13 +33,16 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	inSearch := m.overlay == overlayNone && m.focus == focusSearch
-	if key.Matches(msg, g.Paste) && !inSearch && m.overlay != overlayName {
+	inFilter := m.inFilter()
+	if key.Matches(msg, g.Paste) && !inSearch && !inFilter && m.overlay != overlayName {
 		return m, tea.Batch(m.focusSearch(), textinput.Paste)
 	}
 
 	switch {
 	case inSearch:
 		return m.handleSearchKey(msg)
+	case inFilter:
+		return m.handleFilterKey(msg)
 	case m.overlay == overlayName:
 		return m.handlePlaylistNameKey(msg)
 	case key.Matches(msg, g.Help):
@@ -120,6 +123,51 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	k := m.keys.filter
+	switch {
+	case key.Matches(msg, k.Up):
+		m.resultCur = max(0, m.resultCur-1)
+	case key.Matches(msg, k.Down):
+		m.resultCur = max(0, min(len(m.resultRows())-1, m.resultCur+1))
+	case key.Matches(msg, k.Apply):
+		m.filterInput.Blur()
+	case key.Matches(msg, k.Clear):
+		m.clearFilter()
+	default:
+		return m, m.updateFilter(msg)
+	}
+	return m, nil
+}
+
+func (m *Model) updateFilter(msg tea.Msg) tea.Cmd {
+	before := m.filterInput.Value()
+	var cmd tea.Cmd
+	m.filterInput, cmd = m.filterInput.Update(msg)
+	if m.filterInput.Value() != before {
+		m.resultCur = 0
+	}
+	return cmd
+}
+
+// clearFilter keeps the selected track selected in the full list.
+func (m *Model) clearFilter() {
+	if rows := m.resultRows(); m.resultCur >= 0 && m.resultCur < len(rows) {
+		m.resultCur = rows[m.resultCur].index
+	}
+	m.filterInput.Reset()
+	m.filterInput.Blur()
+}
+
+func (m Model) inFilter() bool {
+	return m.overlay == overlayNone && m.focus == focusResults && m.filterInput.Focused()
+}
+
+// resultRows are the visible Results rows; resultCur indexes them.
+func (m Model) resultRows() []filterMatch {
+	return filterResults(m.results, m.filterInput.Value())
+}
+
 func (m Model) handlePlaybackKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	p, k := m.deps.Player, m.keys.playback
 	switch {
@@ -140,21 +188,33 @@ func (m Model) handlePlaybackKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	case key.Matches(msg, k.Normalize):
 		on := !m.normalize
 		return do(func(ctx context.Context) error { return p.SetNormalize(ctx, on) }), true
+	case key.Matches(msg, k.Repeat):
+		next := m.repeat().Next()
+		return do(func(ctx context.Context) error { return p.SetRepeat(ctx, next) }), true
 	}
 	return nil, false
 }
 
 func (m Model) handleResultKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := m.keys.results
+	n := len(m.resultRows())
 	switch {
 	case key.Matches(msg, k.Up):
 		m.resultCur = max(0, m.resultCur-1)
 	case key.Matches(msg, k.Down):
-		m.resultCur = min(len(m.results)-1, m.resultCur+1)
+		m.resultCur = max(0, min(n-1, m.resultCur+1))
 	case key.Matches(msg, k.Top):
 		m.resultCur = 0
 	case key.Matches(msg, k.Bottom):
-		m.resultCur = max(0, len(m.results)-1)
+		m.resultCur = max(0, n-1)
+	case key.Matches(msg, k.Filter):
+		if len(m.results) > 0 {
+			return m, m.filterInput.Focus()
+		}
+	case key.Matches(msg, k.ClearFilter):
+		if m.filterInput.Value() != "" {
+			m.clearFilter()
+		}
 	case key.Matches(msg, k.Play):
 		if t, ok := m.selectedResult(); ok {
 			cmd := m.queue.playNow(m.nextRequest(), t)
@@ -165,7 +225,7 @@ func (m Model) handleResultKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if t, ok := m.selectedResult(); ok {
 			cmd := m.queue.enqueue(m.nextRequest(), t)
 			m.setStatus("queueing " + quote(t.Title) + "…")
-			m.resultCur = min(len(m.results)-1, m.resultCur+1)
+			m.resultCur = max(0, min(n-1, m.resultCur+1))
 			return m, cmd
 		}
 	case key.Matches(msg, k.Save):
@@ -254,6 +314,25 @@ func (m Model) handleQueueKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.queueCur++
 			return m, cmd
 		}
+	case key.Matches(msg, k.Shuffle):
+		// The current index is only trustworthy once earlier edits are read back from mpv.
+		if m.queue.projection != nil {
+			return m, nil
+		}
+		after, current := -1, ""
+		if e, _, ok := m.current(); ok {
+			after, current = m.queue.pos, e.Filename
+		}
+		if len(entries)-after-1 < 2 {
+			m.setStatus("nothing to shuffle")
+			return m, nil
+		}
+		order := mpv.TailShuffle(len(entries), after, m.rng)
+		cmd := m.queue.reorder(m.nextRequest(), after, current, order)
+		if cur := slices.Index(order, i); cur >= 0 {
+			m.queueCur = cur
+		}
+		return m, cmd
 	}
 	return m, nil
 }
@@ -266,10 +345,11 @@ func (m Model) quit() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) selectedResult() (youtube.Track, bool) {
-	if m.resultCur < 0 || m.resultCur >= len(m.results) {
+	rows := m.resultRows()
+	if m.resultCur < 0 || m.resultCur >= len(rows) {
 		return youtube.Track{}, false
 	}
-	return m.results[m.resultCur], true
+	return m.results[rows[m.resultCur].index], true
 }
 
 func (m *Model) applyEvent(ev mpv.Event) tea.Cmd {
@@ -327,6 +407,10 @@ func (m *Model) applyProperty(ev mpv.Event) tea.Cmd {
 				m.normalize = true
 			}
 		}
+	case mpv.PropLoopPlaylist:
+		m.loopPlaylist = mpv.LoopOn(ev.Data)
+	case mpv.PropLoopFile:
+		m.loopFile = mpv.LoopOn(ev.Data)
 	case mpv.PropPlaylistPos:
 		m.timePos = 0
 		cmd = m.refreshThumb()

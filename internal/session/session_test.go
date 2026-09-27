@@ -15,6 +15,7 @@ func TestSaveLoad(t *testing.T) {
 		URLs:    []string{"https://www.youtube.com/watch?v=a", "https://www.youtube.com/watch?v=b"},
 		Index:   1,
 		Volume:  75,
+		Repeat:  "one",
 		Metadata: map[string]Metadata{
 			"https://www.youtube.com/watch?v=b": {ID: "b", Title: "Unplayed song", Channel: "Artist"},
 		},
@@ -45,7 +46,7 @@ func TestLoadOldSessionWithoutMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := Load(dir)
-	if err != nil || len(got.URLs) != 1 || got.Metadata != nil {
+	if err != nil || len(got.URLs) != 1 || got.Metadata != nil || got.Repeat != "" {
 		t.Fatalf("old session = %+v, err = %v", got, err)
 	}
 }

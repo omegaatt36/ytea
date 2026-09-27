@@ -166,3 +166,29 @@ func TestSessionRoundTripKeepsUnplayedTrackMetadata(t *testing.T) {
 		t.Errorf("mpv title after restart = %q, want Already playing", got)
 	}
 }
+
+func TestSessionRoundTripKeepsRepeat(t *testing.T) {
+	for _, mode := range []mpv.Repeat{mpv.RepeatOff, mpv.RepeatAll, mpv.RepeatOne} {
+		snapshot := mpv.PlaybackState{URLs: []string{"song"}, Index: 0, Volume: 50, Repeat: mode}
+		dir := t.TempDir()
+		if err := session.Save(dir, sessionFromSnapshot(snapshot, tui.New(tui.Deps{}))); err != nil {
+			t.Fatal(err)
+		}
+		saved, err := session.Load(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := playbackFromSession(saved).Repeat; got != mode {
+			t.Errorf("restored repeat = %v, want %v", got, mode)
+		}
+	}
+}
+
+func TestPlaybackFromSessionRepeatFallsBackToOff(t *testing.T) {
+	for _, stored := range []string{"", "shuffle"} {
+		saved := session.State{Version: 1, URLs: []string{"song"}, Volume: 50, Repeat: stored}
+		if got := playbackFromSession(saved).Repeat; got != mpv.RepeatOff {
+			t.Errorf("repeat for stored %q = %v, want off", stored, got)
+		}
+	}
+}

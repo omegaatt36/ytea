@@ -36,6 +36,7 @@ func (m Model) click(x, y int) (tea.Model, tea.Cmd) {
 		case y == row:
 			if f, ok := m.tabAt(x); ok {
 				m.input.Blur()
+				m.filterInput.Blur()
 				m.overlay, m.focus = overlayNone, f
 			}
 			return m, nil
@@ -79,6 +80,9 @@ func (m *Model) focusPane(p listPane) bool {
 		return false
 	}
 	m.input.Blur()
+	if p != paneResults {
+		m.filterInput.Blur()
+	}
 	return true
 }
 
