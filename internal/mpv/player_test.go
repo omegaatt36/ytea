@@ -47,6 +47,40 @@ func TestAppendAllAppendsWithoutJumping(t *testing.T) {
 	}
 }
 
+func TestPlayAllReplacesAndJumps(t *testing.T) {
+	var ops [][]string
+	c := newFakePair(t, func(req request) string {
+		cmd := make([]string, len(req.Command))
+		for i, a := range req.Command {
+			cmd[i] = fmt.Sprint(a)
+		}
+		ops = append(ops, cmd)
+		b, _ := json.Marshal(req.RequestID)
+		return `{"request_id":` + string(b) + `,"error":"success"}`
+	})
+	p := &Player{client: c}
+
+	if err := p.PlayAll(context.Background(), []string{"u1", "u2"}, 2); err == nil {
+		t.Fatal("PlayAll() with start past the end: error = nil")
+	}
+	if len(ops) != 0 {
+		t.Fatalf("PlayAll() with a bad start sent %v", ops)
+	}
+	if err := p.PlayAll(context.Background(), []string{"u1", "u2"}, 1); err != nil {
+		t.Fatalf("PlayAll() error = %v", err)
+	}
+	want := [][]string{
+		{"stop"},
+		{"loadfile", "u1", "append"},
+		{"loadfile", "u2", "append"},
+		{"playlist-play-index", "1"},
+		{"set_property", PropPause, "false"},
+	}
+	if !slices.EqualFunc(ops, want, slices.Equal) {
+		t.Errorf("PlayAll() commands = %v, want %v", ops, want)
+	}
+}
+
 func TestAudioDevices(t *testing.T) {
 	c := newFakePair(t, func(req request) string {
 		b, _ := json.Marshal(req.RequestID)

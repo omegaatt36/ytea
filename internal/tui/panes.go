@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"charm.land/lipgloss/v2"
@@ -74,6 +75,7 @@ const (
 	paneQueue
 	panePlaylists
 	panePlaylistTracks
+	paneHistory
 	paneDevices
 )
 
@@ -96,6 +98,8 @@ func (m Model) panes(r image.Rectangle) []paneBox {
 		return []paneBox{{paneQueue, r}}
 	case focusPlaylists:
 		return split(panePlaylists, panePlaylistTracks, r.Dx()*2/5)
+	case focusHistory:
+		return []paneBox{{paneHistory, r}}
 	}
 	if w := resultsWidth(r.Dx()); w < r.Dx() {
 		return split(paneResults, paneQueue, w)
@@ -169,6 +173,8 @@ func (m Model) listCursor(p listPane) (cursor, n int) {
 		return m.playlistCur, m.playlistCount()
 	case panePlaylistTracks:
 		return m.playlistTrackCur, len(m.selectedPlaylistTracks())
+	case paneHistory:
+		return m.historyCur, len(m.history)
 	case paneDevices:
 		return m.deviceCur, len(m.devices)
 	default:
@@ -249,7 +255,11 @@ func (m Model) list(p listPane) list {
 		rows := m.results.rows()
 		l.title, l.empty = resultsTitle, "press "+m.keys.global.Search.Help().Key+" to search"
 		if len(m.results.tracks) > 0 {
-			l.title = fmt.Sprintf("%s (%d)", resultsTitle, len(m.results.tracks))
+			more := ""
+			if m.results.canLoadMore() {
+				more = "+"
+			}
+			l.title = fmt.Sprintf("%s (%d%s)", resultsTitle, len(m.results.tracks), more)
 		}
 		if m.results.filterOpen() {
 			l.title = fmt.Sprintf("%s (%d/%d)", resultsTitle, len(rows), len(m.results.tracks))
@@ -316,6 +326,23 @@ func (m Model) list(p listPane) list {
 			text, dim := styles(selected)
 			return trackRow(tracks[i], filterMatch{}, w, lenW, text, dim)
 		}
+	case paneHistory:
+		l.title, l.empty = fmt.Sprintf("History (%d)", len(m.history)), "nothing played yet"
+		if m.deps.History == nil {
+			l.empty = "history is unavailable"
+		}
+		l.focused = m.focus == focusHistory && !m.dialogOpen()
+		tracks := make([]youtube.Track, len(m.history))
+		for i, e := range m.history {
+			tracks[i] = e.Track
+		}
+		lenW := lengthWidth(tracks)
+		now := time.Now()
+		l.row = func(i, w int, selected bool) string {
+			text, dim := styles(selected)
+			ago := dim.Render(fmt.Sprintf("%-*s", agoWidth, playedAgo(m.history[i].PlayedAt, now)))
+			return ago + trackRow(tracks[i], filterMatch{}, w-agoWidth, lenW, text, dim)
+		}
 	case paneDevices:
 		l.title, l.empty, l.focused = "Output device", "no output devices", true
 		l.row = func(i, w int, selected bool) string {
@@ -333,6 +360,9 @@ func (m Model) list(p listPane) list {
 }
 
 const resultsTitle = "Results"
+
+// agoWidth fits playedAgo's longest label, a date like "Sep 28", and a gap.
+const agoWidth = 7
 
 // trackRow sets a track out in columns: title, then channel when there is
 // room for it, then the length flush right in lenW cells.

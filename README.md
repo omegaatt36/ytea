@@ -31,8 +31,10 @@ ytea
 | `/` | Search or paste URL |
 | `space` | Pause / Resume |
 | `←` / `→` | Seek ±5s |
+| `0`–`9` | Seek to 0–90% |
+| `t` | Seek to a time (`1:23`, `90`, or `50%`) |
 | `n` / `p` | Next / Previous |
-| `tab` | Switch pane (Results, Queue, Playlists) |
+| `tab` | Switch pane (Results, Queue, Playlists, History) |
 | `enter` | Play now |
 | `a` | Add to queue |
 | `s` | Save to playlist |
@@ -40,7 +42,7 @@ ytea
 | `?` | Help |
 | `q` | Quit |
 
-*Mouse is also supported: click tabs, search, or list rows, and use the scroll wheel to navigate.*
+*Mouse is also supported: click tabs, search, or list rows, use the scroll wheel to navigate, drag rows to reorder the queue and local playlists, and click the progress bar to seek.*
 
 ## Configuration (Optional)
 

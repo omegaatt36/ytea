@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -12,27 +13,46 @@ import (
 
 func (m *Model) cycleTab(reverse bool) {
 	m.deletePlaylistPending = -1
-	tab := m.activeTab()
-	m.overlay = overlayNone
+	i := slices.IndexFunc(tabs, func(t tab) bool { return t.focus == m.activeTab() })
+	step := 1
 	if reverse {
-		switch tab {
-		case focusResults:
-			m.focus = focusPlaylists
-		case focusQueue:
-			m.focus = focusResults
-		default:
-			m.focus = focusQueue
-		}
-		return
+		step = len(tabs) - 1
 	}
-	switch tab {
-	case focusResults:
-		m.focus = focusQueue
-	case focusQueue:
-		m.focus = focusPlaylists
+	m.overlay = overlayNone
+	m.focus = tabs[(i+step)%len(tabs)].focus
+}
+
+// nameMode is what the one-line dialog's input is for.
+type nameMode int
+
+const (
+	nameCreate nameMode = iota // a new playlist holding nameTracks
+	nameSave                   // a new playlist the track being saved goes into
+	nameRename                 // a new name for the selected playlist
+	nameSeek                   // a position in the playing track
+)
+
+func (n nameMode) title() string {
+	switch n {
+	case nameRename:
+		return "Rename playlist"
+	case nameSeek:
+		return "Seek to"
 	default:
-		m.focus = focusResults
+		return "New playlist"
 	}
+}
+
+func (m Model) nameKeys() nameKeyMap {
+	keys := m.keys.name
+	switch m.nameMode {
+	case nameRename:
+		keys.Create.SetHelp("enter", "rename")
+	case nameSeek:
+		keys.Create.SetHelp("enter", "seek")
+	default:
+	}
+	return keys
 }
 
 func (m Model) openPlaylistPicker(track youtube.Track) (tea.Model, tea.Cmd) {
@@ -42,7 +62,7 @@ func (m Model) openPlaylistPicker(track youtube.Track) (tea.Model, tea.Cmd) {
 	}
 	m.saveTrack = track
 	if len(m.playlists) == 0 {
-		return m.openPlaylistName([]youtube.Track{track}, true, "name the new playlist")
+		return m.openPlaylistName([]youtube.Track{track}, nameSave, "name the new playlist")
 	}
 	m.playlistCur = min(m.playlistCur, len(m.playlists)-1)
 	m.playlistTrackCur = 0
@@ -51,21 +71,47 @@ func (m Model) openPlaylistPicker(track youtube.Track) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) openPlaylistName(tracks []youtube.Track, saves bool, status string) (tea.Model, tea.Cmd) {
-	m.nameTracks, m.nameSaves = tracks, saves
+func (m Model) openPlaylistName(tracks []youtube.Track, mode nameMode, status string) (tea.Model, tea.Cmd) {
+	m.nameTracks = tracks
+	return m.openName(mode, "", status)
+}
+
+// openName opens the one-line dialog; value prefills the input.
+func (m Model) openName(mode nameMode, value, status string) (tea.Model, tea.Cmd) {
+	m.nameMode = mode
 	m.overlay = overlayName
-	m.nameInput.SetValue("")
+	m.nameInput.Prompt, m.nameInput.Placeholder = "name: ", "playlist name"
+	if mode == nameSeek {
+		m.nameInput.Prompt, m.nameInput.Placeholder = "time: ", "1:23, 90 or 50%"
+	}
+	m.nameInput.SetValue(value)
 	m.input.Blur()
 	m.setStatus(status)
 	return m, m.nameInput.Focus()
 }
 
+func (m *Model) closeName() {
+	m.nameInput.Blur()
+	m.nameTracks = nil
+	m.overlay = overlayNone
+}
+
 func (m Model) handlePlaylistNameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.name.Cancel):
-		m.nameInput.Blur()
-		m.nameTracks = nil
-		m.overlay = overlayNone
+		m.closeName()
+		return m, nil
+	case key.Matches(msg, m.keys.name.Create) && m.nameMode == nameSeek:
+		return m.submitSeek()
+	case key.Matches(msg, m.keys.name.Create) && m.nameMode == nameRename:
+		name := strings.TrimSpace(m.nameInput.Value())
+		if err := m.deps.Library.Rename(m.playlistCur, name); err != nil {
+			m.setError(err.Error())
+			return m, nil
+		}
+		m.closeName()
+		m.playlists = m.deps.Library.Playlists()
+		m.setStatus("renamed to " + quote(name))
 		return m, nil
 	case key.Matches(msg, m.keys.name.Create):
 		name := strings.TrimSpace(m.nameInput.Value())
@@ -78,13 +124,11 @@ func (m Model) handlePlaylistNameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.setError(err.Error())
 			return m, nil
 		}
-		m.nameInput.Blur()
-		m.nameTracks = nil
+		m.closeName()
 		m.playlistCur = index
 		m.playlistTrackCur = 0
 		m.playlists = m.deps.Library.Playlists()
-		m.overlay = overlayNone
-		if m.nameSaves {
+		if m.nameMode == nameSave {
 			m.setStatus("saved to " + quote(name))
 			return m, nil
 		}
@@ -124,7 +168,7 @@ func (m Model) handlePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, k.Cancel):
 		m.overlay = overlayNone
 	case key.Matches(msg, k.Create):
-		return m.openPlaylistName([]youtube.Track{m.saveTrack}, true, "name the new playlist")
+		return m.openPlaylistName([]youtube.Track{m.saveTrack}, nameSave, "name the new playlist")
 	case key.Matches(msg, k.Save):
 		if m.playlistCur >= len(m.playlists) {
 			return m, nil
@@ -152,7 +196,10 @@ func (m Model) handlePlaylistsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.handleAccountAction("enter")
 		case key.Matches(msg, k.EnqueueAll):
 			return m.handleAccountAction("a")
-		case key.Matches(msg, k.Create), key.Matches(msg, k.Delete):
+		case key.Matches(msg, k.PlayAll):
+			return m.playPlaylist(0)
+		case key.Matches(msg, k.Create), key.Matches(msg, k.Rename), key.Matches(msg, k.Delete),
+			key.Matches(msg, k.MoveUp), key.Matches(msg, k.MoveDown):
 			return m, nil
 		}
 	}
@@ -171,7 +218,17 @@ func (m Model) handlePlaylistsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, k.Back):
 		m.focus = focusResults
 	case key.Matches(msg, k.Create):
-		return m.openPlaylistName(nil, false, "name the new playlist")
+		return m.openPlaylistName(nil, nameCreate, "name the new playlist")
+	case key.Matches(msg, k.Rename):
+		if m.playlistCur < len(m.playlists) {
+			return m.openName(nameRename, m.playlists[m.playlistCur].Name, "rename "+quote(m.playlists[m.playlistCur].Name))
+		}
+	case key.Matches(msg, k.MoveUp):
+		m.movePlaylist(m.playlistCur, m.playlistCur-1)
+	case key.Matches(msg, k.MoveDown):
+		m.movePlaylist(m.playlistCur, m.playlistCur+1)
+	case key.Matches(msg, k.PlayAll):
+		return m.playPlaylist(0)
 	case key.Matches(msg, k.Browse):
 		if len(m.playlists) > 0 {
 			m.focus = focusPlaylistTracks
@@ -223,7 +280,9 @@ func (m Model) handlePlaylistTracksKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 			return m.handleAccountAction("enter")
 		case key.Matches(msg, k.Enqueue):
 			return m.handleAccountAction("a")
-		case key.Matches(msg, k.Remove):
+		case key.Matches(msg, k.PlayAll):
+			return m.playPlaylist(m.playlistTrackCur)
+		case key.Matches(msg, k.Remove), key.Matches(msg, k.MoveUp), key.Matches(msg, k.MoveDown):
 			return m, nil
 		}
 	}
@@ -252,6 +311,12 @@ func (m Model) handlePlaylistTracksKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 			m.setStatus("queueing " + quote(t.Title) + "…")
 			return m, cmd
 		}
+	case key.Matches(msg, k.PlayAll):
+		return m.playPlaylist(m.playlistTrackCur)
+	case key.Matches(msg, k.MoveUp):
+		m.movePlaylistTrack(m.playlistTrackCur, m.playlistTrackCur-1)
+	case key.Matches(msg, k.MoveDown):
+		m.movePlaylistTrack(m.playlistTrackCur, m.playlistTrackCur+1)
 	case key.Matches(msg, k.Remove):
 		if _, ok := m.selectedPlaylistTrack(); ok {
 			if err := m.deps.Library.RemoveTrack(m.playlistCur, m.playlistTrackCur); err != nil {
@@ -264,6 +329,69 @@ func (m Model) handlePlaylistTracksKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		}
 	}
 	return m, nil
+}
+
+// playPlaylist replaces the queue with the selected playlist and plays its
+// track at start.
+func (m Model) playPlaylist(start int) (tea.Model, tea.Cmd) {
+	tracks := m.selectedPlaylistTracks()
+	if len(tracks) == 0 {
+		if p, ok := m.selectedAccountPlaylist(); ok {
+			if _, loaded := m.account.tracks[p.ID]; !loaded {
+				m.setStatus("press " + m.keys.playlists.Browse.Help().Key + " to load the playlist first")
+				return m, nil
+			}
+		}
+		m.setStatus("playlist is empty")
+		return m, nil
+	}
+	start = min(max(0, start), len(tracks)-1)
+	for _, t := range tracks {
+		m.tracks[t.URL] = t
+	}
+	cmd := m.queue.replace(m.nextRequest(), tracks, start)
+	m.queueCur = start
+	m.setStatus("playing " + quote(m.selectedPlaylistName()) + "…")
+	m.syncMPRIS()
+	return m, tea.Batch(cmd, m.refreshThumb())
+}
+
+func (m Model) selectedPlaylistName() string {
+	if p, ok := m.selectedAccountPlaylist(); ok {
+		return p.Title
+	}
+	if m.playlistCur >= 0 && m.playlistCur < len(m.playlists) {
+		return m.playlists[m.playlistCur].Name
+	}
+	return "playlist"
+}
+
+// movePlaylist reorders local playlists; the cursor follows the moved one.
+func (m *Model) movePlaylist(from, to int) {
+	n := len(m.playlists)
+	if from == to || from < 0 || from >= n || to < 0 || to >= n {
+		return
+	}
+	if err := m.deps.Library.Move(from, to); err != nil {
+		m.setError(err.Error())
+		return
+	}
+	m.playlists = m.deps.Library.Playlists()
+	m.playlistCur = to
+}
+
+// movePlaylistTrack reorders the selected local playlist; the cursor follows the moved track.
+func (m *Model) movePlaylistTrack(from, to int) {
+	n := len(m.selectedPlaylistTracks())
+	if m.accountSelected() || from == to || from < 0 || from >= n || to < 0 || to >= n {
+		return
+	}
+	if err := m.deps.Library.MoveTrack(m.playlistCur, from, to); err != nil {
+		m.setError(err.Error())
+		return
+	}
+	m.playlists = m.deps.Library.Playlists()
+	m.playlistTrackCur = to
 }
 
 func (m Model) selectedPlaylistTracks() []youtube.Track {

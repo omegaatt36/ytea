@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"image"
+	"time"
+
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -11,10 +14,17 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	mouse := msg.Mouse()
 	switch msg.(type) {
 	case tea.MouseClickMsg:
+		m.drag = paneNone
 		if mouse.Button == tea.MouseLeft {
 			m.deletePlaylistPending = -1
 			return m.click(mouse.X, mouse.Y)
 		}
+	case tea.MouseMotionMsg:
+		if mouse.Button == tea.MouseLeft && m.drag != paneNone {
+			return m.dragTo(mouse.X, mouse.Y)
+		}
+	case tea.MouseReleaseMsg:
+		m.drag = paneNone
 	case tea.MouseWheelMsg:
 		switch mouse.Button {
 		case tea.MouseWheelUp:
@@ -40,12 +50,57 @@ func (m Model) click(x, y int) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if !m.dialogOpen() && image.Pt(x, y).In(m.progressBar()) && m.seekable() {
+		bar := m.progressBar()
+		// The cell's middle, so the first and last cells reach neither end exactly.
+		frac := (float64(x-bar.Min.X) + 0.5) / float64(bar.Dx())
+		return m, m.seekTo(time.Duration(frac * float64(m.player.duration)))
+	}
 	p, i := m.paneAt(x, y)
 	if p == panePlaylistTracks && m.focus == focusPlaylists && m.accountSelected() {
 		return m.handleAccountAction("enter")
 	}
 	if m.focusPane(p) && i >= 0 {
 		m.selectRow(p, i)
+		if m.draggable(p, i) {
+			m.drag = p
+		}
+	}
+	return m, nil
+}
+
+// draggable reports whether row i of p can be reordered by dragging.
+func (m Model) draggable(p listPane, i int) bool {
+	if m.overlay != overlayNone {
+		return false
+	}
+	switch p {
+	case paneQueue:
+		return !m.queue.insertPending
+	case panePlaylists:
+		return i < len(m.playlists)
+	case panePlaylistTracks:
+		return !m.accountSelected()
+	default:
+		return false
+	}
+}
+
+// dragTo moves the dragged row to the row under the pointer, the way K and J
+// would, so the row stays under the pointer.
+func (m Model) dragTo(x, y int) (tea.Model, tea.Cmd) {
+	p, to := m.paneAt(x, y)
+	if p != m.drag || to < 0 || !m.draggable(p, to) {
+		return m, nil
+	}
+	from, _ := m.listCursor(p)
+	switch p {
+	case paneQueue:
+		return m, m.moveQueueEntry(from, to)
+	case panePlaylists:
+		m.movePlaylist(from, to)
+	case panePlaylistTracks:
+		m.movePlaylistTrack(from, to)
 	}
 	return m, nil
 }
@@ -76,6 +131,8 @@ func (m *Model) focusPane(p listPane) bool {
 			return false
 		}
 		m.focus = focusPlaylistTracks
+	case paneHistory:
+		m.focus = focusHistory
 	case paneDevices:
 	default:
 		return false
@@ -99,6 +156,8 @@ func (m *Model) selectRow(p listPane, i int) {
 		}
 	case panePlaylistTracks:
 		m.playlistTrackCur = i
+	case paneHistory:
+		m.historyCur = i
 	case paneDevices:
 		m.deviceCur = i
 	}

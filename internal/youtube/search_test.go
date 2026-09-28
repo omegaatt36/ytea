@@ -66,7 +66,7 @@ func TestParseTracksInvalidJSON(t *testing.T) {
 }
 
 func TestSearchEmptyQuery(t *testing.T) {
-	_, err := NewSearcher("yt-dlp").Search(context.Background(), "   ", 10)
+	_, err := NewSearcher("yt-dlp").Search(context.Background(), "   ", 0, 10)
 	if !errors.Is(err, ErrEmptyQuery) {
 		t.Fatalf("Search() error = %v, want %v", err, ErrEmptyQuery)
 	}
@@ -89,6 +89,25 @@ func fakeYtDlp(t *testing.T, argsFile string, entryCount int) *Searcher {
 		t.Fatalf("write fake yt-dlp: %v", err)
 	}
 	return NewSearcher(bin)
+}
+
+func TestSearchPagesPastOffset(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	s := fakeYtDlp(t, argsFile, 30)
+
+	if _, err := s.Search(context.Background(), "lofi", 30, 30); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(strings.TrimSpace(string(args)), "\n")
+	want := []string{"ytsearch60:lofi", "--flat-playlist", "--dump-single-json", "--no-warnings", "--playlist-items", "31:60"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("yt-dlp args = %q, want %q", got, want)
+	}
 }
 
 func TestLookupCapsListing(t *testing.T) {

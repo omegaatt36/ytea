@@ -204,6 +204,24 @@ func (p *Player) AppendAll(ctx context.Context, urls []string) error {
 	return nil
 }
 
+// PlayAll replaces the playlist with urls and starts urls[start].
+func (p *Player) PlayAll(ctx context.Context, urls []string, start int) error {
+	if start < 0 || start >= len(urls) {
+		return fmt.Errorf("play all: start %d outside %d tracks", start, len(urls))
+	}
+	if err := p.Stop(ctx); err != nil {
+		return err
+	}
+	// Plain appends leave the stopped player idle, so no other entry starts
+	// resolving before the jump to start.
+	for _, url := range urls {
+		if _, err := p.client.Command(ctx, "loadfile", url, "append"); err != nil {
+			return err
+		}
+	}
+	return p.PlayIndex(ctx, start)
+}
+
 // PlayNow inserts url right after the current entry and starts it, keeping the rest of the queue intact.
 func (p *Player) PlayNow(ctx context.Context, url string) error {
 	if _, err := p.client.Command(ctx, "loadfile", url, "insert-next-play"); err != nil {
@@ -291,6 +309,12 @@ func (p *Player) SetPause(ctx context.Context, pause bool) error {
 // Seek moves playback by offset from the current position.
 func (p *Player) Seek(ctx context.Context, offset time.Duration) error {
 	_, err := p.client.Command(ctx, "seek", offset.Seconds(), "relative")
+	return err
+}
+
+// SeekPercent moves playback to percent of the current track's length.
+func (p *Player) SeekPercent(ctx context.Context, percent float64) error {
+	_, err := p.client.Command(ctx, "seek", percent, "absolute-percent")
 	return err
 }
 

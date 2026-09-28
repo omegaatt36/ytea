@@ -142,13 +142,16 @@ func (m Model) renderBody(r image.Rectangle) string {
 	).Render()
 }
 
-var tabs = []struct {
+type tab struct {
 	name  string
 	focus focus
-}{
+}
+
+var tabs = []tab{
 	{"Results", focusResults},
 	{"Queue", focusQueue},
 	{"Playlists", focusPlaylists},
+	{"History", focusHistory},
 }
 
 const (
@@ -201,6 +204,8 @@ func (m Model) activeTab() focus {
 		return focusQueue
 	case focusPlaylists, focusPlaylistTracks:
 		return focusPlaylists
+	case focusHistory:
+		return focusHistory
 	}
 	return focusResults
 }

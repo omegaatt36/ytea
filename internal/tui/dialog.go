@@ -48,7 +48,7 @@ func (m Model) renderDialog(width, height int) string {
 	case overlayInfo:
 		return box("Track info", "", padRows(m.infoLines()), true, width, height)
 	case overlayName:
-		return box("New playlist", "", []string{" " + m.nameInput.View()}, true, width, height)
+		return box(m.nameMode.title(), "", []string{" " + m.nameInput.View()}, true, width, height)
 	default:
 		return ""
 	}

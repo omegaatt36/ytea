@@ -14,6 +14,13 @@ type resultsPane struct {
 	tracks []youtube.Track
 	cur    int
 	filter textinput.Model
+
+	// query is the search the results came from; fetched counts the results
+	// its pages have covered, including ones dropped as duplicates or non-videos.
+	query       string
+	fetched     int
+	more        bool
+	loadingMore bool
 }
 
 // update feeds the filter input; any change to the query starts over at the top row.
@@ -47,10 +54,36 @@ func (r *resultsPane) moveTo(i int) {
 // open for the new list.
 func (r *resultsPane) set(tracks []youtube.Track) {
 	r.tracks, r.cur = tracks, 0
+	r.query, r.fetched, r.more = "", 0, false
 	r.filter.Reset()
 	if len(tracks) == 0 {
 		r.filter.Blur()
 	}
+}
+
+// extend appends a later page, skipping tracks already listed, and reports
+// how many were new. The cursor and filter stay put.
+func (r *resultsPane) extend(tracks []youtube.Track, fetched int) int {
+	seen := make(map[string]bool, len(r.tracks))
+	for _, t := range r.tracks {
+		seen[t.URL] = true
+	}
+	added := 0
+	for _, t := range tracks {
+		if !seen[t.URL] {
+			seen[t.URL] = true
+			r.tracks = append(r.tracks, t)
+			added++
+		}
+	}
+	r.fetched = fetched
+	// An empty page is the end; a page of only duplicates is not.
+	r.more = len(tracks) > 0
+	return added
+}
+
+func (r resultsPane) canLoadMore() bool {
+	return r.query != "" && r.more
 }
 
 func (r *resultsPane) openFilter() tea.Cmd {

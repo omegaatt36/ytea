@@ -67,9 +67,16 @@ func helpContexts(t *testing.T) []struct {
 	filtered.results.filter.SetValue("song")
 	typing := at(focusResults, overlayNone)
 	typing.results.filter.Focus()
+	paged := at(focusResults, overlayNone)
+	paged.results.query, paged.results.more = "song", true
 	k := newKeyMap()
-	unfiltered := k.results
+	// More is only offered once a search has a next page.
+	onePage := k.results
+	onePage.More.SetEnabled(false)
+	unfiltered := onePage
 	unfiltered.ClearFilter.SetEnabled(false)
+	withMore := k.results
+	withMore.ClearFilter.SetEnabled(false)
 	return []struct {
 		name  string
 		model Model
@@ -77,11 +84,13 @@ func helpContexts(t *testing.T) []struct {
 	}{
 		{"search", at(focusSearch, overlayNone), k.search},
 		{"results", at(focusResults, overlayNone), unfiltered},
-		{"results filtered", filtered, k.results},
+		{"results filtered", filtered, onePage},
+		{"results with more", paged, withMore},
 		{"results filter input", typing, k.filter},
 		{"queue", at(focusQueue, overlayNone), k.queue},
 		{"playlists", at(focusPlaylists, overlayNone), k.playlists},
 		{"playlist tracks", at(focusPlaylistTracks, overlayNone), k.playlistTracks},
+		{"history", at(focusHistory, overlayNone), k.history},
 		{"device picker", at(focusQueue, overlayDevices), k.devices},
 		{"track info", at(focusQueue, overlayInfo), k.info},
 		{"playlist picker", at(focusQueue, overlayPicker), k.picker},

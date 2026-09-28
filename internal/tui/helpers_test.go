@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -200,7 +201,7 @@ type searchStub struct {
 	tracks []youtube.Track
 }
 
-func (s searchStub) Search(context.Context, string, int) ([]youtube.Track, error) {
+func (s searchStub) Search(context.Context, string, int, int) ([]youtube.Track, error) {
 	return nil, errors.New("unexpected search")
 }
 
@@ -238,6 +239,18 @@ func (p *spyPlayer) Next(context.Context) error                { return p.record
 func (p *spyPlayer) PlayIndex(context.Context, int) error      { return p.record("play index") }
 func (p *spyPlayer) Seek(context.Context, time.Duration) error { return p.record("seek") }
 
+func (p *spyPlayer) SeekTo(_ context.Context, pos time.Duration) error {
+	return p.record("seek to " + pos.String())
+}
+
+func (p *spyPlayer) SeekPercent(_ context.Context, percent float64) error {
+	return p.record(fmt.Sprintf("seek %g%%", percent))
+}
+
+func (p *spyPlayer) PlayAll(_ context.Context, urls []string, start int) error {
+	return p.record(fmt.Sprintf("play all %s from %d", strings.Join(urls, ","), start))
+}
+
 func (p *spyPlayer) AddVolume(_ context.Context, delta int) error {
 	if delta > 0 {
 		return p.record("volume up")
@@ -261,6 +274,13 @@ func (p *spyPlayer) Playlist(context.Context) ([]mpv.PlaylistEntry, int, error) 
 }
 
 func (p *spyPlayer) StreamInfo(context.Context) (mpv.StreamInfo, error) { return p.info, nil }
+
+// Events reports mpv as already gone, so waiting on it returns at once.
+func (p *spyPlayer) Events() <-chan mpv.Event {
+	ch := make(chan mpv.Event)
+	close(ch)
+	return ch
+}
 
 // appendRecorder reports AppendAll calls on a channel so tests can observe
 // the order of concurrent writes.
@@ -323,6 +343,36 @@ func (s *spyLibrary) RemoveTrack(playlistIndex, trackIndex int) error {
 		return library.ErrNotFound
 	}
 	s.playlists[playlistIndex].Tracks = append(s.playlists[playlistIndex].Tracks[:trackIndex], s.playlists[playlistIndex].Tracks[trackIndex+1:]...)
+	return nil
+}
+
+func (s *spyLibrary) Rename(index int, name string) error {
+	if s.err != nil {
+		return s.err
+	}
+	if index < 0 || index >= len(s.playlists) {
+		return library.ErrNotFound
+	}
+	s.playlists[index].Name = name
+	return nil
+}
+
+func (s *spyLibrary) Move(from, to int) error {
+	if s.err != nil {
+		return s.err
+	}
+	p := s.playlists[from]
+	s.playlists = slices.Insert(slices.Delete(s.playlists, from, from+1), to, p)
+	return nil
+}
+
+func (s *spyLibrary) MoveTrack(playlistIndex, from, to int) error {
+	if s.err != nil {
+		return s.err
+	}
+	tracks := s.playlists[playlistIndex].Tracks
+	t := tracks[from]
+	s.playlists[playlistIndex].Tracks = slices.Insert(slices.Delete(tracks, from, from+1), to, t)
 	return nil
 }
 

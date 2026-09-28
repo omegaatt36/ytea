@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"image"
 	"slices"
 	"strings"
 	"time"
@@ -87,15 +88,8 @@ const detailRows = thumbRows - 1
 // row the eye already returns to after every action.
 func (m Model) renderPlayer() string {
 	e, t, ok := m.current()
-	textW := m.width - 2*boxInset
-
-	var art string
-	if ok {
-		art = m.thumb.view()
-	}
-	if art != "" {
-		textW -= thumbCols + 2
-	}
+	art := m.playerArt()
+	_, textW := m.playerText()
 
 	details := make([]string, 0, detailRows)
 	if ok {
@@ -136,6 +130,46 @@ func (m Model) renderPlayer() string {
 		status = errorStyle.Render(m.status)
 	}
 	return box("Now playing", status, padRows(strings.Split(block, "\n")), false, m.width, playerRows)
+}
+
+func (m Model) playerArt() string {
+	if _, _, ok := m.current(); !ok {
+		return ""
+	}
+	return m.thumb.view()
+}
+
+// playerText is the column where the details and progress row start, and their width.
+func (m Model) playerText() (x, w int) {
+	x, w = boxInset, m.width-2*boxInset
+	if m.playerArt() != "" {
+		x, w = x+thumbCols+2, w-thumbCols-2
+	}
+	return x, w
+}
+
+// progressBar is where the progress bar's cells lie on screen; it is empty
+// when none is drawn.
+func (m Model) progressBar() image.Rectangle {
+	_, t, ok := m.current()
+	if !ok || t.Live {
+		return image.Rectangle{}
+	}
+	x, textW := m.playerText()
+	elapsed, total := formatDuration(m.player.timePos), formatDuration(m.player.duration)
+	barW := progressBarWidth(textW, elapsed, total)
+	if barW < minProgressBar {
+		return image.Rectangle{}
+	}
+	x += len(elapsed) + 1
+	y := m.screen().player.Min.Y + 1 + detailRows
+	return image.Rect(x, y, x+barW, y+1)
+}
+
+const minProgressBar = 4
+
+func progressBarWidth(width int, elapsed, total string) int {
+	return width - len(elapsed) - len(total) - 2
 }
 
 // vizWidth leaves the details at least a readable column; the spectrum is
@@ -182,8 +216,8 @@ func (m Model) progressLine(live bool, width int) string {
 		return errorStyle.Render("● LIVE")
 	}
 	elapsed, total := formatDuration(m.player.timePos), formatDuration(m.player.duration)
-	barW := width - len(elapsed) - len(total) - 2
-	if barW < 4 {
+	barW := progressBarWidth(width, elapsed, total)
+	if barW < minProgressBar {
 		return elapsed + dimStyle.Render(" / "+total)
 	}
 	filled := 0

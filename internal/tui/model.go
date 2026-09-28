@@ -17,6 +17,7 @@ import (
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 
+	"github.com/omegaatt36/ytea/internal/history"
 	"github.com/omegaatt36/ytea/internal/library"
 	"github.com/omegaatt36/ytea/internal/mpris"
 	"github.com/omegaatt36/ytea/internal/mpv"
@@ -33,7 +34,8 @@ const (
 )
 
 type Searcher interface {
-	Search(ctx context.Context, query string, limit int) ([]youtube.Track, error)
+	// Search skips the first offset results, so later pages extend earlier ones.
+	Search(ctx context.Context, query string, offset, limit int) ([]youtube.Track, error)
 	// Lookup resolves the tracks behind a YouTube URL; a positive limit caps the listing.
 	Lookup(ctx context.Context, url string, limit int) ([]youtube.Track, error)
 }
@@ -51,6 +53,8 @@ type Player interface {
 	StreamInfo(context.Context) (mpv.StreamInfo, error)
 	TogglePause(context.Context) error
 	Seek(context.Context, time.Duration) error
+	SeekTo(context.Context, time.Duration) error
+	SeekPercent(context.Context, float64) error
 	Next(context.Context) error
 	Prev(context.Context) error
 	AddVolume(context.Context, int) error
@@ -58,6 +62,7 @@ type Player interface {
 	PlayNow(context.Context, string) error
 	Append(context.Context, string) error
 	AppendAll(context.Context, []string) error
+	PlayAll(ctx context.Context, urls []string, start int) error
 	PlayIndex(context.Context, int) error
 	Remove(context.Context, int) error
 	Move(context.Context, int, int) error
@@ -71,8 +76,18 @@ type Library interface {
 	Playlists() []library.Playlist
 	CreateWithTracks(name string, tracks []youtube.Track) (int, error)
 	Add(index int, track youtube.Track) error
+	Rename(index int, name string) error
+	Move(from, to int) error
+	MoveTrack(playlistIndex, from, to int) error
 	RemoveTrack(playlistIndex, trackIndex int) error
 	Delete(index int) error
+}
+
+// History remembers recently played tracks, newest first.
+type History interface {
+	Entries() []history.Entry
+	Record(track youtube.Track, at time.Time) error
+	Remove(index int) error
 }
 
 type MPRIS interface {
@@ -86,7 +101,8 @@ type AccountPlaylistSource interface {
 	ListTracks(context.Context, string) ([]youtube.Track, error)
 }
 
-// Deps are the collaborators the UI drives. AccountPlaylists, Tap and MPRIS are optional.
+// Deps are the collaborators the UI drives. AccountPlaylists, Tap, MPRIS and
+// History are optional.
 type Deps struct {
 	AccountPlaylists AccountPlaylistSource
 	Searcher         Searcher
@@ -98,6 +114,7 @@ type Deps struct {
 	Normalize        bool
 	InitialTracks    map[string]youtube.Track
 	Library          Library
+	History          History
 	OpenURL          func(string) error
 }
 
@@ -109,6 +126,7 @@ const (
 	focusQueue
 	focusPlaylists
 	focusPlaylistTracks
+	focusHistory
 )
 
 type Model struct {
@@ -126,11 +144,12 @@ type Model struct {
 	overlay               overlay
 	saveTrack             youtube.Track
 	nameTracks            []youtube.Track
-	nameSaves             bool
+	nameMode              nameMode
 	playlists             []library.Playlist
 	playlistCur           int
 	playlistTrackCur      int
 	deletePlaylistPending int
+	drag                  listPane
 
 	searching      bool
 	requestID      uint64
@@ -148,6 +167,11 @@ type Model struct {
 	tracks map[string]youtube.Track
 
 	player playerState
+
+	history    []history.Entry
+	historyCur int
+	// historyLast is the queue entry last recorded, so one play is recorded once.
+	historyLast string
 
 	levels   []float64
 	showViz  bool
@@ -216,6 +240,10 @@ func New(deps Deps) Model {
 	if deps.Library != nil {
 		playlists = deps.Library.Playlists()
 	}
+	var played []history.Entry
+	if deps.History != nil {
+		played = deps.History.Entries()
+	}
 	return Model{
 		deps:                  deps,
 		keys:                  keys,
@@ -227,6 +255,7 @@ func New(deps Deps) Model {
 		focus:                 focusSearch,
 		tracks:                tracks,
 		playlists:             playlists,
+		history:               played,
 		deletePlaylistPending: -1,
 		queue:                 newQueueSync(deps.Player),
 		thumb:                 newThumbImage(deps.Thumbnails, deps.HTTP),
@@ -402,7 +431,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mpvEventMsg:
 		cmd := m.applyEvent(mpv.Event(msg))
 		m.syncMPRIS()
-		return m, tea.Batch(cmd, waitMPV(m.deps.Player.Events(), m.player.timePos))
+		return m, tea.Batch(cmd, m.recordPlay(), waitMPV(m.deps.Player.Events(), m.player.timePos))
+
+	case historyChangedMsg:
+		m.reloadHistory()
+		return m, nil
 
 	case mpvClosedMsg:
 		m.setError("mpv exited")

@@ -15,6 +15,7 @@ type keyMap struct {
 	queue          queueKeyMap
 	playlists      playlistKeyMap
 	playlistTracks playlistTrackKeyMap
+	history        historyKeyMap
 	devices        deviceKeyMap
 	info           infoKeyMap
 	picker         pickerKeyMap
@@ -22,7 +23,10 @@ type keyMap struct {
 }
 
 type globalKeyMap struct {
-	Search, Paste, NextPane, PrevPane, Output, Info, Viz, Radio, Help, Quit, ForceQuit key.Binding
+	Search, Paste, NextPane, PrevPane, Output, Info, Viz, Radio, GoTo, Help, Quit, ForceQuit key.Binding
+	// SeekPercent acts like a playback key, but is listed here, where a
+	// narrow full help still has room for it.
+	SeekPercent key.Binding
 }
 
 type playbackKeyMap struct {
@@ -39,7 +43,7 @@ type navKeyMap struct {
 
 type resultKeyMap struct {
 	navKeyMap
-	Play, Enqueue, Save, Filter, ClearFilter key.Binding
+	Play, Enqueue, Save, More, Filter, ClearFilter key.Binding
 }
 
 type filterKeyMap struct {
@@ -53,12 +57,17 @@ type queueKeyMap struct {
 
 type playlistKeyMap struct {
 	navKeyMap
-	Browse, Create, EnqueueAll, Delete, Reload, Back key.Binding
+	Browse, PlayAll, Create, Rename, EnqueueAll, MoveUp, MoveDown, Delete, Reload, Back key.Binding
 }
 
 type playlistTrackKeyMap struct {
 	navKeyMap
-	Play, Enqueue, Remove, Reload, Back key.Binding
+	Play, PlayAll, Enqueue, MoveUp, MoveDown, Remove, Reload, Back key.Binding
+}
+
+type historyKeyMap struct {
+	navKeyMap
+	Play, Enqueue, Save, Remove key.Binding
 }
 
 type deviceKeyMap struct {
@@ -86,21 +95,26 @@ func newKeyMap() keyMap {
 		Bottom: key.NewBinding(key.WithKeys("G", "end"), key.WithHelp("G/end", "bottom")),
 	}
 	create := key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "new playlist"))
+	moveUp := key.NewBinding(key.WithKeys("K", "shift+up"), key.WithHelp("K", "move up"))
+	moveDown := key.NewBinding(key.WithKeys("J", "shift+down"), key.WithHelp("J", "move down"))
 	return keyMap{
 		global: globalKeyMap{
 			Search: key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
 			// ctrl+shift+v and shift+insert are normally the terminal's own paste, but
 			// under a kitty-keyboard multiplexer (Zellij) they arrive as key events.
-			Paste:     key.NewBinding(key.WithKeys("ctrl+v", "ctrl+shift+v", "shift+insert"), key.WithHelp("ctrl+v", "paste")),
-			NextPane:  key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next pane")),
-			PrevPane:  key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev pane")),
-			Output:    key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "output")),
-			Info:      key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "info")),
-			Viz:       key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "spectrum")),
-			Radio:     key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "radio")),
-			Help:      key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "more")),
-			Quit:      key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
-			ForceQuit: key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+			Paste:    key.NewBinding(key.WithKeys("ctrl+v", "ctrl+shift+v", "shift+insert"), key.WithHelp("ctrl+v", "paste")),
+			NextPane: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next pane")),
+			PrevPane: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev pane")),
+			Output:   key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "output")),
+			Info:     key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "info")),
+			Viz:      key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "spectrum")),
+			Radio:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "radio")),
+			GoTo:     key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "go to")),
+			// Digit n seeks to n×10%, as on YouTube.
+			SeekPercent: key.NewBinding(key.WithKeys("0", "1", "2", "3", "4", "5", "6", "7", "8", "9"), key.WithHelp("0-9", "to %")),
+			Help:        key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "more")),
+			Quit:        key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
+			ForceQuit:   key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
 		},
 		// q closes rather than quits, as it does in the device and info overlays.
 		closeHelp: key.NewBinding(key.WithKeys("?", "esc", "q"), key.WithHelp("?/esc/q", "close")),
@@ -124,6 +138,7 @@ func newKeyMap() keyMap {
 			Play:        key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "play now")),
 			Enqueue:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "queue")),
 			Save:        key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "save")),
+			More:        key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "more results")),
 			Filter:      key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "filter")),
 			ClearFilter: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear filter")),
 		},
@@ -138,8 +153,8 @@ func newKeyMap() keyMap {
 			Jump:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "jump")),
 			Remove:    key.NewBinding(key.WithKeys("d", "x", "delete"), key.WithHelp("d", "remove")),
 			Clear:     key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "clear queue")),
-			MoveUp:    key.NewBinding(key.WithKeys("K", "shift+up"), key.WithHelp("K", "move up")),
-			MoveDown:  key.NewBinding(key.WithKeys("J", "shift+down"), key.WithHelp("J", "move down")),
+			MoveUp:    moveUp,
+			MoveDown:  moveDown,
 			Shuffle:   key.NewBinding(key.WithKeys("Z"), key.WithHelp("Z", "shuffle")),
 			Save:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "save track")),
 			SaveQueue: key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "save queue")),
@@ -147,8 +162,12 @@ func newKeyMap() keyMap {
 		playlists: playlistKeyMap{
 			navKeyMap:  nav,
 			Browse:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "browse")),
+			PlayAll:    key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "play all")),
 			Create:     create,
+			Rename:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "rename")),
 			EnqueueAll: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "queue all")),
+			MoveUp:     moveUp,
+			MoveDown:   moveDown,
 			Delete:     key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "delete playlist")),
 			Reload:     key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "reload YouTube"), key.WithDisabled()),
 			Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
@@ -156,10 +175,20 @@ func newKeyMap() keyMap {
 		playlistTracks: playlistTrackKeyMap{
 			navKeyMap: nav,
 			Play:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "play now")),
+			PlayAll:   key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "play all from here")),
 			Enqueue:   key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "queue")),
+			MoveUp:    moveUp,
+			MoveDown:  moveDown,
 			Remove:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "remove saved track")),
 			Reload:    key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "reload YouTube"), key.WithDisabled()),
 			Back:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		},
+		history: historyKeyMap{
+			navKeyMap: nav,
+			Play:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "play now")),
+			Enqueue:   key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "queue")),
+			Save:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "save")),
+			Remove:    key.NewBinding(key.WithKeys("d", "x", "delete"), key.WithHelp("d", "forget")),
 		},
 		devices: deviceKeyMap{
 			Up:     nav.Up,
@@ -194,7 +223,7 @@ func (m Model) contextKeys() (string, help.KeyMap) {
 	case overlayPicker:
 		return "Save to playlist", m.keys.picker
 	case overlayName:
-		return "New playlist", m.keys.name
+		return m.nameMode.title(), m.nameKeys()
 	case overlayNone:
 	}
 	switch m.focus {
@@ -204,15 +233,22 @@ func (m Model) contextKeys() (string, help.KeyMap) {
 		return "Queue", m.keys.queue
 	case focusPlaylists:
 		keys := m.keys.playlists
-		keys.Reload.SetEnabled(m.accountSelected())
-		keys.Create.SetEnabled(!m.accountSelected())
-		keys.Delete.SetEnabled(!m.accountSelected())
+		local := !m.accountSelected()
+		keys.Reload.SetEnabled(!local)
+		for _, b := range []*key.Binding{&keys.Create, &keys.Rename, &keys.MoveUp, &keys.MoveDown, &keys.Delete} {
+			b.SetEnabled(local)
+		}
 		return "Playlists", keys
 	case focusPlaylistTracks:
 		keys := m.keys.playlistTracks
-		keys.Reload.SetEnabled(m.accountSelected())
-		keys.Remove.SetEnabled(!m.accountSelected())
+		local := !m.accountSelected()
+		keys.Reload.SetEnabled(!local)
+		for _, b := range []*key.Binding{&keys.MoveUp, &keys.MoveDown, &keys.Remove} {
+			b.SetEnabled(local)
+		}
 		return "Playlist tracks", keys
+	case focusHistory:
+		return "History", m.keys.history
 	case focusResults:
 	}
 	if m.results.filter.Focused() {
@@ -220,6 +256,7 @@ func (m Model) contextKeys() (string, help.KeyMap) {
 	}
 	results := m.keys.results
 	results.ClearFilter.SetEnabled(m.results.filter.Value() != "")
+	results.More.SetEnabled(m.results.canLoadMore())
 	return "Results", results
 }
 
@@ -230,8 +267,8 @@ func (k globalKeyMap) ShortHelp() []key.Binding {
 func (k globalKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Search, k.Paste, k.NextPane, k.PrevPane},
-		{k.Output, k.Info, k.Viz, k.Radio},
-		{k.Quit, k.ForceQuit},
+		{k.Output, k.Info, k.Viz, k.Radio, k.GoTo},
+		{k.SeekPercent, k.Quit, k.ForceQuit},
 	}
 }
 
@@ -260,7 +297,7 @@ func (k navKeyMap) bindings() []key.Binding {
 }
 
 func (k resultKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Play, k.Enqueue, k.Save, k.Filter, k.ClearFilter}
+	return []key.Binding{k.Play, k.Enqueue, k.Save, k.More, k.Filter, k.ClearFilter}
 }
 
 func (k resultKeyMap) FullHelp() [][]key.Binding {
@@ -281,18 +318,34 @@ func (k queueKeyMap) FullHelp() [][]key.Binding {
 }
 
 func (k playlistKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Create, k.Browse, k.EnqueueAll, k.Delete, k.Reload}
+	return []key.Binding{k.Create, k.Browse, k.PlayAll, k.EnqueueAll, k.Rename, k.Delete, k.Reload}
 }
 
 func (k playlistKeyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{k.bindings(), {k.Create, k.Browse, k.EnqueueAll, k.Delete, k.Reload, k.Back}}
+	return [][]key.Binding{
+		k.bindings(),
+		{k.Browse, k.PlayAll, k.EnqueueAll, k.Back},
+		{k.Create, k.Rename, k.MoveUp, k.MoveDown, k.Delete, k.Reload},
+	}
 }
 
 func (k playlistTrackKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Play, k.Enqueue, k.Remove, k.Reload, k.Back}
+	return []key.Binding{k.Play, k.PlayAll, k.Enqueue, k.Remove, k.Reload, k.Back}
 }
 
 func (k playlistTrackKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		k.bindings(),
+		{k.Play, k.PlayAll, k.Enqueue, k.Back},
+		{k.MoveUp, k.MoveDown, k.Remove, k.Reload},
+	}
+}
+
+func (k historyKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Play, k.Enqueue, k.Save, k.Remove}
+}
+
+func (k historyKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{k.bindings(), k.ShortHelp()}
 }
 

@@ -18,6 +18,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/urfave/cli/v3"
 
+	"github.com/omegaatt36/ytea/internal/history"
 	"github.com/omegaatt36/ytea/internal/library"
 	"github.com/omegaatt36/ytea/internal/mpris"
 	"github.com/omegaatt36/ytea/internal/mpv"
@@ -219,6 +220,12 @@ func run(ctx context.Context, opts options) error {
 	if err != nil {
 		return fmt.Errorf("load local playlists: %w", err)
 	}
+	var played tui.History
+	if historyStore, err := history.Open(stateDir); err != nil {
+		slog.Warn("history disabled", "error", err)
+	} else {
+		played = historyStore
+	}
 
 	deps := tui.Deps{
 		AccountPlaylists: accountSource,
@@ -229,6 +236,7 @@ func run(ctx context.Context, opts options) error {
 		Normalize:        opts.normalize,
 		InitialTracks:    tracksFromSession(saved),
 		Library:          libraryStore,
+		History:          played,
 	}
 
 	if opts.visualizer {

@@ -191,6 +191,33 @@ func (q *queueSync) reorder(requestID uint64, pos int, current string, order []i
 	return cmd
 }
 
+// replace swaps the whole queue for tracks and plays tracks[start]. Like
+// playNow, it pauses index-based edits until mpv's queue is read back.
+func (q *queueSync) replace(requestID uint64, tracks []youtube.Track, start int) tea.Cmd {
+	p := q.player
+	urls := make([]string, len(tracks))
+	entries := make([]mpv.PlaylistEntry, len(tracks))
+	for i, t := range tracks {
+		urls[i] = t.URL
+		entries[i] = mpv.PlaylistEntry{Filename: t.URL, Title: t.Title}
+	}
+	task := q.reserve()
+	status := "playing " + pluralize(len(tracks), "track")
+	cmd := func() tea.Msg {
+		err := task.run(func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), importTimeout)
+			defer cancel()
+			return p.PlayAll(ctx, urls, start)
+		})
+		return queueActionDoneMsg{requestID: requestID, status: status, err: err, projected: true}
+	}
+	q.entries = entries
+	q.pos = -1
+	q.expect()
+	q.insertPending = true
+	return cmd
+}
+
 // clear follows any in-flight edit, even on an empty mirror; the authoritative
 // refresh settles its result.
 func (q *queueSync) clear(requestID uint64) tea.Cmd {

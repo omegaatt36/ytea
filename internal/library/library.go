@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -92,19 +93,14 @@ func (s *Store) Create(name string) (int, error) {
 
 // CreateWithTracks saves a new playlist and its initial tracks in one write.
 func (s *Store) CreateWithTracks(name string, tracks []youtube.Track) (int, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return -1, errors.New("playlist name is empty")
-	}
-	if utf8.RuneCountInString(name) > 100 || strings.ContainsAny(name, "\r\n") {
-		return -1, errors.New("playlist name is too long or contains a line break")
+	name, err := cleanName(name)
+	if err != nil {
+		return -1, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, p := range s.data.Playlists {
-		if strings.EqualFold(p.Name, name) {
-			return -1, ErrDuplicate
-		}
+	if s.nameTaken(name, -1) {
+		return -1, ErrDuplicate
 	}
 	if len(s.data.Playlists) >= maxPlaylists {
 		return -1, fmt.Errorf("limit of %d playlists reached", maxPlaylists)
@@ -116,6 +112,51 @@ func (s *Store) CreateWithTracks(name string, tracks []youtube.Track) (int, erro
 		return -1, err
 	}
 	return index, nil
+}
+
+// Rename gives a playlist a new name, unique regardless of case.
+func (s *Store) Rename(index int, name string) error {
+	name, err := cleanName(name)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if index < 0 || index >= len(s.data.Playlists) {
+		return ErrNotFound
+	}
+	if s.nameTaken(name, index) {
+		return ErrDuplicate
+	}
+	next := clone(s.data.Playlists)
+	next[index].Name = name
+	return s.commit(next)
+}
+
+// Move reorders playlists so the one at from lands at to.
+func (s *Store) Move(from, to int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !inRange(from, len(s.data.Playlists)) || !inRange(to, len(s.data.Playlists)) {
+		return ErrNotFound
+	}
+	return s.commit(moved(clone(s.data.Playlists), from, to))
+}
+
+// MoveTrack reorders a playlist so the track at from lands at to.
+func (s *Store) MoveTrack(playlistIndex, from, to int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !inRange(playlistIndex, len(s.data.Playlists)) {
+		return ErrNotFound
+	}
+	n := len(s.data.Playlists[playlistIndex].Tracks)
+	if !inRange(from, n) || !inRange(to, n) {
+		return ErrNotFound
+	}
+	next := clone(s.data.Playlists)
+	next[playlistIndex].Tracks = moved(next[playlistIndex].Tracks, from, to)
+	return s.commit(next)
 }
 
 // Add saves a track in the selected playlist, keeping its existing order.
@@ -200,6 +241,38 @@ func (s *Store) commit(playlists []Playlist) error {
 	}
 	s.data = next
 	return nil
+}
+
+func cleanName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", errors.New("playlist name is empty")
+	}
+	if utf8.RuneCountInString(name) > 100 || strings.ContainsAny(name, "\r\n") {
+		return "", errors.New("playlist name is too long or contains a line break")
+	}
+	return name, nil
+}
+
+// nameTaken reports whether a playlist other than except already uses name.
+func (s *Store) nameTaken(name string, except int) bool {
+	for i, p := range s.data.Playlists {
+		if i != except && strings.EqualFold(p.Name, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func inRange(i, n int) bool {
+	return i >= 0 && i < n
+}
+
+// moved shifts the element at from to to in place, keeping the others in order.
+func moved[T any](s []T, from, to int) []T {
+	v := s[from]
+	s = slices.Delete(s, from, from+1)
+	return slices.Insert(s, to, v)
 }
 
 func clone(playlists []Playlist) []Playlist {

@@ -22,8 +22,10 @@ type (
 	searchDoneMsg struct {
 		requestID uint64
 		query     string
-		tracks    []youtube.Track
-		err       error
+		// offset is how many results earlier pages covered; 0 is a new search.
+		offset int
+		tracks []youtube.Track
+		err    error
 	}
 	lookupDoneMsg struct {
 		requestID uint64
@@ -39,12 +41,12 @@ type (
 	}
 )
 
-func search(s Searcher, query string, requestID uint64) tea.Cmd {
+func search(s Searcher, query string, offset int, requestID uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), searchTimeout)
 		defer cancel()
-		tracks, err := s.Search(ctx, query, searchLimit)
-		return searchDoneMsg{requestID: requestID, query: query, tracks: tracks, err: err}
+		tracks, err := s.Search(ctx, query, offset, searchLimit)
+		return searchDoneMsg{requestID: requestID, query: query, offset: offset, tracks: tracks, err: err}
 	}
 }
 
@@ -55,19 +57,44 @@ func (m *Model) searchDone(msg searchDoneMsg) {
 	if msg.requestID == m.spinnerRequest {
 		m.searching = false
 	}
+	m.results.loadingMore = false
 	if msg.err != nil {
 		if msg.requestID == m.activeRequest {
 			m.setError("search failed: " + msg.err.Error())
 		}
 		return
 	}
-	m.results.set(msg.tracks)
 	for _, t := range msg.tracks {
 		m.tracks[t.URL] = t
 	}
+	if msg.offset > 0 {
+		added := m.results.extend(msg.tracks, msg.offset+searchLimit)
+		if msg.requestID == m.activeRequest {
+			m.setStatus(fmt.Sprintf("%s more for %s", pluralize(added, "result"), quote(msg.query)))
+		}
+		return
+	}
+	m.results.set(msg.tracks)
+	m.results.query, m.results.fetched = msg.query, searchLimit
+	m.results.more = len(msg.tracks) > 0
 	if msg.requestID == m.activeRequest {
 		m.setStatus(pluralize(len(msg.tracks), "result") + " for " + quote(msg.query))
 	}
+}
+
+// loadMoreResults fetches the page after the results so far; a new search
+// started meanwhile discards it.
+func (m Model) loadMoreResults() (tea.Model, tea.Cmd) {
+	r := &m.results
+	if !r.canLoadMore() || r.loadingMore {
+		return m, nil
+	}
+	requestID := m.nextRequest()
+	m.searchRequest, m.spinnerRequest = requestID, requestID
+	m.searching = true
+	r.loadingMore = true
+	m.setStatus("loading more results for " + quote(r.query) + "…")
+	return m, tea.Batch(m.spinner.Tick, search(m.deps.Searcher, r.query, r.fetched, requestID))
 }
 
 func (m *Model) queueDone(msg queueDoneMsg) tea.Cmd {

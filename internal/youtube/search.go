@@ -45,13 +45,15 @@ func NewSearcher(bin string) *Searcher {
 	return &Searcher{bin: bin}
 }
 
-// Search returns up to limit tracks matching query.
-func (s *Searcher) Search(ctx context.Context, query string, limit int) ([]Track, error) {
+// Search returns up to limit tracks matching query, skipping the first offset
+// results so later pages can be fetched without repeating earlier ones.
+func (s *Searcher) Search(ctx context.Context, query string, offset, limit int) ([]Track, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, ErrEmptyQuery
 	}
-	return s.extract(ctx, "search", fmt.Sprintf("ytsearch%d:%s", limit, query), 0)
+	offset = max(0, offset)
+	return s.extract(ctx, "search", fmt.Sprintf("ytsearch%d:%s", offset+limit, query), offset, offset+limit)
 }
 
 // Lookup returns the videos behind a URL from RefOf. Non-positive limits use
@@ -60,7 +62,7 @@ func (s *Searcher) Lookup(ctx context.Context, url string, limit int) ([]Track, 
 	if limit <= 0 {
 		limit = MaxPlaylistItems
 	}
-	tracks, err := s.extract(ctx, "url", url, limit)
+	tracks, err := s.extract(ctx, "url", url, 0, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -70,11 +72,12 @@ func (s *Searcher) Lookup(ctx context.Context, url string, limit int) ([]Track, 
 	return tracks, nil
 }
 
-func (s *Searcher) extract(ctx context.Context, what, target string, items int) ([]Track, error) {
+// extract lists the entries after skip up to end; a non-positive end lists all.
+func (s *Searcher) extract(ctx context.Context, what, target string, skip, end int) ([]Track, error) {
 	// Flat extraction skips per-video stream resolution: ~1s instead of ~10s.
 	args := []string{target, "--flat-playlist", "--dump-single-json", "--no-warnings"}
-	if items > 0 {
-		args = append(args, "--playlist-items", fmt.Sprintf("1:%d", items))
+	if end > 0 {
+		args = append(args, "--playlist-items", fmt.Sprintf("%d:%d", skip+1, end))
 	}
 	cmd := exec.CommandContext(ctx, s.bin, args...)
 	var stdout, stderr bytes.Buffer

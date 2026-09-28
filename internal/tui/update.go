@@ -82,6 +82,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, g.Radio):
 		return m.startRadio()
+	case key.Matches(msg, g.GoTo):
+		return m.openSeek()
 	}
 
 	switch {
@@ -89,6 +91,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handlePlaylistKey(msg)
 	case m.focus == focusQueue:
 		return m.handleQueueKey(msg)
+	case m.focus == focusHistory:
+		return m.handleHistoryKey(msg)
 	}
 	return m.handleResultKey(msg)
 }
@@ -113,7 +117,7 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.setStatus("searching " + quote(query) + "…")
 		m.searchRequest = requestID
-		return m, tea.Batch(m.spinner.Tick, search(m.deps.Searcher, query, requestID))
+		return m, tea.Batch(m.spinner.Tick, search(m.deps.Searcher, query, 0, requestID))
 	case key.Matches(msg, m.keys.search.Leave):
 		m.focus = focusResults
 		m.input.Blur()
@@ -154,6 +158,8 @@ func (m Model) handlePlaybackKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return do(func(ctx context.Context) error { return p.Seek(ctx, -seekStep) }), true
 	case key.Matches(msg, k.SeekForward):
 		return do(func(ctx context.Context) error { return p.Seek(ctx, seekStep) }), true
+	case key.Matches(msg, m.keys.global.SeekPercent):
+		return m.seekPercent(10 * int(msg.Code-'0')), true
 	case key.Matches(msg, k.Next):
 		return do(func(ctx context.Context) error { return p.Next(ctx) }), true
 	case key.Matches(msg, k.Prev):
@@ -178,7 +184,13 @@ func (m Model) handleResultKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, k.Up):
 		r.moveTo(r.cur - 1)
 	case key.Matches(msg, k.Down):
+		// Running off the end of an unfiltered list asks for the next page.
+		if r.cur == len(r.rows())-1 && r.filter.Value() == "" {
+			return m.loadMoreResults()
+		}
 		r.moveTo(r.cur + 1)
+	case key.Matches(msg, k.More):
+		return m.loadMoreResults()
 	case key.Matches(msg, k.Top):
 		r.moveTo(0)
 	case key.Matches(msg, k.Bottom):
@@ -249,7 +261,7 @@ func (m Model) handleQueueKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.setError("queue has no saveable tracks")
 			return m, nil
 		}
-		return m.openPlaylistName(tracks, false, "name the playlist for the current queue")
+		return m.openPlaylistName(tracks, nameCreate, "name the playlist for the current queue")
 	case key.Matches(msg, k.Remove):
 		if !m.queue.insertPending && i >= 0 && i < len(entries) {
 			cmd := m.queue.remove(m.nextRequest(), i)
@@ -265,21 +277,32 @@ func (m Model) handleQueueKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.syncMPRIS()
 		return m, tea.Batch(cmd, m.refreshThumb())
 	case key.Matches(msg, k.MoveUp):
-		if !m.queue.insertPending && i > 0 && i < len(entries) {
-			cmd := m.queue.move(m.nextRequest(), i, i-1)
-			m.queueCur--
-			return m, cmd
-		}
+		return m, m.moveQueueEntry(i, i-1)
 	case key.Matches(msg, k.MoveDown):
-		if !m.queue.insertPending && i >= 0 && i < len(entries)-1 {
-			cmd := m.queue.move(m.nextRequest(), i, i+1)
-			m.queueCur++
-			return m, cmd
-		}
+		return m, m.moveQueueEntry(i, i+1)
 	case key.Matches(msg, k.Shuffle):
 		return m.shuffleQueue()
 	}
 	return m, nil
+}
+
+// moveQueueEntry walks the entry at from to to one slot at a time, since the
+// projected queue only swaps neighbours; the cursor follows it.
+func (m *Model) moveQueueEntry(from, to int) tea.Cmd {
+	n := len(m.queue.entries)
+	if m.queue.insertPending || from == to || from < 0 || from >= n || to < 0 || to >= n {
+		return nil
+	}
+	step := 1
+	if to < from {
+		step = -1
+	}
+	var cmds []tea.Cmd
+	for i := from; i != to; i += step {
+		cmds = append(cmds, m.queue.move(m.nextRequest(), i, i+step))
+	}
+	m.queueCur = to
+	return tea.Batch(cmds...)
 }
 
 // shuffleQueue permutes the tracks after the current one; the cursor follows

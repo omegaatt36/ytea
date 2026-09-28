@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/omegaatt36/ytea/internal/youtube"
@@ -57,6 +58,63 @@ func TestStorePersistsPlaylistsAndTracks(t *testing.T) {
 	again, err := Open(dir)
 	if err != nil || len(again.Playlists()) != 0 {
 		t.Fatalf("after delete = %+v, %v", again, err)
+	}
+}
+
+func TestStoreRenamesAndReorders(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracks := []youtube.Track{{Title: "a", URL: "ua"}, {Title: "b", URL: "ub"}, {Title: "c", URL: "uc"}}
+	for _, name := range []string{"One", "Two", "Three"} {
+		if _, err := store.CreateWithTracks(name, tracks); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.Rename(0, "two"); !errors.Is(err, ErrDuplicate) {
+		t.Errorf("Rename() to another playlist's name = %v, want ErrDuplicate", err)
+	}
+	if err := store.Rename(0, "ONE"); err != nil {
+		t.Errorf("Rename() changing only case = %v", err)
+	}
+	if err := store.Rename(0, " "); err == nil {
+		t.Error("Rename() to blank: error = nil")
+	}
+	if err := store.Rename(3, "Four"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Rename() out of range = %v, want ErrNotFound", err)
+	}
+	if err := store.Move(0, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MoveTrack(2, 2, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MoveTrack(2, 0, 3); !errors.Is(err, ErrNotFound) {
+		t.Errorf("MoveTrack() past the end = %v, want ErrNotFound", err)
+	}
+
+	loaded, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names, titles []string
+	for _, p := range loaded.Playlists() {
+		names = append(names, p.Name)
+	}
+	for _, tr := range loaded.Playlists()[2].Tracks {
+		titles = append(titles, tr.Title)
+	}
+	if want := []string{"Two", "Three", "ONE"}; !slices.Equal(names, want) {
+		t.Errorf("playlists = %q, want %q", names, want)
+	}
+	if want := []string{"c", "a", "b"}; !slices.Equal(titles, want) {
+		t.Errorf("moved playlist tracks = %q, want %q", titles, want)
+	}
+	if got := loaded.Playlists()[0].Tracks[0].Title; got != "a" {
+		t.Errorf("MoveTrack() touched another playlist: first track %q", got)
 	}
 }
 
