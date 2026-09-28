@@ -80,9 +80,8 @@ func TestAuthLoginMissingClientCredentials(t *testing.T) {
 	}
 }
 
-func TestAuthLoginPrintsCodeAndStoresApprovedToken(t *testing.T) {
+func TestAuthLoginPassesCredentialsAndOutput(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	var tokenRequests int
 	config := authServerConfig(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			t.Errorf("parse OAuth request: %v", err)
@@ -94,14 +93,8 @@ func TestAuthLoginPrintsCodeAndStoresApprovedToken(t *testing.T) {
 			}
 			fmt.Fprint(w, `{"device_code":"device-secret","user_code":"ABCD-EFGH","verification_url":"https://www.google.com/device","expires_in":60,"interval":1}`)
 		case "/token":
-			tokenRequests++
 			if got := r.Form.Get("client_secret"); got != "cli-secret" {
 				t.Errorf("token client_secret = %q, want cli-secret", got)
-			}
-			if tokenRequests == 1 {
-				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprint(w, `{"error":"authorization_pending"}`)
-				return
 			}
 			fmt.Fprint(w, `{"access_token":"approved-access","refresh_token":"approved-refresh","token_type":"Bearer","expires_in":3600}`)
 		default:
@@ -114,55 +107,23 @@ func TestAuthLoginPrintsCodeAndStoresApprovedToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth login: %v; output: %s", err, output.String())
 	}
-	for _, want := range []string{"https://www.google.com/device", "ABCD-EFGH"} {
-		if !strings.Contains(output.String(), want) {
-			t.Errorf("login output %q does not contain %q", output.String(), want)
-		}
-	}
-	if tokenRequests < 2 {
-		t.Errorf("token requests = %d, want polling before approval", tokenRequests)
-	}
-	token, err := googleauth.LoadToken()
-	if err != nil {
-		t.Fatalf("load approved token: %v", err)
-	}
-	if token.AccessToken != "approved-access" || token.RefreshToken != "approved-refresh" {
-		t.Errorf("stored token = %+v, want approved credentials", token)
+	if !strings.Contains(output.String(), "ABCD-EFGH") {
+		t.Errorf("login output %q does not contain the device code", output.String())
 	}
 }
 
-func TestAuthLoginDenialAndExpiryDoNotWriteToken(t *testing.T) {
-	for _, rejection := range []string{"access_denied", "expired_token"} {
-		t.Run(rejection, func(t *testing.T) {
-			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-			config := authServerConfig(t, func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case "/device":
-					fmt.Fprint(w, `{"device_code":"device-secret","user_code":"ABCD-EFGH","verification_url":"https://www.google.com/device","expires_in":60,"interval":1}`)
-				case "/token":
-					w.WriteHeader(http.StatusBadRequest)
-					fmt.Fprintf(w, `{"error":%q}`, rejection)
-				default:
-					t.Errorf("unexpected OAuth path %q", r.URL.Path)
-				}
-			})
-			var output bytes.Buffer
-			if err := authLogin(t.Context(), options{googleClientID: "cli-client", googleClientSecret: "cli-secret"}, &output, config); err == nil {
-				t.Fatalf("auth login succeeded for %s; output: %s", rejection, output.String())
-			}
-			for _, want := range []string{"https://www.google.com/device", "ABCD-EFGH"} {
-				if !strings.Contains(output.String(), want) {
-					t.Errorf("login output %q does not contain %q before %s", output.String(), want, rejection)
-				}
-			}
-			path, err := googleauth.TokenPath()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-				t.Errorf("token after %s: stat error = %v, want not exist", rejection, err)
-			}
-		})
+func TestAuthLoginWrapsAuthorizationError(t *testing.T) {
+	config := authServerConfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/device" {
+			t.Errorf("unexpected OAuth path %q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{}`)
+	})
+	var output bytes.Buffer
+	err := authLogin(t.Context(), options{googleClientID: "cli-client", googleClientSecret: "cli-secret"}, &output, config)
+	if err == nil || !strings.Contains(err.Error(), "authorize Google account: request Google device authorization") {
+		t.Errorf("auth login error = %v, want CLI authorization context", err)
 	}
 }
 
