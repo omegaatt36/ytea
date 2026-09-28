@@ -26,7 +26,7 @@ type readmeKeyRow struct {
 	action string
 }
 
-// R7 [derived]: binding rows come from the keymap; the task brief supplies the explicit help behavior and platform wording.
+// tui-keymap-help R7 [derived]: binding rows come from the keymap; the task brief supplies the explicit help behavior and platform wording.
 func TestREADMEKeysMatchFullHelpKeymap(t *testing.T) {
 	readme, err := os.ReadFile("../../README.md")
 	if err != nil {
@@ -111,7 +111,7 @@ func TestREADMEKeysMatchFullHelpKeymap(t *testing.T) {
 	}
 }
 
-// R6 [derived]: session.json also carries repeat mode, restored on launch.
+// queue-repeat-shuffle R6 [derived]: session.json also carries repeat mode, restored on launch.
 func TestREADMEDocumentsRepeatInSession(t *testing.T) {
 	readme, err := os.ReadFile("../../README.md")
 	if err != nil {
