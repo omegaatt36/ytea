@@ -30,7 +30,6 @@ const (
 	volumeStep    = 5
 	thumbCols     = 18
 	thumbRows     = 5
-	vizRows       = 6
 	cmdTimeout    = 5 * time.Second
 	searchTimeout = 30 * time.Second
 	importTimeout = 2 * time.Minute
@@ -164,10 +163,21 @@ func New(deps Deps) Model {
 	keys.global.Viz.SetEnabled(deps.Tap != nil)
 	hm := help.New()
 	hm.ShortSeparator = " · "
-	hm.Styles.ShortKey, hm.Styles.ShortDesc, hm.Styles.ShortSeparator, hm.Styles.Ellipsis = dimStyle, dimStyle, dimStyle, dimStyle
+	hm.Styles = help.Styles{
+		ShortKey: mutedStyle, ShortDesc: dimStyle, ShortSeparator: dimStyle, Ellipsis: dimStyle,
+		FullKey: lipgloss.NewStyle(), FullDesc: mutedStyle, FullSeparator: dimStyle,
+	}
+	// Built from scratch: the bubbles defaults use fixed 256-color greys and
+	// recolor the terminal's own cursor.
+	inputStyles := textinput.Styles{
+		Focused: textinput.StyleState{Prompt: headStyle, Placeholder: dimStyle},
+		Blurred: textinput.StyleState{Prompt: dimStyle, Placeholder: dimStyle, Text: mutedStyle},
+		Cursor:  textinput.CursorStyle{Shape: tea.CursorBlock, Blink: true},
+	}
 	in := textinput.New()
+	in.SetStyles(inputStyles)
 	in.Placeholder = "search YouTube…"
-	in.Prompt = " / "
+	in.Prompt = "/ "
 	in.CharLimit = 200
 	in.KeyMap.Paste = keys.global.Paste
 	in.SetVirtualCursor(false)
@@ -176,14 +186,16 @@ func New(deps Deps) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.MiniDot
 	nameInput := textinput.New()
+	nameInput.SetStyles(inputStyles)
 	nameInput.Placeholder = "playlist name"
-	nameInput.Prompt = " name: "
+	nameInput.Prompt = "name: "
 	nameInput.CharLimit = 100
 	nameInput.KeyMap.Paste = keys.global.Paste
 	nameInput.SetVirtualCursor(false)
 	filterInput := textinput.New()
+	filterInput.SetStyles(inputStyles)
 	filterInput.Placeholder = "filter results"
-	filterInput.Prompt = " filter: "
+	filterInput.Prompt = "filter: "
 	filterInput.CharLimit = 100
 	filterInput.KeyMap.Paste = keys.global.Paste
 	filterInput.SetVirtualCursor(false)
@@ -286,9 +298,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.help.SetWidth(m.width)
-		m.input.SetWidth(max(10, m.width/2))
-		m.nameInput.SetWidth(max(1, m.width-paneFocus.GetHorizontalFrameSize()-lipgloss.Width(m.nameInput.Prompt)-1))
-		m.filterInput.SetWidth(max(1, m.resultsWidth()-paneFocus.GetHorizontalFrameSize()-lipgloss.Width(fmt.Sprintf("%s %d/%d%s", resultsTitle, searchLimit, searchLimit, m.filterInput.Prompt))-1))
+		m.input.SetWidth(m.searchWidth())
+		m.nameInput.SetWidth(max(1, dialogWidth(nameDialogWidth, m.width)-2*boxInset-lipgloss.Width(m.nameInput.Prompt)-1))
+		m.filterInput.SetWidth(max(1, resultsWidth(m.width)-2*boxInset-lipgloss.Width(m.filterInput.Prompt)-1))
 		return m, m.updateThumb(msg)
 
 	case placeMsg, uv.KittyGraphicsEvent, uv.PrimaryDeviceAttributesEvent, thumbMsg:

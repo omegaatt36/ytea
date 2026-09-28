@@ -222,9 +222,9 @@ func TestNoCursorOrBlinkOutsideInputs(t *testing.T) {
 func TestRenderSpectrumSize(t *testing.T) {
 	m := New(Deps{})
 	m.levels = []float64{0, 0.25, 0.5, 1}
-	got := m.renderSpectrum(40, vizRows)
-	if w, h := lipgloss.Width(got), lipgloss.Height(got); w != 40 || h != vizRows {
-		t.Errorf("renderSpectrum() size = %dx%d, want 40x%d", w, h, vizRows)
+	got := m.renderSpectrum(40, detailRows)
+	if w, h := lipgloss.Width(got), lipgloss.Height(got); w != 40 || h != detailRows {
+		t.Errorf("renderSpectrum() size = %dx%d, want 40x%d", w, h, detailRows)
 	}
 }
 
@@ -971,7 +971,7 @@ func TestApplyThumbPicksRendering(t *testing.T) {
 			if (cmd != nil) != tt.wantKitty {
 				t.Errorf("cmd = %v, want out-of-band transmit only for kitty", cmd)
 			}
-			if w := lipgloss.Width(gm.renderNowPlaying()); w != 100 {
+			if w := lipgloss.Width(gm.renderPlayer()); w != 100 {
 				t.Errorf("now playing width = %d, want 100", w)
 			}
 		})
@@ -985,11 +985,11 @@ func TestThumbOriginIsInsideNowPlayingBox(t *testing.T) {
 
 		at := m.thumbOrigin()
 		lines := strings.Split(ansi.Strip(m.render()), "\n")
-		if corner := []rune(lines[at.Y-1])[at.X-1]; corner != '╭' {
-			t.Errorf("viz=%v: cell above-left of thumbOrigin %v = %q, want box corner", viz, at, corner)
+		if corner := []rune(lines[at.Y-1])[at.X-boxInset]; corner != '╭' {
+			t.Errorf("viz=%v: box corner left of the row above thumbOrigin %v = %q, want ╭", viz, at, corner)
 		}
-		if above := []rune(lines[at.Y-1])[at.X]; above != '─' {
-			t.Errorf("viz=%v: cell above thumbOrigin = %q, want top border", viz, above)
+		if side := []rune(lines[at.Y])[at.X-boxInset]; side != '│' {
+			t.Errorf("viz=%v: box side left of thumbOrigin = %q, want │", viz, side)
 		}
 	}
 }
@@ -1005,7 +1005,7 @@ func TestSyncPlacement(t *testing.T) {
 		t.Error("unchanged layout: cmd != nil, want no re-placement")
 	}
 
-	m.showViz = !m.showViz // moves the now-playing box
+	m.height += 4 // moves the now-playing box
 	if cmd := m.syncPlacement(); cmd == nil {
 		t.Error("layout moved: cmd = nil, want re-placement")
 	}
@@ -1712,7 +1712,7 @@ func TestRestoredMetadataTitlesUnplayedQueueEntries(t *testing.T) {
 	}})
 	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"https://www.youtube.com/watch?v=abc"}]`)})
 	for _, detailed := range []bool{false, true} {
-		if got := m.queueLine(0, m.queue.entries[0], 60, detailed); !strings.Contains(got, "Saved song") || strings.Contains(got, url) {
+		if got := m.queueLine(0, m.queueTracks()[0], 60, 5, detailed, false); !strings.Contains(got, "Saved song") || strings.Contains(got, url) {
 			t.Errorf("restored queue line (detailed=%v) = %q, want saved title", detailed, got)
 		}
 	}
@@ -1735,7 +1735,7 @@ func TestQueueTabShowsDetailedQueueFullWidth(t *testing.T) {
 	if strings.Contains(got, "song 00") {
 		t.Errorf("queue tab still renders search results:\n%s", got)
 	}
-	if !strings.Contains(got, "2 queued 1") || !strings.Contains(got, "Some Channel · 4:16") {
+	if !regexp.MustCompile(`2 queued 1 +Some Channel +4:16`).MatchString(got) {
 		t.Errorf("queue tab row lacks position, channel or length:\n%s", got)
 	}
 	if w, h := lipgloss.Width(m.render()), lipgloss.Height(m.render()); w > m.width || h > m.height {
@@ -1911,7 +1911,7 @@ func TestMouseInPlaylistPicker(t *testing.T) {
 	got, _ := m.handleResultKey(keyPress("s"))
 	m = got.(Model)
 
-	m = click(m, cellAt(t, m, "Beta ("))
+	m = click(m, cellAt(t, m, "Beta"))
 	if m.overlay != overlayPicker || m.playlistCur != 1 {
 		t.Errorf("click Beta in picker: overlay=%v playlistCur=%d, want picker/1", m.overlay, m.playlistCur)
 	}
@@ -1928,6 +1928,118 @@ func TestMouseIgnoredWhileNamingPlaylist(t *testing.T) {
 	m = click(m, image.Pt(1, 0))
 	if m.overlay != overlayName {
 		t.Errorf("click during name input: overlay=%v, want name input kept", m.overlay)
+	}
+}
+
+func TestDialogFloatsOverPanesAndTakesClicks(t *testing.T) {
+	m := mouseModel()
+	m.input.Blur()
+	m.focus = focusQueue
+	m.devices = []mpv.AudioDevice{{Name: "auto", Description: "Autoselect device"}, {Name: "b", Description: "Second output"}}
+	m.overlay = overlayDevices
+	if got := rendered(m); !strings.Contains(got, "Second output") || !strings.Contains(got, "queued 0") {
+		t.Fatalf("device dialog should float over the queue it was opened from:\n%s", got)
+	}
+
+	m = click(m, cellAt(t, m, "Second output"))
+	if m.overlay != overlayDevices || m.deviceCur != 1 {
+		t.Errorf("click device row: overlay=%v deviceCur=%d, want devices/1", m.overlay, m.deviceCur)
+	}
+	m = click(m, cellAt(t, m, "queued 2"))
+	if m.overlay != overlayDevices || m.focus != focusQueue || m.queueCur != 0 {
+		t.Errorf("click beside the dialog: overlay=%v focus=%v queueCur=%d, want the panes untouched", m.overlay, m.focus, m.queueCur)
+	}
+}
+
+func TestNarrowResultsTabDropsQueuePane(t *testing.T) {
+	m := mouseModel()
+	m.input.Blur()
+	m.focus = focusResults
+
+	m.width = splitMinWidth - 1
+	if got := rendered(m); strings.Contains(got, "Queue (") || !strings.Contains(got, "song 00") {
+		t.Errorf("width %d: want Results alone:\n%s", m.width, got)
+	}
+	m.width = splitMinWidth
+	if got := rendered(m); !strings.Contains(got, "Queue (3)") || !strings.Contains(got, "song 00") {
+		t.Errorf("width %d: want Results beside the queue:\n%s", m.width, got)
+	}
+}
+
+func TestRenderFillsWindowWithEveryDialog(t *testing.T) {
+	for _, size := range []image.Point{{40, 24}, {80, 24}, {120, 40}} {
+		for _, o := range []overlay{overlayNone, overlayDevices, overlayInfo, overlayName, overlayPicker} {
+			m := overlayModel(t, focusQueue)
+			got, _ := m.update(tea.WindowSizeMsg{Width: size.X, Height: size.Y})
+			m = got.(Model)
+			m.overlay = o
+			lines := strings.Split(m.render(), "\n")
+			if len(lines) != size.Y {
+				t.Errorf("%v overlay %d: %d rows, want %d", size, o, len(lines), size.Y)
+			}
+			for i, line := range lines {
+				if w := lipgloss.Width(line); w > size.X {
+					t.Errorf("%v overlay %d: row %d is %d wide: %q", size, o, i, w, ansi.Strip(line))
+				}
+			}
+		}
+	}
+}
+
+func TestHourLongLengthKeepsColumnsAligned(t *testing.T) {
+	m := New(Deps{})
+	m.width, m.height = 120, 30
+	m.input.Blur()
+	m.focus = focusResults
+	m.results = []youtube.Track{
+		{Title: "short", Channel: "Chan A", Duration: 3 * time.Minute},
+		{Title: "long mix", Channel: "Chan B", Duration: 6*time.Hour + 10*time.Minute},
+		{Title: "stream", Channel: "Chan C", Live: true},
+	}
+	var cols []int
+	for _, ch := range []string{"Chan A", "Chan B", "Chan C"} {
+		cols = append(cols, cellAt(t, m, ch).X)
+	}
+	if cols[0] != cols[1] || cols[1] != cols[2] {
+		t.Errorf("channel columns = %v, want one column", cols)
+	}
+}
+
+// Only the 16 palette colors follow the terminal theme; a fixed 256-color or
+// truecolor SGR would not.
+func TestUIColorsComeFromTerminalPalette(t *testing.T) {
+	fixed := regexp.MustCompile(`\x1b\[[0-9;]*[34]8;[25];`)
+	m := overlayModel(t, focusResults)
+	m.showViz, m.levels = true, []float64{0.2, 0.9}
+	m.results = []youtube.Track{{Title: "lofi beats", Channel: "Lofi Girl"}, {Title: "rock"}}
+	m.filterInput.SetValue("lofi")
+	m.setError("search failed")
+	for name, mm := range map[string]Model{
+		"results":    m,
+		"full help":  func() Model { m := m; m.fullHelp = true; return m }(),
+		"device":     func() Model { m := m; m.overlay = overlayDevices; return m }(),
+		"name input": func() Model { m := m; m.overlay = overlayName; m.nameInput.Focus(); return m }(),
+	} {
+		if seq := fixed.FindString(mm.render()); seq != "" {
+			t.Errorf("%s: render uses fixed color %q", name, seq)
+		}
+	}
+}
+
+func TestStatusRidesPlayerBottomEdge(t *testing.T) {
+	m := overlayModel(t, focusQueue)
+	edge := func() string {
+		lines := strings.Split(rendered(m), "\n")
+		return lines[len(lines)-1-footerRows]
+	}
+
+	m.setStatus("saved to “Chill”")
+	if got := edge(); !strings.HasPrefix(got, "╰─ saved to “Chill” ─") {
+		t.Errorf("player bottom edge = %q, want the status on it", got)
+	}
+	m.setStatus("")
+	if got, want := edge(), "╰"+strings.Repeat("─", m.width-2)+"╯"; got != want {
+		t.Errorf("player bottom edge without status = %q, want a plain border", got)
 	}
 }
 
@@ -2368,7 +2480,7 @@ func TestFullHelpShowsPlaybackGlobalAndContextColumns(t *testing.T) {
 			}
 			m = press(t, m, keyPress("?"))
 			got := rendered(m)
-			_, _, _, bodyHeight := m.layout()
+			bodyHeight := m.screen().body.Dy()
 			helpBody := ansi.Strip(m.renderFullHelp(bodyHeight))
 			for _, heading := range []string{playbackHeading, globalHeading} {
 				if !strings.Contains(got, heading) {
@@ -2422,7 +2534,7 @@ func TestFullHelpKeepsEveryGroupVisibleAt40Columns(t *testing.T) {
 	}
 }
 
-func TestFullHelpAt24RowsWithSpectrumShowsQueueBindingsAndRestoresVisualizer(t *testing.T) {
+func TestFullHelpAt24RowsWithSpectrumShowsQueueBindingsAndKeepsVisualizer(t *testing.T) {
 	m := New(Deps{Tap: spectrumStub{}})
 	m.width, m.height = 120, 24
 	m.input.Blur()
@@ -2442,7 +2554,7 @@ func TestFullHelpAt24RowsWithSpectrumShowsQueueBindingsAndRestoresVisualizer(t *
 		t.Fatal("showViz changed while full help was open")
 	}
 	got := rendered(m)
-	_, _, _, bodyHeight := m.layout()
+	bodyHeight := m.screen().body.Dy()
 	helpBody := ansi.Strip(m.renderFullHelp(bodyHeight))
 	for _, group := range []struct {
 		name string
@@ -2458,8 +2570,8 @@ func TestFullHelpAt24RowsWithSpectrumShowsQueueBindingsAndRestoresVisualizer(t *
 			}
 		}
 	}
-	if strings.Contains(got, "█") {
-		t.Error("visualizer is rendered while full help is open")
+	if !strings.Contains(got, "█") {
+		t.Error("visualizer hidden while full help is open; it lives in the player bar and costs the help no rows")
 	}
 
 	m = press(t, m, keyPress("q"))
@@ -2471,7 +2583,7 @@ func TestFullHelpAt24RowsWithSpectrumShowsQueueBindingsAndRestoresVisualizer(t *
 	}
 }
 
-func TestFullHelpAt40x24AfterWindowSizeWithSpectrumShowsBindingsAndRestoresVisualizer(t *testing.T) {
+func TestFullHelpAt40x24AfterWindowSizeWithSpectrumShowsBindings(t *testing.T) {
 	const watch = "https://www.youtube.com/watch?v=abc"
 	m := New(Deps{Tap: spectrumStub{}})
 	m.input.Blur()
@@ -2519,16 +2631,10 @@ func TestFullHelpAt40x24AfterWindowSizeWithSpectrumShowsBindingsAndRestoresVisua
 			}
 		}
 	}
-	if strings.Contains(renderedHelp, "█") {
-		t.Error("visualizer is rendered while full help is open")
-	}
 
 	m = press(t, m, keyPress("q"))
 	if !m.showViz {
 		t.Fatal("showViz changed after closing full help")
-	}
-	if !strings.Contains(rendered(m), "█") {
-		t.Error("visualizer was not restored after closing full help")
 	}
 }
 
@@ -2735,7 +2841,7 @@ func TestFullHelpIgnoresMouse(t *testing.T) {
 	m.input.Blur()
 	row := cellAt(t, m, "queued 1")
 	tab := cellAt(t, m, "Queue")
-	searchBox := image.Pt(lipgloss.Width(renderTitle())+1, 0)
+	searchBox := image.Pt(lipgloss.Width(brand())+1, 0)
 	m = press(t, m, keyPress("?"))
 
 	for name, at := range map[string]image.Point{"pane row": row, "tab": tab, "search": searchBox} {
@@ -2827,8 +2933,8 @@ func TestRepeatKeyCyclesThroughMPV(t *testing.T) {
 		if !slices.Equal(player.repeats, []mpv.Repeat{mpv.RepeatAll}) {
 			t.Fatalf("focus %d: SetRepeat calls = %v, want [all]", f, player.repeats)
 		}
-		if strings.Contains(m.audioLine(), "repeat") {
-			t.Fatalf("focus %d: display changed before mpv reported: %q", f, m.audioLine())
+		if strings.Contains(m.modeLine(), "repeat") {
+			t.Fatalf("focus %d: display changed before mpv reported: %q", f, m.modeLine())
 		}
 	}
 
@@ -2847,7 +2953,7 @@ func TestRepeatKeyCyclesThroughMPV(t *testing.T) {
 	}
 	for _, step := range steps {
 		m.applyProperty(mpv.Event{Name: "property-change", Prop: step.prop, Data: json.RawMessage(step.value)})
-		line := m.audioLine()
+		line := m.modeLine()
 		if step.display == "" && strings.Contains(line, "repeat") || step.display != "" && !strings.Contains(line, step.display) {
 			t.Fatalf("after %s=%s audio line = %q, want %q", step.prop, step.value, line, step.display)
 		}
@@ -3315,7 +3421,7 @@ func TestNewSearchClearsFilter(t *testing.T) {
 func resultsTitleLine(t *testing.T, m Model) string {
 	t.Helper()
 	for line := range strings.SplitSeq(renderedRows(m), "\n") {
-		if strings.Contains(line, "│"+resultsTitle) {
+		if strings.Contains(line, "─ "+resultsTitle) {
 			return line
 		}
 	}
@@ -3385,7 +3491,7 @@ func TestFilterHighlightSurvivesTruncation(t *testing.T) {
 	m.results[2].Title = "lofi " + strings.Repeat("x", 100) + " tail"
 	m = press(t, m, keyPress("f"))
 	m = typeText(t, m, "lofi tail")
-	_, _, leftW := m.bodyPanes()
+	leftW := m.paneRect(paneResults).Dx()
 	pane := m.renderPanes(20)
 	for i, line := range strings.Split(pane, "\n") {
 		if w := lipgloss.Width(line); w != m.width {
@@ -3401,7 +3507,7 @@ func TestFilterHighlightSurvivesTruncation(t *testing.T) {
 	if !strings.Contains(pane, matchStyle.Inherit(cursorStyle).Render("lofi")) {
 		t.Error("truncated row lost the lofi highlight")
 	}
-	if row := ansi.Strip(strings.Split(pane, "\n")[2]); !strings.HasPrefix(row, "│lofi xxx") || strings.Contains(row, "tail") {
+	if row := ansi.Strip(strings.Split(pane, "\n")[2]); !strings.HasPrefix(row, "│▌lofi xxx") || strings.Contains(row, "tail") {
 		t.Errorf("row = %q, want lofi truncated before tail", row)
 	}
 }

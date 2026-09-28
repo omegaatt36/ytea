@@ -29,18 +29,16 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) click(x, y int) (tea.Model, tea.Cmd) {
-	if m.overlay != overlayDevices {
-		switch row := m.tabsRow(); {
-		case y < row:
+	if m.overlay != overlayDevices && y < headerRows {
+		if x < m.tabsX() {
 			return m, m.focusSearch()
-		case y == row:
-			if f, ok := m.tabAt(x); ok {
-				m.input.Blur()
-				m.filterInput.Blur()
-				m.overlay, m.focus = overlayNone, f
-			}
-			return m, nil
 		}
+		if f, ok := m.tabAt(x); ok {
+			m.input.Blur()
+			m.filterInput.Blur()
+			m.overlay, m.focus = overlayNone, f
+		}
+		return m, nil
 	}
 	p, i := m.paneAt(x, y)
 	if m.focusPane(p) && i >= 0 {
