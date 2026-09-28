@@ -66,17 +66,30 @@ type Player interface {
 	Playlist(context.Context) ([]mpv.PlaylistEntry, int, error)
 }
 
+type Library interface {
+	Playlists() []library.Playlist
+	CreateWithTracks(name string, tracks []youtube.Track) (int, error)
+	Add(index int, track youtube.Track) error
+	RemoveTrack(playlistIndex, trackIndex int) error
+	Delete(index int) error
+}
+
+type MPRIS interface {
+	Update(mpris.State)
+	Seeked(time.Duration)
+}
+
 // Deps are the collaborators the UI drives. Tap and MPRIS are optional.
 type Deps struct {
 	Searcher      Searcher
 	Player        Player
 	Tap           Spectrum
-	MPRIS         *mpris.Server
+	MPRIS         MPRIS
 	Thumbnails    bool
 	HTTP          *http.Client
 	Normalize     bool
 	InitialTracks map[string]youtube.Track
-	Library       *library.Store
+	Library       Library
 	OpenURL       func(string) error
 }
 

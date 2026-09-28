@@ -174,3 +174,30 @@ func TestDeletePlaylistNeedsSecondPress(t *testing.T) {
 		t.Fatalf("second D did not delete playlist: %+v", store.Playlists())
 	}
 }
+
+func TestLibrary_MemorySpy(t *testing.T) {
+	spy := &spyLibrary{}
+	m := New(Deps{Library: spy})
+	m.focus = focusResults
+	m.results.tracks = []youtube.Track{{Title: "Song A", URL: "url-a"}}
+
+	got, _ := m.update(keyPress("s"))
+	m = got.(Model)
+	if m.overlay != overlayName {
+		t.Fatalf("overlay = %v, want overlayName", m.overlay)
+	}
+
+	m.nameInput.SetValue("My Favorites")
+	got, _ = m.update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = got.(Model)
+
+	if len(spy.playlists) != 1 {
+		t.Fatalf("spy playlists = %d, want 1", len(spy.playlists))
+	}
+	if spy.playlists[0].Name != "My Favorites" {
+		t.Errorf("playlist name = %q, want 'My Favorites'", spy.playlists[0].Name)
+	}
+	if len(spy.playlists[0].Tracks) != 1 || spy.playlists[0].Tracks[0].URL != "url-a" {
+		t.Errorf("playlist tracks = %+v, want track url-a", spy.playlists[0].Tracks)
+	}
+}

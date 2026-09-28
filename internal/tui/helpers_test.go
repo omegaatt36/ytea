@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/omegaatt36/ytea/internal/library"
+	"github.com/omegaatt36/ytea/internal/mpris"
 	"github.com/omegaatt36/ytea/internal/mpv"
 	"github.com/omegaatt36/ytea/internal/youtube"
 )
@@ -270,5 +271,68 @@ type appendRecorder struct {
 
 func (p appendRecorder) AppendAll(_ context.Context, urls []string) error {
 	p.writes <- urls[0]
+	return nil
+}
+
+type spyMPRIS struct {
+	updates []mpris.State
+	seeked  []time.Duration
+}
+
+func (s *spyMPRIS) Update(st mpris.State) {
+	s.updates = append(s.updates, st)
+}
+
+func (s *spyMPRIS) Seeked(pos time.Duration) {
+	s.seeked = append(s.seeked, pos)
+}
+
+type spyLibrary struct {
+	playlists []library.Playlist
+	err       error
+}
+
+func (s *spyLibrary) Playlists() []library.Playlist {
+	return s.playlists
+}
+
+func (s *spyLibrary) CreateWithTracks(name string, tracks []youtube.Track) (int, error) {
+	if s.err != nil {
+		return -1, s.err
+	}
+	s.playlists = append(s.playlists, library.Playlist{Name: name, Tracks: tracks})
+	return len(s.playlists) - 1, nil
+}
+
+func (s *spyLibrary) Add(index int, track youtube.Track) error {
+	if s.err != nil {
+		return s.err
+	}
+	if index < 0 || index >= len(s.playlists) {
+		return library.ErrNotFound
+	}
+	s.playlists[index].Tracks = append(s.playlists[index].Tracks, track)
+	return nil
+}
+
+func (s *spyLibrary) RemoveTrack(playlistIndex, trackIndex int) error {
+	if s.err != nil {
+		return s.err
+	}
+	if playlistIndex < 0 || playlistIndex >= len(s.playlists) || trackIndex < 0 || trackIndex >= len(s.playlists[playlistIndex].Tracks) {
+		return library.ErrNotFound
+	}
+	s.playlists[playlistIndex].Tracks = append(s.playlists[playlistIndex].Tracks[:trackIndex], s.playlists[playlistIndex].Tracks[trackIndex+1:]...)
+	return nil
+}
+
+func (s *spyLibrary) Delete(index int) error {
+	if s.err != nil {
+		return s.err
+	}
+	if index < 0 || index >= len(s.playlists) {
+		return library.ErrNotFound
+	}
+	s.playlists = append(s.playlists[:index], s.playlists[index+1:]...)
 	return nil
 }

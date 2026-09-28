@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/omegaatt36/ytea/internal/mpv"
+	"github.com/omegaatt36/ytea/internal/youtube"
 )
 
 func TestApplyPlaylistPos(t *testing.T) {
@@ -187,5 +188,39 @@ func TestStatusTimeoutDismissesError(t *testing.T) {
 	mFresh := gotFresh.(Model)
 	if mFresh.status != "" || mFresh.statusErr {
 		t.Errorf("status = %q, statusErr = %v, want cleared", mFresh.status, mFresh.statusErr)
+	}
+}
+
+func TestMPRISSync(t *testing.T) {
+	spy := &spyMPRIS{}
+	m := New(Deps{MPRIS: spy})
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: "https://example.com/song"}}
+	m.queue.pos = 0
+	m.player.idle = false
+	m.tracks["https://example.com/song"] = youtube.Track{Title: "Song Title", Channel: "Artist"}
+
+	m.syncMPRIS()
+
+	if len(spy.updates) == 0 {
+		t.Fatal("expected MPRIS update, got none")
+	}
+	last := spy.updates[len(spy.updates)-1]
+	if last.Title != "Song Title" || last.Artist != "Artist" {
+		t.Errorf("MPRIS state = %+v, want title and artist", last)
+	}
+}
+
+func TestMPRISSeeked(t *testing.T) {
+	spy := &spyMPRIS{}
+	m := New(Deps{MPRIS: spy})
+	m.player.timePos = 15 * time.Second
+
+	m.applyEvent(mpv.Event{Name: "playback-restart"})
+
+	if len(spy.seeked) == 0 {
+		t.Fatal("expected MPRIS Seeked, got none")
+	}
+	if spy.seeked[0] != 15*time.Second {
+		t.Errorf("MPRIS seeked = %v, want 15s", spy.seeked[0])
 	}
 }
