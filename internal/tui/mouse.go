@@ -41,6 +41,9 @@ func (m Model) click(x, y int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	p, i := m.paneAt(x, y)
+	if p == panePlaylistTracks && m.focus == focusPlaylists && m.accountSelected() {
+		return m.handleAccountAction("enter")
+	}
 	if m.focusPane(p) && i >= 0 {
 		m.selectRow(p, i)
 	}
@@ -69,7 +72,7 @@ func (m *Model) focusPane(p listPane) bool {
 			m.focus = focusPlaylists
 		}
 	case panePlaylistTracks:
-		if m.overlay == overlayPicker || len(m.playlists) == 0 {
+		if m.overlay == overlayPicker || m.playlistCount() == 0 {
 			return false
 		}
 		m.focus = focusPlaylistTracks

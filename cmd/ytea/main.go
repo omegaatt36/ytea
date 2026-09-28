@@ -32,14 +32,17 @@ const appName = "ytea"
 const spectrumBands = 64
 
 type options struct {
-	volume     int
-	normalize  bool
-	thumbnails bool
-	visualizer bool
-	mpris      bool
-	device     string
-	mpvBin     string
-	ytdlpBin   string
+	volume             int
+	normalize          bool
+	thumbnails         bool
+	visualizer         bool
+	mpris              bool
+	device             string
+	mpvBin             string
+	ytdlpBin           string
+	googleClientID     string
+	googleClientSecret string
+	youtubeChannelID   string
 	// cookies and cookiesFromBrowser sign yt-dlp in so Premium audio formats are offered.
 	cookies            string
 	cookiesFromBrowser string
@@ -58,7 +61,7 @@ func main() {
 // newCommand parses the command line into options and hands them to action.
 func newCommand(action func(context.Context, options) error) *cli.Command {
 	var opts options
-	return &cli.Command{
+	command := &cli.Command{
 		Name:  appName,
 		Usage: "terminal YouTube music player",
 		Flags: []cli.Flag{
@@ -71,6 +74,9 @@ func newCommand(action func(context.Context, options) error) *cli.Command {
 			&cli.StringFlag{Name: "audio-device", Usage: `mpv audio device from its list, e.g. "pipewire/<sink>" (Linux) or "coreaudio/<id>" (macOS); default: system default`, Sources: env("audio-device"), Destination: &opts.device},
 			&cli.StringFlag{Name: "mpv", Value: "mpv", Usage: "mpv binary", Sources: env("mpv"), Destination: &opts.mpvBin},
 			&cli.StringFlag{Name: "yt-dlp", Value: "yt-dlp", Usage: "yt-dlp binary", Sources: env("yt-dlp"), Destination: &opts.ytdlpBin},
+			&cli.StringFlag{Name: "google-client-id", Usage: "Google OAuth client ID", Sources: nonEmptyEnv("google-client-id"), Destination: &opts.googleClientID},
+			&cli.StringFlag{Name: "google-client-secret", Usage: "Google OAuth client secret", Sources: nonEmptyEnv("google-client-secret"), Destination: &opts.googleClientSecret},
+			&cli.StringFlag{Name: "youtube-channel-id", Usage: "YouTube channel ID owning account playlists when using cookies", Sources: nonEmptyEnv("youtube-channel-id"), Destination: &opts.youtubeChannelID},
 		},
 		MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{{
 			Flags: [][]cli.Flag{
@@ -79,25 +85,55 @@ func newCommand(action func(context.Context, options) error) *cli.Command {
 			},
 		}},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			path, required := cmd.String("config"), true
-			if path == "" {
-				dir, err := configDir()
-				if err != nil {
-					return err
-				}
-				path, required = filepath.Join(dir, "config.toml"), false
-			}
-			if err := loadConfig(cmd, path, required); err != nil {
+			if err := loadOptions(cmd); err != nil {
 				return err
+			}
+			if opts.googleClientID != "" && opts.googleClientSecret == "" {
+				return fmt.Errorf("google-client-secret is required when google-client-id is set")
+			}
+			if opts.googleClientSecret != "" && opts.googleClientID == "" {
+				return fmt.Errorf("google-client-id is required when google-client-secret is set")
 			}
 			return action(ctx, opts)
 		},
 	}
+	command.Commands = []*cli.Command{authCommand(&opts, command)}
+	return command
+}
+
+func loadOptions(cmd *cli.Command) error {
+	path, required := cmd.String("config"), true
+	if path == "" {
+		dir, err := configDir()
+		if err != nil {
+			return err
+		}
+		path, required = filepath.Join(dir, "config.toml"), false
+	}
+	return loadConfig(cmd, path, required)
 }
 
 // env is the environment variable for a flag: --audio-device reads YTEA_AUDIO_DEVICE.
 func env(flag string) cli.ValueSourceChain {
 	return cli.EnvVars(strings.ToUpper(appName + "_" + strings.ReplaceAll(flag, "-", "_")))
+}
+
+type nonEmptyEnvSource struct {
+	cli.ValueSource
+	key string
+}
+
+func (s nonEmptyEnvSource) Lookup() (string, bool) {
+	value, found := s.ValueSource.Lookup()
+	return value, found && value != ""
+}
+
+func (s nonEmptyEnvSource) IsFromEnv() bool { return true }
+func (s nonEmptyEnvSource) Key() string     { return s.key }
+
+func nonEmptyEnv(flag string) cli.ValueSourceChain {
+	key := strings.ToUpper(appName + "_" + strings.ReplaceAll(flag, "-", "_"))
+	return cli.NewValueSourceChain(nonEmptyEnvSource{ValueSource: cli.EnvVar(key), key: key})
 }
 
 func run(ctx context.Context, opts options) error {
@@ -120,6 +156,10 @@ func run(ctx context.Context, opts options) error {
 	}
 	if opts.cookies != "" || opts.cookiesFromBrowser != "" {
 		slog.Info("playback signed in", "cookies", opts.cookies, "cookies_from_browser", opts.cookiesFromBrowser)
+	}
+	accountSource, err := accountPlaylistSource(opts)
+	if err != nil {
+		return err
 	}
 
 	for _, bin := range []string{opts.mpvBin, opts.ytdlpBin} {
@@ -181,13 +221,14 @@ func run(ctx context.Context, opts options) error {
 	}
 
 	deps := tui.Deps{
-		Searcher:      youtube.NewSearcher(opts.ytdlpBin),
-		Player:        player,
-		Thumbnails:    opts.thumbnails,
-		HTTP:          &http.Client{Timeout: 10 * time.Second},
-		Normalize:     opts.normalize,
-		InitialTracks: tracksFromSession(saved),
-		Library:       libraryStore,
+		AccountPlaylists: accountSource,
+		Searcher:         youtube.NewSearcher(opts.ytdlpBin),
+		Player:           player,
+		Thumbnails:       opts.thumbnails,
+		HTTP:             &http.Client{Timeout: 10 * time.Second},
+		Normalize:        opts.normalize,
+		InitialTracks:    tracksFromSession(saved),
+		Library:          libraryStore,
 	}
 
 	if opts.visualizer {

@@ -44,6 +44,8 @@ func (m Model) openPlaylistPicker(track youtube.Track) (tea.Model, tea.Cmd) {
 	if len(m.playlists) == 0 {
 		return m.openPlaylistName([]youtube.Track{track}, true, "name the new playlist")
 	}
+	m.playlistCur = min(m.playlistCur, len(m.playlists)-1)
+	m.playlistTrackCur = 0
 	m.overlay = overlayPicker
 	m.setStatus("choose a playlist for " + quote(track.Title))
 	return m, nil
@@ -141,17 +143,30 @@ func (m Model) handlePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handlePlaylistsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := m.keys.playlists
+	if m.accountSelected() {
+		k.Reload.SetEnabled(true)
+		switch {
+		case key.Matches(msg, k.Reload):
+			return m, m.reloadAccount()
+		case key.Matches(msg, k.Browse):
+			return m.handleAccountAction("enter")
+		case key.Matches(msg, k.EnqueueAll):
+			return m.handleAccountAction("a")
+		case key.Matches(msg, k.Create), key.Matches(msg, k.Delete):
+			return m, nil
+		}
+	}
 	switch {
 	case key.Matches(msg, k.Up):
 		m.playlistCur = max(0, m.playlistCur-1)
 		m.playlistTrackCur = 0
 	case key.Matches(msg, k.Down):
-		m.playlistCur = min(max(0, len(m.playlists)-1), m.playlistCur+1)
+		m.playlistCur = min(max(0, m.playlistCount()-1), m.playlistCur+1)
 		m.playlistTrackCur = 0
 	case key.Matches(msg, k.Top):
 		m.playlistCur, m.playlistTrackCur = 0, 0
 	case key.Matches(msg, k.Bottom):
-		m.playlistCur = max(0, len(m.playlists)-1)
+		m.playlistCur = max(0, m.playlistCount()-1)
 		m.playlistTrackCur = 0
 	case key.Matches(msg, k.Back):
 		m.focus = focusResults
@@ -198,6 +213,20 @@ func (m Model) handlePlaylistsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handlePlaylistTracksKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := m.keys.playlistTracks
+	if m.accountSelected() {
+		k.Reload.SetEnabled(true)
+		switch {
+		case key.Matches(msg, k.Reload):
+			m.focus = focusPlaylists
+			return m, m.reloadAccount()
+		case key.Matches(msg, k.Play):
+			return m.handleAccountAction("enter")
+		case key.Matches(msg, k.Enqueue):
+			return m.handleAccountAction("a")
+		case key.Matches(msg, k.Remove):
+			return m, nil
+		}
+	}
 	switch {
 	case key.Matches(msg, k.Up):
 		m.playlistTrackCur = max(0, m.playlistTrackCur-1)
@@ -238,6 +267,9 @@ func (m Model) handlePlaylistTracksKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 }
 
 func (m Model) selectedPlaylistTracks() []youtube.Track {
+	if p, ok := m.selectedAccountPlaylist(); ok {
+		return m.account.tracks[p.ID]
+	}
 	if m.playlistCur < 0 || m.playlistCur >= len(m.playlists) {
 		return nil
 	}

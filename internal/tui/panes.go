@@ -166,7 +166,7 @@ func (m Model) listCursor(p listPane) (cursor, n int) {
 	case paneQueue:
 		return m.queueCur, len(m.queue.entries)
 	case panePlaylists:
-		return m.playlistCur, len(m.playlists)
+		return m.playlistCur, m.playlistCount()
 	case panePlaylistTracks:
 		return m.playlistTrackCur, len(m.selectedPlaylistTracks())
 	case paneDevices:
@@ -275,7 +275,7 @@ func (m Model) list(p listPane) list {
 			return m.queueLine(i, tracks[i], w, lenW, detailed, selected)
 		}
 	case panePlaylists:
-		l.title = fmt.Sprintf("Playlists (%d)", len(m.playlists))
+		l.title = fmt.Sprintf("Playlists (%d)", m.playlistCount())
 		if m.overlay == overlayPicker {
 			l.title = "Save to playlist"
 		}
@@ -283,6 +283,9 @@ func (m Model) list(p listPane) list {
 		l.focused = (m.overlay == overlayPicker || m.focus == focusPlaylists) && !m.dialogOpen()
 		l.row = func(i, w int, selected bool) string {
 			text, dim := styles(selected)
+			if i >= len(m.playlists) {
+				return text.Render(ansi.Truncate(stripControl(m.accountPlaylistNames()[i-len(m.playlists)]), w, "…"))
+			}
 			pl := m.playlists[i]
 			count := dim.Render(" " + strconv.Itoa(len(pl.Tracks)))
 			return pad(text.Render(ansi.Truncate(stripControl(pl.Name), w-lipgloss.Width(count), "…")), w-lipgloss.Width(count), text) + count
@@ -292,6 +295,20 @@ func (m Model) list(p listPane) list {
 		l.title, l.empty = "Tracks", "empty playlist"
 		if m.playlistCur < len(m.playlists) {
 			l.title = fmt.Sprintf("%s (%d)", m.playlists[m.playlistCur].Name, len(tracks))
+		}
+		if m.accountSelected() && m.account.err != nil {
+			l.title, l.empty = "YouTube", stripControl(m.account.err.Error())
+		}
+		if pl, ok := m.selectedAccountPlaylist(); ok {
+			l.title = "YouTube — " + stripControl(pl.Title)
+			switch {
+			case m.account.trackLoading[pl.ID]:
+				l.empty = "loading…"
+			case m.account.trackErrors[pl.ID] != nil:
+				l.empty = stripControl(m.account.trackErrors[pl.ID].Error())
+			case m.account.queueErrors[pl.ID] != nil:
+				l.empty = stripControl(m.account.queueErrors[pl.ID].Error())
+			}
 		}
 		l.focused = m.focus == focusPlaylistTracks && m.overlay == overlayNone
 		lenW := lengthWidth(tracks)

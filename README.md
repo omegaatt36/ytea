@@ -53,7 +53,10 @@ audio-device = ""       # mpv audio device name
 # optional, for YouTube Premium 256k audio; set one of:
 cookies-from-browser = "firefox" # or "firefox:<profile dir>" for Firefox forks, e.g. Zen
 # cookies = "cookies.txt"        # full login export
+# youtube-channel-id = "UC..."     # for cookie-backed account playlists
 ```
+
+To show your own YouTube playlists and Liked videos, see [YouTube Account Playlists](docs/youtube-account.md).
 
 ## Acknowledgements
 

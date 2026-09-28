@@ -3,6 +3,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"math/rand/v2"
 	"net/http"
@@ -79,18 +80,25 @@ type MPRIS interface {
 	Seeked(time.Duration)
 }
 
-// Deps are the collaborators the UI drives. Tap and MPRIS are optional.
+// AccountPlaylistSource supplies read-only account playlists.
+type AccountPlaylistSource interface {
+	ListPlaylists(context.Context) ([]youtube.AccountPlaylist, error)
+	ListTracks(context.Context, string) ([]youtube.Track, error)
+}
+
+// Deps are the collaborators the UI drives. AccountPlaylists, Tap and MPRIS are optional.
 type Deps struct {
-	Searcher      Searcher
-	Player        Player
-	Tap           Spectrum
-	MPRIS         MPRIS
-	Thumbnails    bool
-	HTTP          *http.Client
-	Normalize     bool
-	InitialTracks map[string]youtube.Track
-	Library       Library
-	OpenURL       func(string) error
+	AccountPlaylists AccountPlaylistSource
+	Searcher         Searcher
+	Player           Player
+	Tap              Spectrum
+	MPRIS            MPRIS
+	Thumbnails       bool
+	HTTP             *http.Client
+	Normalize        bool
+	InitialTracks    map[string]youtube.Track
+	Library          Library
+	OpenURL          func(string) error
 }
 
 type focus int
@@ -104,9 +112,10 @@ const (
 )
 
 type Model struct {
-	deps Deps
-	keys keyMap
-	help help.Model
+	deps    Deps
+	account accountPlaylistState
+	keys    keyMap
+	help    help.Model
 
 	width, height int
 
@@ -269,6 +278,7 @@ func (m *Model) syncPlacement() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	nm := next.(Model)
+	accountCmd := nm.loadAccountOnFocus()
 	// Any message can shift the layout under a directly placed image. Called
 	// before the return: Go leaves the order of nm's read vs. this mutation unspecified.
 	placeCmd := nm.syncPlacement()
@@ -280,11 +290,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return statusTimeoutMsg{version: v}
 		})
 	}
-	return nm, tea.Batch(cmd, placeCmd, statusCmd)
+	return nm, tea.Batch(cmd, accountCmd, placeCmd, statusCmd)
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case accountPlaylistsMsg:
+		if msg.generation != m.account.generation {
+			return m, nil
+		}
+		m.account.loading = false
+		m.account.err = msg.err
+		if msg.err == nil && len(msg.playlists) == 0 {
+			m.account.err = errors.New("no account data")
+		}
+		m.account.playlists = msg.playlists
+		m.playlistCur = min(m.playlistCur, max(0, m.playlistCount()-1))
+		return m, nil
+	case accountQueueFailedMsg:
+		// A successful browse supersedes an earlier queue lookup for the same playlist.
+		_, browsed := m.account.tracks[msg.id]
+		if msg.generation == m.account.generation && !browsed {
+			m.account.queueErrors[msg.id] = msg.err
+		}
+		return m, nil
+	case accountTracksMsg:
+		if msg.generation != m.account.generation {
+			return m, nil
+		}
+		m.account.trackLoading[msg.id] = false
+		m.account.trackErrors[msg.id] = msg.err
+		if msg.err == nil {
+			m.account.tracks[msg.id] = msg.tracks
+			delete(m.account.queueErrors, msg.id)
+		}
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.help.SetWidth(m.width)

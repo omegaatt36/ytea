@@ -53,12 +53,12 @@ type queueKeyMap struct {
 
 type playlistKeyMap struct {
 	navKeyMap
-	Browse, Create, EnqueueAll, Delete, Back key.Binding
+	Browse, Create, EnqueueAll, Delete, Reload, Back key.Binding
 }
 
 type playlistTrackKeyMap struct {
 	navKeyMap
-	Play, Enqueue, Remove, Back key.Binding
+	Play, Enqueue, Remove, Reload, Back key.Binding
 }
 
 type deviceKeyMap struct {
@@ -150,6 +150,7 @@ func newKeyMap() keyMap {
 			Create:     create,
 			EnqueueAll: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "queue all")),
 			Delete:     key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "delete playlist")),
+			Reload:     key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "reload YouTube"), key.WithDisabled()),
 			Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 		},
 		playlistTracks: playlistTrackKeyMap{
@@ -157,6 +158,7 @@ func newKeyMap() keyMap {
 			Play:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "play now")),
 			Enqueue:   key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "queue")),
 			Remove:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "remove saved track")),
+			Reload:    key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "reload YouTube"), key.WithDisabled()),
 			Back:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 		},
 		devices: deviceKeyMap{
@@ -201,9 +203,16 @@ func (m Model) contextKeys() (string, help.KeyMap) {
 	case focusQueue:
 		return "Queue", m.keys.queue
 	case focusPlaylists:
-		return "Playlists", m.keys.playlists
+		keys := m.keys.playlists
+		keys.Reload.SetEnabled(m.accountSelected())
+		keys.Create.SetEnabled(!m.accountSelected())
+		keys.Delete.SetEnabled(!m.accountSelected())
+		return "Playlists", keys
 	case focusPlaylistTracks:
-		return "Playlist tracks", m.keys.playlistTracks
+		keys := m.keys.playlistTracks
+		keys.Reload.SetEnabled(m.accountSelected())
+		keys.Remove.SetEnabled(!m.accountSelected())
+		return "Playlist tracks", keys
 	case focusResults:
 	}
 	if m.results.filter.Focused() {
@@ -272,15 +281,15 @@ func (k queueKeyMap) FullHelp() [][]key.Binding {
 }
 
 func (k playlistKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Create, k.Browse, k.EnqueueAll, k.Delete}
+	return []key.Binding{k.Create, k.Browse, k.EnqueueAll, k.Delete, k.Reload}
 }
 
 func (k playlistKeyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{k.bindings(), {k.Create, k.Browse, k.EnqueueAll, k.Delete, k.Back}}
+	return [][]key.Binding{k.bindings(), {k.Create, k.Browse, k.EnqueueAll, k.Delete, k.Reload, k.Back}}
 }
 
 func (k playlistTrackKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Play, k.Enqueue, k.Remove, k.Back}
+	return []key.Binding{k.Play, k.Enqueue, k.Remove, k.Reload, k.Back}
 }
 
 func (k playlistTrackKeyMap) FullHelp() [][]key.Binding {

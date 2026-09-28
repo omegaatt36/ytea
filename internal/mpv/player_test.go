@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/omegaatt36/ytea/internal/googleauth"
 )
 
 func TestAppendAllAppendsWithoutJumping(t *testing.T) {
@@ -158,5 +160,26 @@ func TestMPVDiesWithParent(t *testing.T) {
 			t.Fatalf("mpv %d outlived its SIGKILLed parent", pid)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestConfigArgsUseCookiesWhenOAuthTokenExists(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := googleauth.SaveToken(&googleauth.Token{
+		AccessToken: "oauth-access-secret", RefreshToken: "oauth-refresh-secret",
+		Expiry: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	args := (Config{Cookies: "/tmp/cookies.txt"}).args()
+	const cookieArg = "--ytdl-raw-options-append=cookies=/tmp/cookies.txt"
+	if !slices.Contains(args, cookieArg) {
+		t.Errorf("mpv args = %q, want cookie option %q", args, cookieArg)
+	}
+	for _, arg := range args {
+		if strings.Contains(arg, "oauth-access-secret") || strings.Contains(arg, "oauth-refresh-secret") {
+			t.Errorf("mpv arg %q contains OAuth credentials", arg)
+		}
 	}
 }

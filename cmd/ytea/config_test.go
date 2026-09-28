@@ -56,6 +56,124 @@ func TestConfigPrecedence(t *testing.T) {
 	}
 }
 
+func TestYoutubeChannelIDSourcesAndPrecedence(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		env  string
+		args []string
+		want string
+	}{
+		{name: "config", want: "UCconfig"},
+		{name: "environment overrides config", env: "UCenv", want: "UCenv"},
+		{name: "flag overrides environment and config", env: "UCenv", args: []string{"--youtube-channel-id", "UCflag"}, want: "UCflag"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("YTEA_YOUTUBE_CHANNEL_ID", tt.env)
+			home := t.TempDir()
+			writeConfig(t, home, "youtube-channel-id = \"UCconfig\"\n")
+			opts, err := parseIn(t, home, tt.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if opts.youtubeChannelID != tt.want {
+				t.Errorf("youtubeChannelID = %q, want %q", opts.youtubeChannelID, tt.want)
+			}
+		})
+	}
+}
+
+func TestGoogleClientCredentialsSourcesAndPrecedence(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     string
+		envID      string
+		envSecret  string
+		args       []string
+		wantID     string
+		wantSecret string
+	}{
+		{
+			name:       "config",
+			config:     "google-client-id = \"config-id\"\ngoogle-client-secret = \"config-secret\"\n",
+			wantID:     "config-id",
+			wantSecret: "config-secret",
+		},
+		{
+			name:       "environment overrides config",
+			config:     "google-client-id = \"config-id\"\ngoogle-client-secret = \"config-secret\"\n",
+			envID:      "env-id",
+			envSecret:  "env-secret",
+			wantID:     "env-id",
+			wantSecret: "env-secret",
+		},
+		{
+			name:       "flags override environment and config",
+			config:     "google-client-id = \"config-id\"\ngoogle-client-secret = \"config-secret\"\n",
+			envID:      "env-id",
+			envSecret:  "env-secret",
+			args:       []string{"--google-client-id", "flag-id", "--google-client-secret", "flag-secret"},
+			wantID:     "flag-id",
+			wantSecret: "flag-secret",
+		},
+		{
+			name:       "credentials may come from different sources",
+			config:     "google-client-secret = \"config-secret\"\n",
+			args:       []string{"--google-client-id", "flag-id"},
+			wantID:     "flag-id",
+			wantSecret: "config-secret",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("YTEA_GOOGLE_CLIENT_ID", tt.envID)
+			t.Setenv("YTEA_GOOGLE_CLIENT_SECRET", tt.envSecret)
+			home := t.TempDir()
+			if tt.config != "" {
+				writeConfig(t, home, tt.config)
+			}
+			opts, err := parseIn(t, home, tt.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if opts.googleClientID != tt.wantID || opts.googleClientSecret != tt.wantSecret {
+				t.Errorf("credentials = (%q, %q), want (%q, %q)", opts.googleClientID, opts.googleClientSecret, tt.wantID, tt.wantSecret)
+			}
+		})
+	}
+}
+
+func TestGoogleClientCredentialsRequireBothAtStartup(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  string
+		envID   string
+		envKey  string
+		args    []string
+		missing string
+	}{
+		{name: "config ID only", config: "google-client-id = \"config-id\"\n", missing: "google-client-secret"},
+		{name: "config secret only", config: "google-client-secret = \"config-secret\"\n", missing: "google-client-id"},
+		{name: "environment ID only", envID: "env-id", missing: "google-client-secret"},
+		{name: "environment secret only", envKey: "env-secret", missing: "google-client-id"},
+		{name: "flag ID only", args: []string{"--google-client-id", "flag-id"}, missing: "google-client-secret"},
+		{name: "flag secret only", args: []string{"--google-client-secret", "flag-secret"}, missing: "google-client-id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("YTEA_GOOGLE_CLIENT_ID", tt.envID)
+			t.Setenv("YTEA_GOOGLE_CLIENT_SECRET", tt.envKey)
+			home := t.TempDir()
+			if tt.config != "" {
+				writeConfig(t, home, tt.config)
+			}
+			_, err := parseIn(t, home, tt.args...)
+			if err == nil || !strings.Contains(err.Error(), tt.missing) {
+				t.Errorf("startup error = %v, want it to name missing %q", err, tt.missing)
+			}
+		})
+	}
+}
+
 func TestConfigExplicitPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "other.toml")
 	if err := os.WriteFile(path, []byte("volume = 30\n"), 0o600); err != nil {
