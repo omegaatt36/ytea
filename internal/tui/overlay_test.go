@@ -37,7 +37,7 @@ func TestDevicePickerMarksCurrent(t *testing.T) {
 			if !m.isCurrentDevice(m.devices[tt.wantIndex]) {
 				t.Errorf("device %d not marked as current for %s", tt.wantIndex, tt.device)
 			}
-			if got := m.currentDeviceName(); got != m.devices[tt.wantIndex].Name {
+			if got := m.player.deviceName(); got != m.devices[tt.wantIndex].Name {
 				t.Errorf("currentDeviceName() = %q, want %q", got, m.devices[tt.wantIndex].Name)
 			}
 			if _, ok := m.currentDevice(); !ok {

@@ -64,9 +64,9 @@ func helpContexts(t *testing.T) []struct {
 		return m
 	}
 	filtered := at(focusResults, overlayNone)
-	filtered.filterInput.SetValue("song")
+	filtered.results.filter.SetValue("song")
 	typing := at(focusResults, overlayNone)
-	typing.filterInput.Focus()
+	typing.results.filter.Focus()
 	k := newKeyMap()
 	unfiltered := k.results
 	unfiltered.ClearFilter.SetEnabled(false)
@@ -254,7 +254,7 @@ func TestInlineKeyHintsUseKeymapOrAreAbsent(t *testing.T) {
 			name: "empty queue",
 			model: func(_ *testing.T) Model {
 				m := blank(focusResults)
-				m.results = []youtube.Track{{Title: "Result"}}
+				m.results.tracks = []youtube.Track{{Title: "Result"}}
 				m.keys.results.Enqueue = customBinding("x", "x", "queue")
 				return m
 			},
@@ -420,7 +420,7 @@ func TestFullHelpFitsSmallWindows(t *testing.T) {
 			m.focus = focusQueue
 			m.levels = []float64{1}
 			m.queue.entries = []mpv.PlaylistEntry{{Filename: watchURL, Title: "Song"}}
-			m.queue.pos, m.idle = 0, false
+			m.queue.pos, m.player.idle = 0, false
 			m.tracks[watchURL] = youtube.Track{ID: "abc", Title: "Song", URL: watchURL}
 			m.setStatus("status line text")
 			got, _ := m.update(tea.WindowSizeMsg{Width: size.X, Height: size.Y})
@@ -489,7 +489,7 @@ func TestFullHelpClosesWithQuestionMarkOrEsc(t *testing.T) {
 
 func TestFullHelpReplacesListPanesKeepsNowPlayingAndStatus(t *testing.T) {
 	m := overlayModel(t, focusResults)
-	m.results = []youtube.Track{{Title: "A search result"}}
+	m.results.tracks = []youtube.Track{{Title: "A search result"}}
 	m.setStatus("status line text")
 	before := rendered(m)
 	for _, s := range []string{"Queue (1)", "A search result"} {
@@ -675,7 +675,7 @@ func TestFullHelpIgnoresMouse(t *testing.T) {
 		}
 	}
 	got := wheel(m, row, tea.MouseWheelDown)
-	if !atPane(got, focusResults) || got.resultCur != 0 || got.queueCur != 0 {
-		t.Errorf("wheel: focus=%v resultCur=%d queueCur=%d, want ignored", got.focus, got.resultCur, got.queueCur)
+	if !atPane(got, focusResults) || got.results.cur != 0 || got.queueCur != 0 {
+		t.Errorf("wheel: focus=%v resultCur=%d queueCur=%d, want ignored", got.focus, got.results.cur, got.queueCur)
 	}
 }

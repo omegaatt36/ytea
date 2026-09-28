@@ -22,11 +22,11 @@ func TestClickSelectsRowUnderPointer(t *testing.T) {
 	m := mouseModel()
 	m.focus = focusResults
 	m.input.Blur()
-	m.resultCur = 35
+	m.results.cur = 35
 
 	m = click(m, cellAt(t, m, "song 30"))
-	if !atPane(m, focusResults) || m.resultCur != 30 {
-		t.Errorf("click song 30: focus=%v resultCur=%d, want results/30", m.focus, m.resultCur)
+	if !atPane(m, focusResults) || m.results.cur != 30 {
+		t.Errorf("click song 30: focus=%v resultCur=%d, want results/30", m.focus, m.results.cur)
 	}
 
 	m = click(m, cellAt(t, m, "queued 2"))
@@ -81,8 +81,8 @@ func TestWheelMovesCursorOfPaneUnderPointer(t *testing.T) {
 
 	m.focus = focusResults
 	m = wheel(m, cellAt(t, m, "song 00"), tea.MouseWheelUp)
-	if !atPane(m, focusResults) || m.resultCur != 0 {
-		t.Errorf("wheel up over results top: focus=%v resultCur=%d", m.focus, m.resultCur)
+	if !atPane(m, focusResults) || m.results.cur != 0 {
+		t.Errorf("wheel up over results top: focus=%v resultCur=%d", m.focus, m.results.cur)
 	}
 }
 
@@ -99,7 +99,7 @@ func TestMouseInPlaylistPicker(t *testing.T) {
 	m := New(Deps{Library: store})
 	m.width, m.height = 100, 30
 	m.focus = focusResults
-	m.results = []youtube.Track{{Title: "pick me", URL: "https://www.youtube.com/watch?v=pick"}}
+	m.results.tracks = []youtube.Track{{Title: "pick me", URL: "https://www.youtube.com/watch?v=pick"}}
 	got, _ := m.update(keyPress("s"))
 	m = got.(Model)
 
@@ -148,7 +148,7 @@ func TestFilteredClickSelectsShownTrack(t *testing.T) {
 	m := mouseModel()
 	m.focus = focusResults
 	m.input.Blur()
-	m.filterInput.SetValue("3")
+	m.results.filter.SetValue("3")
 	m = click(m, cellAt(t, m, "song 35"))
 	if got := selectedTitle(m); !atPane(m, focusResults) || got != "song 35" {
 		t.Errorf("click song 35: focus=%v selected=%q, want results/song 35", m.focus, got)
@@ -160,12 +160,12 @@ func TestFilteredWheelBoundedByVisibleRows(t *testing.T) {
 	m := mouseModel()
 	m.focus = focusResults
 	m.input.Blur()
-	m.filterInput.SetValue("3")
+	m.results.filter.SetValue("3")
 	at := cellAt(t, m, "song 30")
 	for range 20 {
 		m = wheel(m, at, tea.MouseWheelDown)
 	}
-	if got := selectedTitle(m); m.resultCur != 12 || got != "song 39" {
-		t.Errorf("wheel past end: cur=%d selected=%q, want row 12 song 39 (13 rows contain 3)", m.resultCur, got)
+	if got := selectedTitle(m); m.results.cur != 12 || got != "song 39" {
+		t.Errorf("wheel past end: cur=%d selected=%q, want row 12 song 39 (13 rows contain 3)", m.results.cur, got)
 	}
 }

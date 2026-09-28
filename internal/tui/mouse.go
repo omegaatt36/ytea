@@ -35,7 +35,7 @@ func (m Model) click(x, y int) (tea.Model, tea.Cmd) {
 		}
 		if f, ok := m.tabAt(x); ok {
 			m.input.Blur()
-			m.filterInput.Blur()
+			m.results.filter.Blur()
 			m.overlay, m.focus = overlayNone, f
 		}
 		return m, nil
@@ -79,7 +79,7 @@ func (m *Model) focusPane(p listPane) bool {
 	}
 	m.input.Blur()
 	if p != paneResults {
-		m.filterInput.Blur()
+		m.results.filter.Blur()
 	}
 	return true
 }
@@ -87,7 +87,7 @@ func (m *Model) focusPane(p listPane) bool {
 func (m *Model) selectRow(p listPane, i int) {
 	switch p {
 	case paneResults:
-		m.resultCur = i
+		m.results.cur = i
 	case paneQueue:
 		m.queueCur = i
 	case panePlaylists:

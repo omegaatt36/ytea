@@ -67,12 +67,12 @@ func TestClearQueueProjectsEmptyAndIgnoresStalePlaylist(t *testing.T) {
 	m.focus = focusQueue
 	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
 	m.queueCur = 1
-	m.queue.pos, m.idle = 0, false
-	m.timePos, m.duration = 10*time.Second, time.Minute
+	m.queue.pos, m.player.idle = 0, false
+	m.player.timePos, m.player.duration = 10*time.Second, time.Minute
 	got, cmd := m.update(keyPress("C"))
 	m = got.(Model)
-	if cmd == nil || len(m.queue.entries) != 0 || m.queueCur != 0 || m.queue.pos != -1 || !m.idle || m.timePos != 0 || m.duration != 0 {
-		t.Fatalf("clear projection = queue %+v, cursor %d, pos %d, idle %v, time %v/%v", m.queue.entries, m.queueCur, m.queue.pos, m.idle, m.timePos, m.duration)
+	if cmd == nil || len(m.queue.entries) != 0 || m.queueCur != 0 || m.queue.pos != -1 || !m.player.idle || m.player.timePos != 0 || m.player.duration != 0 {
+		t.Fatalf("clear projection = queue %+v, cursor %d, pos %d, idle %v, time %v/%v", m.queue.entries, m.queueCur, m.queue.pos, m.player.idle, m.player.timePos, m.player.duration)
 	}
 	if m.queue.editsPending != 1 || m.queue.projection == nil {
 		t.Fatal("clear did not reserve an authoritative queue refresh")
@@ -149,7 +149,7 @@ func TestQueueEnterReservesSlotAfterProjectedMove(t *testing.T) {
 func TestPlayNowBlocksIndexEditsUntilQueueRefresh(t *testing.T) {
 	m := New(Deps{})
 	m.focus = focusResults
-	m.results = []youtube.Track{{URL: "D", Title: "D"}}
+	m.results.tracks = []youtube.Track{{URL: "D", Title: "D"}}
 	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
 	m.queueCur = 1
 	got, play := m.update(keyPress("enter"))
@@ -387,7 +387,7 @@ func shuffleModel(player Player, pos int, names ...string) Model {
 		m.queue.entries = append(m.queue.entries, mpv.PlaylistEntry{Filename: n})
 	}
 	m.queue.pos = pos
-	m.idle = pos < 0
+	m.player.idle = pos < 0
 	return m
 }
 

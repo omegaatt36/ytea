@@ -129,8 +129,8 @@ func TestREADMEDocumentsRepeatInSession(t *testing.T) {
 }
 
 func readmeFilterInputModel(keys keyMap) Model {
-	m := Model{keys: keys, focus: focusResults, overlay: overlayNone, filterInput: textinput.New()}
-	m.filterInput.Focus()
+	m := Model{keys: keys, focus: focusResults, overlay: overlayNone, results: resultsPane{filter: textinput.New()}}
+	m.results.filter.Focus()
 	return m
 }
 

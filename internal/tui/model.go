@@ -3,7 +3,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"maps"
 	"math/rand/v2"
 	"net/http"
@@ -24,15 +23,11 @@ import (
 )
 
 const (
-	searchLimit   = 30
-	radioLimit    = 25
-	seekStep      = 5 * time.Second
-	volumeStep    = 5
-	thumbCols     = 18
-	thumbRows     = 5
-	cmdTimeout    = 5 * time.Second
-	searchTimeout = 30 * time.Second
-	importTimeout = 2 * time.Minute
+	seekStep   = 5 * time.Second
+	volumeStep = 5
+	thumbCols  = 18
+	thumbRows  = 5
+	cmdTimeout = 5 * time.Second
 )
 
 type Searcher interface {
@@ -102,7 +97,6 @@ type Model struct {
 
 	input                 textinput.Model
 	nameInput             textinput.Model
-	filterInput           textinput.Model
 	spinner               spinner.Model
 	focus                 focus
 	overlay               overlay
@@ -119,11 +113,9 @@ type Model struct {
 	activeRequest  uint64
 	searchRequest  uint64
 	spinnerRequest uint64
-	results        []youtube.Track
-	resultCur      int
-	// imports lists link and radio lookups in trigger order, so a slow lookup
-	// cannot reorder the imports queued after it.
-	imports []pendingImport
+	imports        importQueue
+
+	results resultsPane
 
 	queue    queueSync
 	queueCur int
@@ -131,15 +123,7 @@ type Model struct {
 	// until yt-dlp resolves each entry.
 	tracks map[string]youtube.Track
 
-	timePos, duration time.Duration
-	paused, idle      bool
-	volume            float64
-	codec             string
-	params            mpv.AudioParams
-	device            string
-	normalize         bool
-	loopPlaylist      bool
-	loopFile          bool
+	player playerState
 
 	levels   []float64
 	showViz  bool
@@ -212,7 +196,7 @@ func New(deps Deps) Model {
 		help:                  hm,
 		input:                 in,
 		nameInput:             nameInput,
-		filterInput:           filterInput,
+		results:               resultsPane{filter: filterInput},
 		spinner:               sp,
 		focus:                 focusSearch,
 		tracks:                tracks,
@@ -220,9 +204,7 @@ func New(deps Deps) Model {
 		deletePlaylistPending: -1,
 		queue:                 newQueueSync(deps.Player),
 		thumb:                 newThumbImage(deps.Thumbnails, deps.HTTP),
-		idle:                  true,
-		volume:                100,
-		normalize:             deps.Normalize,
+		player:                playerState{idle: true, volume: 100, normalize: deps.Normalize},
 		showViz:               deps.Tap != nil,
 		rng:                   rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
 	}
@@ -232,7 +214,7 @@ func (m Model) KnownTrack(url string) youtube.Track { return m.tracks[url] }
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
-		waitMPV(m.deps.Player.Events(), m.timePos),
+		waitMPV(m.deps.Player.Events(), m.player.timePos),
 		loadDevices(m.deps.Player, false),
 	}
 	if m.deps.Tap != nil {
@@ -243,24 +225,6 @@ func (m Model) Init() tea.Cmd {
 }
 
 type (
-	searchDoneMsg struct {
-		requestID uint64
-		query     string
-		tracks    []youtube.Track
-		err       error
-	}
-	lookupDoneMsg struct {
-		requestID uint64
-		tracks    []youtube.Track
-		limitHit  bool
-		err       error
-	}
-	queueDoneMsg struct {
-		requestID uint64
-		tracks    []youtube.Track
-		limitHit  bool
-		err       error
-	}
 	mpvEventMsg  mpv.Event
 	mpvClosedMsg struct{}
 	levelsMsg    []float64
@@ -300,7 +264,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.help.SetWidth(m.width)
 		m.input.SetWidth(m.searchWidth())
 		m.nameInput.SetWidth(max(1, dialogWidth(nameDialogWidth, m.width)-2*boxInset-lipgloss.Width(m.nameInput.Prompt)-1))
-		m.filterInput.SetWidth(max(1, resultsWidth(m.width)-2*boxInset-lipgloss.Width(m.filterInput.Prompt)-1))
+		m.results.setWidth(resultsWidth(m.width))
 		return m, m.updateThumb(msg)
 
 	case placeMsg, uv.KittyGraphicsEvent, uv.PrimaryDeviceAttributesEvent, thumbMsg:
@@ -322,7 +286,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, inputCmd
 		}
 		if m.inFilter() {
-			return m, m.updateFilter(msg)
+			return m, m.updateResults(msg)
 		}
 		cmd := m.focusSearch()
 		var inputCmd tea.Cmd
@@ -338,60 +302,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case searchDoneMsg:
-		if msg.requestID != m.searchRequest {
-			return m, nil
-		}
-		if msg.requestID == m.spinnerRequest {
-			m.searching = false
-		}
-		if msg.err != nil {
-			if msg.requestID == m.activeRequest {
-				m.setError("search failed: " + msg.err.Error())
-			}
-			return m, nil
-		}
-		m.results, m.resultCur = msg.tracks, 0
-		m.filterInput.Reset()
-		if len(m.results) == 0 {
-			m.filterInput.Blur()
-		}
-		for _, t := range msg.tracks {
-			m.tracks[t.URL] = t
-		}
-		if msg.requestID == m.activeRequest {
-			m.setStatus(pluralize(len(msg.tracks), "result") + " for " + quote(msg.query))
-		}
+		m.searchDone(msg)
 		return m, nil
 
 	case lookupDoneMsg:
 		return m, m.resolveImport(msg)
 
 	case queueDoneMsg:
-		if msg.requestID == m.spinnerRequest {
-			m.searching = false
-		}
-		// mpv may have accepted some entries before AppendAll returned an error.
-		for _, t := range msg.tracks {
-			m.tracks[t.URL] = t
-		}
-		// Playback events may have arrived while the append was still running.
-		thumbCmd := m.refreshThumb()
-		m.syncMPRIS()
-		_, queueCmd := m.updateQueue(msg)
-		if msg.err != nil {
-			if msg.requestID == m.activeRequest {
-				m.setError(msg.err.Error())
-			}
-			return m, tea.Batch(thumbCmd, queueCmd)
-		}
-		if msg.requestID == m.activeRequest {
-			status := pluralize(len(msg.tracks), "track") + " queued"
-			if msg.limitHit {
-				status += fmt.Sprintf(" (import limit: %d)", youtube.MaxPlaylistItems)
-			}
-			m.setStatus(status)
-		}
-		return m, tea.Batch(thumbCmd, queueCmd)
+		return m, m.queueDone(msg)
 
 	case queueActionDoneMsg:
 		_, cmd := m.updateQueue(msg)
@@ -418,7 +336,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mpvEventMsg:
 		cmd := m.applyEvent(mpv.Event(msg))
 		m.syncMPRIS()
-		return m, tea.Batch(cmd, waitMPV(m.deps.Player.Events(), m.timePos))
+		return m, tea.Batch(cmd, waitMPV(m.deps.Player.Events(), m.player.timePos))
 
 	case mpvClosedMsg:
 		m.setError("mpv exited")
@@ -462,7 +380,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	if m.inFilter() {
-		return m, m.updateFilter(msg)
+		return m, m.updateResults(msg)
 	}
 	return m, nil
 }
@@ -477,6 +395,12 @@ func (m *Model) updateQueue(msg tea.Msg) (synced bool, cmd tea.Cmd) {
 	return true, tea.Batch(cmd, m.refreshThumb())
 }
 
+func (m *Model) updateResults(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+	m.results, cmd = m.results.update(msg)
+	return cmd
+}
+
 func (m *Model) updateThumb(msg tea.Msg) tea.Cmd {
 	before := m.thumb.graphics
 	var cmd tea.Cmd
@@ -489,7 +413,7 @@ func (m *Model) updateThumb(msg tea.Msg) tea.Cmd {
 
 func (m *Model) focusSearch() tea.Cmd {
 	m.overlay, m.focus = overlayNone, focusSearch
-	m.filterInput.Blur()
+	m.results.filter.Blur()
 	return m.input.Focus()
 }
 
@@ -503,30 +427,29 @@ func (m *Model) setError(s string) {
 
 func (m Model) current() (mpv.PlaylistEntry, youtube.Track, bool) {
 	pos := m.queue.pos
-	if m.idle || pos < 0 || pos >= len(m.queue.entries) {
+	if m.player.idle || pos < 0 || pos >= len(m.queue.entries) {
 		return mpv.PlaylistEntry{}, youtube.Track{}, false
 	}
 	e := m.queue.entries[pos]
 	return e, m.tracks[e.Filename], true
 }
 
-func (m Model) repeat() mpv.Repeat {
-	return mpv.RepeatFrom(m.loopPlaylist, m.loopFile)
+// entryTrack is what is known about a queue entry, falling back to mpv's title.
+func (m Model) entryTrack(e mpv.PlaylistEntry) youtube.Track {
+	t := m.tracks[e.Filename]
+	t.URL = e.Filename
+	if t.Title == "" {
+		t.Title = e.Title
+	}
+	return t
 }
 
 func (m Model) isCurrentDevice(d mpv.AudioDevice) bool {
-	return d.Name == m.currentDeviceName()
-}
-
-func (m Model) currentDeviceName() string {
-	if m.device == "" {
-		return "auto"
-	}
-	return m.device
+	return d.Name == m.player.deviceName()
 }
 
 func (m Model) currentDevice() (mpv.AudioDevice, bool) {
-	name := m.currentDeviceName()
+	name := m.player.deviceName()
 	i := slices.IndexFunc(m.devices, func(d mpv.AudioDevice) bool { return d.Name == name })
 	if i < 0 {
 		return mpv.AudioDevice{}, false
@@ -540,14 +463,14 @@ func (m Model) syncMPRIS() {
 	}
 	st := mpris.State{
 		Status:   mpris.Stopped,
-		Volume:   min(m.volume/100, 1),
-		Position: m.timePos,
+		Volume:   min(m.player.volume/100, 1),
+		Position: m.player.timePos,
 		CanPrev:  m.queue.pos > 0,
 		CanNext:  m.queue.pos >= 0 && m.queue.pos < len(m.queue.entries)-1,
 	}
 	if e, t, ok := m.current(); ok {
 		st.Status = mpris.Playing
-		if m.paused {
+		if m.player.paused {
 			st.Status = mpris.Paused
 		}
 		st.TrackID = t.ID
@@ -559,7 +482,7 @@ func (m Model) syncMPRIS() {
 		st.URL = e.Filename
 		// A live stream's duration is its DVR window, not a track length.
 		if !t.Live {
-			st.Length = m.duration
+			st.Length = m.player.duration
 		}
 		if t.ID != "" {
 			st.ArtURL = t.ThumbnailURL()

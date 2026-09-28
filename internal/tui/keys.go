@@ -205,11 +205,11 @@ func (m Model) contextKeys() (string, help.KeyMap) {
 		return "Playlist tracks", m.keys.playlistTracks
 	case focusResults:
 	}
-	if m.filterInput.Focused() {
+	if m.results.filter.Focused() {
 		return "Results filter", m.keys.filter
 	}
 	results := m.keys.results
-	results.ClearFilter.SetEnabled(m.filterInput.Value() != "")
+	results.ClearFilter.SetEnabled(m.results.filter.Value() != "")
 	return "Results", results
 }
 

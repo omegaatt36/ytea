@@ -39,7 +39,7 @@ func overlayModel(t *testing.T, origin focus) Model {
 	m.input.Blur()
 	m.focus = origin
 	m.queue.entries = []mpv.PlaylistEntry{{Filename: watchURL, Title: "Song"}}
-	m.queue.pos, m.idle = 0, false
+	m.queue.pos, m.player.idle = 0, false
 	m.tracks[watchURL] = youtube.Track{ID: "abc", Title: "Song", URL: watchURL}
 	m.devices = []mpv.AudioDevice{{Name: "auto", Description: "Autoselect device"}}
 	return m
@@ -49,7 +49,7 @@ func playingModel(g graphicsSupport) Model {
 	m := New(Deps{Thumbnails: true})
 	m.thumb.graphics = g
 	m.width, m.height = 100, 30
-	m.idle, m.queue.pos = false, 0
+	m.player.idle, m.queue.pos = false, 0
 	m.queue.entries = []mpv.PlaylistEntry{{Filename: watchURL}}
 	m.tracks[watchURL] = youtube.Track{ID: "abc", Title: "Song", URL: watchURL}
 	m.thumb.video = "abc"
@@ -60,7 +60,7 @@ func mouseModel() Model {
 	m := New(Deps{})
 	m.width, m.height = 100, 30
 	for i := range 40 {
-		m.results = append(m.results, youtube.Track{Title: fmt.Sprintf("song %02d", i)})
+		m.results.tracks = append(m.results.tracks, youtube.Track{Title: fmt.Sprintf("song %02d", i)})
 	}
 	for i := range 3 {
 		m.queue.entries = append(m.queue.entries, mpv.PlaylistEntry{Filename: fmt.Sprintf("u%d", i), Title: fmt.Sprintf("queued %d", i)})
@@ -74,7 +74,7 @@ func filterModel() (Model, *spyPlayer) {
 	m.width, m.height = 100, 30
 	m.input.Blur()
 	m.focus = focusResults
-	m.results = []youtube.Track{
+	m.results.tracks = []youtube.Track{
 		{Title: "lofi", URL: "a"},
 		{Title: "rock", URL: "b"},
 		{Title: "lofi beats", URL: "c"},
@@ -177,7 +177,7 @@ func helpEntry(b key.Binding) string {
 }
 
 func selectedTitle(m Model) string {
-	tr, _ := m.selectedResult()
+	tr, _ := m.results.selected()
 	return tr.Title
 }
 

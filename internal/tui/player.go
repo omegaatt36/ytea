@@ -2,12 +2,83 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 
 	"github.com/omegaatt36/ytea/internal/mpv"
 )
+
+// playerState mirrors mpv's playback properties.
+type playerState struct {
+	timePos, duration time.Duration
+	paused, idle      bool
+	volume            float64
+	codec             string
+	params            mpv.AudioParams
+	device            string
+	normalize         bool
+	loopPlaylist      bool
+	loopFile          bool
+}
+
+// apply reports whether the change can switch the playing track.
+func (p *playerState) apply(ev mpv.Event) bool {
+	switch ev.Prop {
+	case mpv.PropTimePos:
+		p.timePos = seconds(mpv.Decode[float64](ev.Data))
+	case mpv.PropDuration:
+		p.duration = seconds(mpv.Decode[float64](ev.Data))
+	case mpv.PropPause:
+		p.paused = mpv.Decode[bool](ev.Data)
+	case mpv.PropIdle:
+		if mpv.Decode[bool](ev.Data) {
+			p.stop()
+		} else {
+			p.idle = false
+		}
+		return true
+	case mpv.PropVolume:
+		p.volume = mpv.Decode[float64](ev.Data)
+	case mpv.PropCodec:
+		p.codec = mpv.Decode[string](ev.Data)
+	case mpv.PropAudioParams:
+		p.params = mpv.Decode[mpv.AudioParams](ev.Data)
+	case mpv.PropAudioDevice:
+		p.device = mpv.Decode[string](ev.Data)
+	case mpv.PropAF:
+		p.normalize = slices.ContainsFunc(mpv.Decode[[]mpv.Filter](ev.Data), func(f mpv.Filter) bool {
+			return f.Label == mpv.NormalizeLabel
+		})
+	case mpv.PropLoopPlaylist:
+		p.loopPlaylist = mpv.LoopOn(ev.Data)
+	case mpv.PropLoopFile:
+		p.loopFile = mpv.LoopOn(ev.Data)
+	case mpv.PropPlaylistPos:
+		p.timePos = 0
+		return true
+	}
+	return false
+}
+
+func (p *playerState) stop() {
+	p.idle = true
+	p.timePos, p.duration = 0, 0
+}
+
+func (p playerState) repeat() mpv.Repeat {
+	return mpv.RepeatFrom(p.loopPlaylist, p.loopFile)
+}
+
+// deviceName is mpv's audio-device, which is "auto" until one is chosen.
+func (p playerState) deviceName() string {
+	if p.device == "" {
+		return "auto"
+	}
+	return p.device
+}
 
 // Beside the art: details and the spectrum over one progress row.
 const detailRows = thumbRows - 1
@@ -29,7 +100,7 @@ func (m Model) renderPlayer() string {
 	details := make([]string, 0, detailRows)
 	if ok {
 		icon := "▶"
-		if m.paused {
+		if m.player.paused {
 			icon = "⏸"
 		}
 		details = append(details, nowTitleStyle.Render(icon+" "+displayTitle(e, t)))
@@ -82,11 +153,11 @@ func (m Model) vizWidth(textW int) int {
 
 func (m Model) audioLine() string {
 	var parts []string
-	if m.codec != "" {
-		parts = append(parts, m.codec)
+	if m.player.codec != "" {
+		parts = append(parts, m.player.codec)
 	}
-	if m.params.SampleRate > 0 {
-		parts = append(parts, fmt.Sprintf("%gkHz", float64(m.params.SampleRate)/1000))
+	if m.player.params.SampleRate > 0 {
+		parts = append(parts, fmt.Sprintf("%gkHz", float64(m.player.params.SampleRate)/1000))
 	}
 	if d, ok := m.currentDevice(); ok {
 		parts = append(parts, "→ "+d.Label())
@@ -96,11 +167,11 @@ func (m Model) audioLine() string {
 
 // modeLine shows the settings a key toggles, so each press has a visible echo.
 func (m Model) modeLine() string {
-	parts := []string{fmt.Sprintf("vol %d%%", int(m.volume))}
-	if m.normalize {
+	parts := []string{fmt.Sprintf("vol %d%%", int(m.player.volume))}
+	if m.player.normalize {
 		parts = append(parts, "leveling")
 	}
-	if r := m.repeat(); r != mpv.RepeatOff {
+	if r := m.player.repeat(); r != mpv.RepeatOff {
 		parts = append(parts, "repeat "+r.String())
 	}
 	return dimStyle.Render(strings.Join(parts, " · "))
@@ -110,14 +181,14 @@ func (m Model) progressLine(live bool, width int) string {
 	if live {
 		return errorStyle.Render("● LIVE")
 	}
-	elapsed, total := formatDuration(m.timePos), formatDuration(m.duration)
+	elapsed, total := formatDuration(m.player.timePos), formatDuration(m.player.duration)
 	barW := width - len(elapsed) - len(total) - 2
 	if barW < 4 {
 		return elapsed + dimStyle.Render(" / "+total)
 	}
 	filled := 0
-	if m.duration > 0 {
-		filled = min(barW, int(float64(barW)*float64(m.timePos)/float64(m.duration)))
+	if m.player.duration > 0 {
+		filled = min(barW, int(float64(barW)*float64(m.player.timePos)/float64(m.player.duration)))
 	}
 	bar := playingStyle.Render(strings.Repeat("━", filled)) + dimStyle.Render(strings.Repeat("─", barW-filled))
 	return elapsed + " " + bar + " " + dimStyle.Render(total)

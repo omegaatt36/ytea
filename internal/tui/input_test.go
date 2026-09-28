@@ -26,12 +26,12 @@ func TestCursorFollowsFocusedInput(t *testing.T) {
 			m.input.CursorEnd()
 		}},
 		{name: "results filter", setup: func(m *Model) {
-			m.results = []youtube.Track{{Title: "song"}}
+			m.results.tracks = []youtube.Track{{Title: "song"}}
 			m.focus = focusResults
 			m.input.Blur()
-			m.filterInput.Focus()
-			m.filterInput.SetValue(typed)
-			m.filterInput.CursorEnd()
+			m.results.filter.Focus()
+			m.results.filter.SetValue(typed)
+			m.results.filter.CursorEnd()
 		}},
 		{name: "playlist name", setup: func(m *Model) {
 			m.overlay = overlayName
@@ -137,7 +137,7 @@ func TestKeysRunTheirActions(t *testing.T) {
 		m := New(Deps{Player: p})
 		m.input.Blur()
 		m.focus = f
-		m.results = []youtube.Track{{URL: "r0"}, {URL: "r1"}, {URL: "r2"}}
+		m.results.tracks = []youtube.Track{{URL: "r0"}, {URL: "r1"}, {URL: "r2"}}
 		m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
 		return m
 	}
@@ -158,15 +158,15 @@ func TestKeysRunTheirActions(t *testing.T) {
 	resultCur := func(want int) func(t *testing.T, m Model, cmd tea.Cmd, player *spyPlayer) {
 		return func(t *testing.T, m Model, _ tea.Cmd, _ *spyPlayer) {
 			t.Helper()
-			if m.resultCur != want {
-				t.Errorf("resultCur = %d, want %d", m.resultCur, want)
+			if m.results.cur != want {
+				t.Errorf("resultCur = %d, want %d", m.results.cur, want)
 			}
 		}
 	}
 	inResults := func(_ *testing.T, p *spyPlayer) Model { return listModel(p, focusResults) }
 	atLastResult := func(_ *testing.T, p *spyPlayer) Model {
 		m := listModel(p, focusResults)
-		m.resultCur = 2
+		m.results.cur = 2
 		return m
 	}
 

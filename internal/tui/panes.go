@@ -162,7 +162,7 @@ func (m Model) paneAt(x, y int) (listPane, int) {
 func (m Model) listCursor(p listPane) (cursor, n int) {
 	switch p {
 	case paneResults:
-		return m.resultCur, len(m.resultRows())
+		return m.results.cur, len(m.results.rows())
 	case paneQueue:
 		return m.queueCur, len(m.queue.entries)
 	case panePlaylists:
@@ -246,23 +246,23 @@ func (m Model) list(p listPane) list {
 	}
 	switch p {
 	case paneResults:
-		rows := m.resultRows()
+		rows := m.results.rows()
 		l.title, l.empty = resultsTitle, "press "+m.keys.global.Search.Help().Key+" to search"
-		if len(m.results) > 0 {
-			l.title = fmt.Sprintf("%s (%d)", resultsTitle, len(m.results))
+		if len(m.results.tracks) > 0 {
+			l.title = fmt.Sprintf("%s (%d)", resultsTitle, len(m.results.tracks))
 		}
-		if m.filterOpen() {
-			l.title = fmt.Sprintf("%s (%d/%d)", resultsTitle, len(rows), len(m.results))
-			l.head = []string{" " + m.filterInput.View()}
-			if len(m.results) > 0 {
+		if m.results.filterOpen() {
+			l.title = fmt.Sprintf("%s (%d/%d)", resultsTitle, len(rows), len(m.results.tracks))
+			l.head = []string{" " + m.results.filter.View()}
+			if len(m.results.tracks) > 0 {
 				l.empty = "no matches"
 			}
 		}
 		l.focused = m.focus == focusResults && !m.dialogOpen()
-		lenW := lengthWidth(m.results)
+		lenW := lengthWidth(m.results.tracks)
 		l.row = func(i, w int, selected bool) string {
 			text, dim := styles(selected)
-			return trackRow(m.results[rows[i].index], rows[i], w, lenW, text, dim)
+			return trackRow(m.results.tracks[rows[i].index], rows[i], w, lenW, text, dim)
 		}
 	case paneQueue:
 		detailed := m.activeTab() == focusQueue
@@ -316,10 +316,6 @@ func (m Model) list(p listPane) list {
 }
 
 const resultsTitle = "Results"
-
-func (m Model) filterOpen() bool {
-	return m.filterInput.Focused() || m.filterInput.Value() != ""
-}
 
 // trackRow sets a track out in columns: title, then channel when there is
 // room for it, then the length flush right in lenW cells.

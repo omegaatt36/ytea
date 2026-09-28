@@ -60,7 +60,7 @@ func (m Model) infoLines() []string {
 	if !ok {
 		return []string{dimStyle.Render("nothing playing")}
 	}
-	length := formatDuration(m.duration)
+	length := formatDuration(m.player.duration)
 	if t.Live {
 		length = "LIVE"
 	}
@@ -79,7 +79,7 @@ func (m Model) infoLines() []string {
 	}
 	codec := stream.Codec
 	if codec == "" {
-		codec = m.codec
+		codec = m.player.codec
 	}
 	rows = append(rows, [2]string{"Codec", codec})
 	if yt, ok := youtube.StreamOf(stream.Opened); ok {
@@ -97,14 +97,14 @@ func (m Model) infoLines() []string {
 	} else if stream.Bitrate > 0 {
 		rows = append(rows, [2]string{"Bitrate", fmt.Sprintf("%d kbps", stream.Bitrate/1000)})
 	}
-	if m.params.SampleRate > 0 {
-		rows = append(rows, [2]string{"Decoded", fmt.Sprintf("%gkHz · %s · %s", float64(m.params.SampleRate)/1000, m.params.Channels, m.params.Format)})
+	if m.player.params.SampleRate > 0 {
+		rows = append(rows, [2]string{"Decoded", fmt.Sprintf("%gkHz · %s · %s", float64(m.player.params.SampleRate)/1000, m.player.params.Channels, m.player.params.Format)})
 	}
 	if d, ok := m.currentDevice(); ok {
 		rows = append(rows, [2]string{"Output", d.Label()})
 	}
 	norm := "off"
-	if m.normalize {
+	if m.player.normalize {
 		norm = "on"
 	}
 	rows = append(rows, [2]string{"Normalize", norm})

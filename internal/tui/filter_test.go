@@ -77,10 +77,10 @@ func TestFilterResultsSpans(t *testing.T) {
 // results-filter R1
 func TestFilterKeyIgnoredWithoutResults(t *testing.T) {
 	m, _ := filterModel()
-	m.results = nil
+	m.results.tracks = nil
 	m = press(t, m, keyPress("f"))
-	if m.filterInput.Focused() || m.filterInput.Value() != "" {
-		t.Errorf("f without results: filter focused=%v value=%q, want closed and empty", m.filterInput.Focused(), m.filterInput.Value())
+	if m.results.filter.Focused() || m.results.filter.Value() != "" {
+		t.Errorf("f without results: filter focused=%v value=%q, want closed and empty", m.results.filter.Focused(), m.results.filter.Value())
 	}
 }
 
@@ -88,11 +88,11 @@ func TestFilterKeyIgnoredWithoutResults(t *testing.T) {
 func TestFilterKeyOpensAndFocusesInput(t *testing.T) {
 	m, _ := filterModel()
 	m = press(t, m, keyPress("f"))
-	if !m.filterInput.Focused() || !atPane(m, focusResults) {
-		t.Fatalf("after f: filter focused=%v focus=%v, want focused filter in results", m.filterInput.Focused(), m.focus)
+	if !m.results.filter.Focused() || !atPane(m, focusResults) {
+		t.Fatalf("after f: filter focused=%v focus=%v, want focused filter in results", m.results.filter.Focused(), m.focus)
 	}
-	if m.filterInput.Value() != "" {
-		t.Errorf("filter value = %q, want empty: f opens, it is not typed", m.filterInput.Value())
+	if m.results.filter.Value() != "" {
+		t.Errorf("filter value = %q, want empty: f opens, it is not typed", m.results.filter.Value())
 	}
 }
 
@@ -132,8 +132,8 @@ func TestFilterInputMovesSelectionWithoutLeaving(t *testing.T) {
 		if got := selectedTitle(m); got != s.want {
 			t.Errorf("after %s: selected = %q, want %q", s.key, got, s.want)
 		}
-		if !m.filterInput.Focused() || m.filterInput.Value() != "lofi" {
-			t.Errorf("after %s: filter focused=%v value=%q, want still typing lofi", s.key, m.filterInput.Focused(), m.filterInput.Value())
+		if !m.results.filter.Focused() || m.results.filter.Value() != "lofi" {
+			t.Errorf("after %s: filter focused=%v value=%q, want still typing lofi", s.key, m.results.filter.Focused(), m.results.filter.Value())
 		}
 	}
 }
@@ -147,9 +147,9 @@ func TestFilterInputBlocksGlobalKeys(t *testing.T) {
 		t.Errorf("q in filter returned a command, want it typed")
 	}
 	m = typeText(t, m, "/a?")
-	if m.filterInput.Value() != "q/a?" || !m.filterInput.Focused() || !atPane(m, focusResults) || m.fullHelp {
+	if m.results.filter.Value() != "q/a?" || !m.results.filter.Focused() || !atPane(m, focusResults) || m.fullHelp {
 		t.Errorf("filter value=%q focused=%v focus=%v fullHelp=%v, want q/a? typed into the open filter",
-			m.filterInput.Value(), m.filterInput.Focused(), m.focus, m.fullHelp)
+			m.results.filter.Value(), m.results.filter.Focused(), m.focus, m.fullHelp)
 	}
 	if len(player.calls) != 0 {
 		t.Errorf("player calls = %v, want none", player.calls)
@@ -162,28 +162,28 @@ func TestFilterEnterCommitsAndKeepsFilter(t *testing.T) {
 	m = press(t, m, keyPress("f"))
 	m = typeText(t, m, "lofi")
 	m = press(t, m, keyPress("enter"))
-	if m.filterInput.Focused() || !atPane(m, focusResults) {
-		t.Errorf("after enter: filter focused=%v focus=%v, want results list focused", m.filterInput.Focused(), m.focus)
+	if m.results.filter.Focused() || !atPane(m, focusResults) {
+		t.Errorf("after enter: filter focused=%v focus=%v, want results list focused", m.results.filter.Focused(), m.focus)
 	}
-	if m.filterInput.Value() != "lofi" || strings.Contains(rendered(m), "rock") {
-		t.Errorf("after enter: value=%q, want lofi kept and rock hidden", m.filterInput.Value())
+	if m.results.filter.Value() != "lofi" || strings.Contains(rendered(m), "rock") {
+		t.Errorf("after enter: value=%q, want lofi kept and rock hidden", m.results.filter.Value())
 	}
 }
 
 // results-filter R4
 func TestFilterEscClearsFromInputAndList(t *testing.T) {
 	m, _ := filterModel()
-	m.filterInput.Focus()
-	m.filterInput.SetValue("lofi")
+	m.results.filter.Focus()
+	m.results.filter.SetValue("lofi")
 	m = press(t, m, keyPress("esc"))
-	if m.filterInput.Focused() || m.filterInput.Value() != "" || !strings.Contains(rendered(m), "rock") {
-		t.Errorf("esc in input: focused=%v value=%q, want closed, cleared, rock shown", m.filterInput.Focused(), m.filterInput.Value())
+	if m.results.filter.Focused() || m.results.filter.Value() != "" || !strings.Contains(rendered(m), "rock") {
+		t.Errorf("esc in input: focused=%v value=%q, want closed, cleared, rock shown", m.results.filter.Focused(), m.results.filter.Value())
 	}
 
-	m.filterInput.SetValue("lofi")
+	m.results.filter.SetValue("lofi")
 	m = press(t, m, keyPress("esc"))
-	if m.filterInput.Value() != "" || !strings.Contains(rendered(m), "rock") || !atPane(m, focusResults) {
-		t.Errorf("esc in list: value=%q focus=%v, want cleared, rock shown, results focused", m.filterInput.Value(), m.focus)
+	if m.results.filter.Value() != "" || !strings.Contains(rendered(m), "rock") || !atPane(m, focusResults) {
+		t.Errorf("esc in list: value=%q focus=%v, want cleared, rock shown, results focused", m.results.filter.Value(), m.focus)
 	}
 }
 
@@ -213,14 +213,14 @@ func TestFilteredEnqueueUsesVisibleRow(t *testing.T) {
 // results-filter R5
 func TestFilteredNavigationBounds(t *testing.T) {
 	m, _ := filterModel()
-	m.filterInput.SetValue("lofi")
+	m.results.filter.SetValue("lofi")
 	m = press(t, m, keyPress("G"))
-	if got := selectedTitle(m); got != "lofi beats" || m.resultCur != 1 {
-		t.Errorf("G: selected=%q cur=%d, want lofi beats at row 1", got, m.resultCur)
+	if got := selectedTitle(m); got != "lofi beats" || m.results.cur != 1 {
+		t.Errorf("G: selected=%q cur=%d, want lofi beats at row 1", got, m.results.cur)
 	}
 	m = press(t, m, keyPress("j"))
-	if m.resultCur != 1 {
-		t.Errorf("j past end: cur=%d, want 1", m.resultCur)
+	if m.results.cur != 1 {
+		t.Errorf("j past end: cur=%d, want 1", m.results.cur)
 	}
 	m = press(t, m, keyPress("g"))
 	if got := selectedTitle(m); got != "lofi" {
@@ -268,7 +268,7 @@ func TestFilterTitleCountsMatchedOverTotal(t *testing.T) {
 // results-filter R3
 func TestFilterHighlightsMatchedSubstrings(t *testing.T) {
 	m, _ := filterModel()
-	m.results[2].Channel = "Lofi Girl"
+	m.results.tracks[2].Channel = "Lofi Girl"
 	if strings.Contains(m.render(), matchStyle.Render("lofi")) {
 		t.Error("render highlights lofi without a filter")
 	}
@@ -293,7 +293,7 @@ func TestFilterHighlightsMatchedSubstrings(t *testing.T) {
 func TestFilterHighlightSurvivesTruncation(t *testing.T) {
 	m, _ := filterModel()
 	m = resize(m, 60)
-	m.results[2].Title = "lofi " + strings.Repeat("x", 100) + " tail"
+	m.results.tracks[2].Title = "lofi " + strings.Repeat("x", 100) + " tail"
 	m = press(t, m, keyPress("f"))
 	m = typeText(t, m, "lofi tail")
 	leftW := m.paneRect(paneResults).Dx()
@@ -323,18 +323,18 @@ func TestNewResultsClearFilter(t *testing.T) {
 	for _, typing := range []bool{true, false} {
 		t.Run(fmt.Sprintf("typing=%v", typing), func(t *testing.T) {
 			m, player := filterModel()
-			m.filterInput.SetValue("lofi")
+			m.results.filter.SetValue("lofi")
 			if typing {
-				m.filterInput.Focus()
+				m.results.filter.Focus()
 			}
 			m.searchRequest = m.nextRequest()
 			got, _ := m.update(searchDoneMsg{requestID: m.searchRequest, query: "new", tracks: []youtube.Track{
 				{Title: "jazz", URL: "j"}, {Title: "blues", URL: "k"},
 			}})
 			m = got.(Model)
-			if m.filterInput.Value() != "" || m.filterInput.Focused() != typing || m.filterOpen() != typing {
+			if m.results.filter.Value() != "" || m.results.filter.Focused() != typing || m.results.filterOpen() != typing {
 				t.Errorf("filter value=%q focused=%v open=%v, want cleared with focused=open=%v",
-					m.filterInput.Value(), m.filterInput.Focused(), m.filterOpen(), typing)
+					m.results.filter.Value(), m.results.filter.Focused(), m.results.filterOpen(), typing)
 			}
 			if rows := rendered(m); !strings.Contains(rows, "jazz") || !strings.Contains(rows, "blues") {
 				t.Errorf("rows = %q, want all new results shown", rows)
@@ -344,9 +344,9 @@ func TestNewResultsClearFilter(t *testing.T) {
 			}
 			got, cmd := m.update(keyPress("q"))
 			m = got.(Model)
-			if cmd != nil || m.filterInput.Value() != "q" || !atPane(m, focusResults) || len(player.calls) != 0 {
+			if cmd != nil || m.results.filter.Value() != "q" || !atPane(m, focusResults) || len(player.calls) != 0 {
 				t.Errorf("q after new results: cmd=%v filter=%q focus=%v calls=%v, want it typed into the filter",
-					cmd != nil, m.filterInput.Value(), m.focus, player.calls)
+					cmd != nil, m.results.filter.Value(), m.focus, player.calls)
 			}
 		})
 	}
@@ -360,8 +360,8 @@ func TestFilterPasteReadsClipboardIntoFilter(t *testing.T) {
 	if !isClipboardRead(cmd) {
 		t.Fatal("ctrl+v in filter: cmd is not the clipboard read")
 	}
-	if !m.filterInput.Focused() || !atPane(m, focusResults) {
-		t.Fatalf("ctrl+v left the filter: focused=%v focus=%v", m.filterInput.Focused(), m.focus)
+	if !m.results.filter.Focused() || !atPane(m, focusResults) {
+		t.Fatalf("ctrl+v left the filter: focused=%v focus=%v", m.results.filter.Focused(), m.focus)
 	}
 
 	// The clipboard result type is unexported; build one carrying known text.
@@ -372,19 +372,19 @@ func TestFilterPasteReadsClipboardIntoFilter(t *testing.T) {
 	msg.SetString("lofi")
 	got, _ = m.update(msg.Interface())
 	m = got.(Model)
-	if m.filterInput.Value() != "lofi" || m.input.Value() != "" {
-		t.Errorf("clipboard paste: filter=%q search=%q, want lofi in the filter only", m.filterInput.Value(), m.input.Value())
+	if m.results.filter.Value() != "lofi" || m.input.Value() != "" {
+		t.Errorf("clipboard paste: filter=%q search=%q, want lofi in the filter only", m.results.filter.Value(), m.input.Value())
 	}
 }
 
 func TestFilterWidthIgnoresTabAtResize(t *testing.T) {
 	m, _ := filterModel()
-	want := resize(m, 100).filterInput.Width()
+	want := resize(m, 100).results.filter.Width()
 	m.focus = focusPlaylists
 	m = resize(m, 100)
 	m.focus = focusResults
 	m = press(t, m, keyPress("f"))
-	if got := m.filterInput.Width(); got != want {
+	if got := m.results.filter.Width(); got != want {
 		t.Errorf("filter width after resizing on Playlists = %d, want %d as when resized on Results", got, want)
 	}
 }
@@ -400,8 +400,8 @@ func TestFilterClearKeepsSelectedTrack(t *testing.T) {
 			m = press(t, m, keyPress("enter"))
 		}
 		m = press(t, m, keyPress("esc"))
-		if m.resultCur != 2 || selectedTitle(m) != "lofi beats" {
-			t.Errorf("commit=%v: after esc cur=%d selected=%q, want lofi beats at 2", commit, m.resultCur, selectedTitle(m))
+		if m.results.cur != 2 || selectedTitle(m) != "lofi beats" {
+			t.Errorf("commit=%v: after esc cur=%d selected=%q, want lofi beats at 2", commit, m.results.cur, selectedTitle(m))
 		}
 	}
 }
@@ -448,7 +448,7 @@ func TestResultsHelpListsFilterAndClearOnlyWhenFiltered(t *testing.T) {
 		t.Errorf("results help %q offers esc clear filter with no filter applied", got)
 	}
 
-	m.filterInput.SetValue("lofi")
+	m.results.filter.SetValue("lofi")
 	got = footerHelp(resize(m, 500))
 	if !strings.Contains(got, "f filter") || !strings.Contains(got, "esc clear filter") {
 		t.Errorf("filtered results help %q, want f filter and esc clear filter", got)

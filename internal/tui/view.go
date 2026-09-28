@@ -56,12 +56,12 @@ func (m Model) View() tea.View {
 		v.WindowTitle = "ytea — " + displayTitle(e, t)
 		// Ghostty draws OSC 9;4 progress in the tab/titlebar, so playback progress
 		// stays visible while the terminal is in the background.
-		if m.duration > 0 && !t.Live {
+		if m.player.duration > 0 && !t.Live {
 			state := tea.ProgressBarDefault
-			if m.paused {
+			if m.player.paused {
 				state = tea.ProgressBarWarning
 			}
-			v.ProgressBar = tea.NewProgressBar(state, int(100*m.timePos/m.duration))
+			v.ProgressBar = tea.NewProgressBar(state, int(100*m.player.timePos/m.player.duration))
 		}
 	}
 	return v
@@ -78,7 +78,7 @@ func (m Model) cursor() *tea.Cursor {
 	case m.overlay == overlayNone && m.focus == focusSearch:
 		c, at = m.input.Cursor(), image.Pt(lipgloss.Width(brand()+" "), 0)
 	case m.inFilter():
-		c, at = m.filterInput.Cursor(), m.paneRect(paneResults).Min.Add(image.Pt(boxInset, 1))
+		c, at = m.results.filter.Cursor(), m.paneRect(paneResults).Min.Add(image.Pt(boxInset, 1))
 	case m.overlay == overlayName:
 		d, _ := m.dialog(m.screen().body)
 		c, at = m.nameInput.Cursor(), d.rect.Min.Add(image.Pt(boxInset, 1))

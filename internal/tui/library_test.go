@@ -21,7 +21,7 @@ func TestLocalPlaylistFlow(t *testing.T) {
 	second := youtube.Track{ID: "two", Title: "Second", URL: "https://www.youtube.com/watch?v=two"}
 	m := New(Deps{Library: store})
 	m.focus = focusResults
-	m.results = []youtube.Track{first, second}
+	m.results.tracks = []youtube.Track{first, second}
 	got, _ := m.update(keyPress("s"))
 	m = got.(Model)
 	if m.overlay != overlayName {
@@ -33,7 +33,7 @@ func TestLocalPlaylistFlow(t *testing.T) {
 	if !atPane(m, focusResults) || len(store.Playlists()) != 1 || len(store.Playlists()[0].Tracks) != 1 {
 		t.Fatalf("created playlist and saved song: focus=%v overlay=%v playlists=%+v", m.focus, m.overlay, store.Playlists())
 	}
-	m.resultCur = 1
+	m.results.cur = 1
 	got, _ = m.update(keyPress("s"))
 	m = got.(Model)
 	if m.overlay != overlayPicker {

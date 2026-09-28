@@ -37,15 +37,6 @@ func TestFormatDuration(t *testing.T) {
 	}
 }
 
-func TestRenderSpectrumSize(t *testing.T) {
-	m := New(Deps{})
-	m.levels = []float64{0, 0.25, 0.5, 1}
-	got := m.renderSpectrum(40, detailRows)
-	if w, h := lipgloss.Width(got), lipgloss.Height(got); w != 40 || h != detailRows {
-		t.Errorf("renderSpectrum() size = %dx%d, want 40x%d", w, h, detailRows)
-	}
-}
-
 func TestRestoredMetadataTitlesUnplayedQueueEntries(t *testing.T) {
 	m := New(Deps{InitialTracks: map[string]youtube.Track{
 		watchURL: {URL: watchURL, ID: "abc", Title: "Saved song", Channel: "Artist"},
@@ -121,7 +112,7 @@ func TestRenderFillsWindow(t *testing.T) {
 			for _, viz := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%dx%d/%s/viz=%v", size.X, size.Y, sc.name, viz), func(t *testing.T) {
 					m := overlayModel(t, sc.focus)
-					m.results = []youtube.Track{{Title: "Result", Channel: "Channel", Duration: time.Minute}}
+					m.results.tracks = []youtube.Track{{Title: "Result", Channel: "Channel", Duration: time.Minute}}
 					got, _ := m.update(tea.WindowSizeMsg{Width: size.X, Height: size.Y})
 					m = got.(Model)
 					m.overlay, m.fullHelp = sc.overlay, sc.help
@@ -146,7 +137,7 @@ func TestHourLongLengthKeepsColumnsAligned(t *testing.T) {
 	m.width, m.height = 120, 30
 	m.input.Blur()
 	m.focus = focusResults
-	m.results = []youtube.Track{
+	m.results.tracks = []youtube.Track{
 		{Title: "short", Channel: "Chan A", Duration: 3 * time.Minute},
 		{Title: "long mix", Channel: "Chan B", Duration: 6*time.Hour + 10*time.Minute},
 		{Title: "stream", Channel: "Chan C", Live: true},
@@ -166,8 +157,8 @@ func TestUIColorsComeFromTerminalPalette(t *testing.T) {
 	fixed := regexp.MustCompile(`\x1b\[[0-9;]*[34]8;[25];`)
 	m := overlayModel(t, focusResults)
 	m.showViz, m.levels = true, []float64{0.2, 0.9}
-	m.results = []youtube.Track{{Title: "lofi beats", Channel: "Lofi Girl"}, {Title: "rock"}}
-	m.filterInput.SetValue("lofi")
+	m.results.tracks = []youtube.Track{{Title: "lofi beats", Channel: "Lofi Girl"}, {Title: "rock"}}
+	m.results.filter.SetValue("lofi")
 	m.setError("search failed")
 	for name, mm := range map[string]Model{
 		"results":    m,
@@ -201,8 +192,8 @@ func TestStatusRidesPlayerBottomEdge(t *testing.T) {
 func TestResultsRenderWithEscapeInChannel(t *testing.T) {
 	m, _ := filterModel()
 	m = resize(m, 100)
-	m.results[0].Channel = "chanchanchanchanchan1\x1b[0m"
-	m.results[1].Title = "abc\x1b[31mred\x1b[0m tail"
+	m.results.tracks[0].Channel = "chanchanchanchanchan1\x1b[0m"
+	m.results.tracks[1].Title = "abc\x1b[31mred\x1b[0m tail"
 	pane := m.renderPanes(20)
 	for i, line := range strings.Split(pane, "\n") {
 		if w := lipgloss.Width(line); w != m.width {
