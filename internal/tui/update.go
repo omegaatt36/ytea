@@ -318,11 +318,13 @@ func (m *Model) applyEvent(ev mpv.Event) tea.Cmd {
 	case "property-change":
 		return m.applyProperty(ev)
 	case "playback-restart":
+		m.clearError()
 		// MPRIS clients resync on Seeked, which mpv fires after every seek and track start.
 		if m.deps.MPRIS != nil {
 			m.deps.MPRIS.Seeked(m.player.timePos)
 		}
 	case "file-loaded":
+		m.clearError()
 		if m.overlay == overlayInfo {
 			return loadStream(m.deps.Player, false)
 		}

@@ -3,6 +3,9 @@ package tui
 import (
 	"fmt"
 	"image"
+	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/omegaatt36/ytea/internal/mpv"
 	"github.com/omegaatt36/ytea/internal/youtube"
@@ -64,10 +67,14 @@ func (m Model) infoLines() []string {
 	if t.Live {
 		length = "LIVE"
 	}
+	url := e.Filename
+	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		url = ansi.SetHyperlink(url) + url + ansi.ResetHyperlink()
+	}
 	rows := [][2]string{
 		{"Title", displayTitle(e, t)},
 		{"Channel", t.Channel},
-		{"URL", e.Filename},
+		{"URL", url},
 		{"Video ID", t.ID},
 		{"Length", length},
 	}

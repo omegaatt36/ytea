@@ -10,7 +10,7 @@ and cover art in the terminal, including inside Zellij.
 ```
 ┌ Bubble Tea TUI ──────────────────────────────────┐
 │ search │ results / playlists │ queue │ now playing │ spectrum │
-└──┬─────────┬──────────┬───────────┬──────────────┘
+└──────┬─────────┬──────────┬───────────┬──────────────┘
  yt-dlp    mpv IPC    mpv IPC     PipeWire      D-Bus
  search    playback   devices     pw-cat tap    MPRIS
                                   pw-dump
@@ -170,6 +170,7 @@ While full help is open, `?`, `esc`, or `q` closes it; `q` does not quit.
 
 | Key | Action |
 |---|---|
+| `o` `enter` | open in browser |
 | `y` | copy url to the clipboard (OSC 52) |
 | `esc` `i` `q` | close |
 

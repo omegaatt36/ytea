@@ -66,7 +66,7 @@ type deviceKeyMap struct {
 }
 
 type infoKeyMap struct {
-	Copy, Close key.Binding
+	Open, Copy, Close key.Binding
 }
 
 type pickerKeyMap struct {
@@ -166,6 +166,7 @@ func newKeyMap() keyMap {
 			Close:  key.NewBinding(key.WithKeys("esc", "o", "q"), key.WithHelp("esc", "cancel")),
 		},
 		info: infoKeyMap{
+			Open:  key.NewBinding(key.WithKeys("o", "enter"), key.WithHelp("o/enter", "open in browser")),
 			Copy:  key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy url")),
 			Close: key.NewBinding(key.WithKeys("esc", "i", "q"), key.WithHelp("esc", "close")),
 		},
@@ -295,7 +296,7 @@ func (k deviceKeyMap) FullHelp() [][]key.Binding {
 }
 
 func (k infoKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Copy, k.Close}
+	return []key.Binding{k.Open, k.Copy, k.Close}
 }
 
 func (k infoKeyMap) FullHelp() [][]key.Binding {

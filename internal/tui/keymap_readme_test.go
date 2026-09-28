@@ -117,7 +117,7 @@ func TestREADMEDocumentsRepeatInSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range strings.Split(string(readme), "\n") {
+	for line := range strings.SplitSeq(string(readme), "\n") {
 		if strings.Contains(line, "`session.json`") {
 			if !strings.Contains(line, "repeat mode") {
 				t.Errorf("README session.json paragraph does not mention repeat mode: %q", line)
@@ -136,13 +136,13 @@ func readmeFilterInputModel(keys keyMap) Model {
 
 func readmeKeysSection(t *testing.T, markdown string) string {
 	t.Helper()
-	start := strings.Index(markdown, "## Keys\n")
-	if start < 0 {
+	_, after, ok := strings.Cut(markdown, "## Keys\n")
+	if !ok {
 		t.Fatal("README has no Keys section")
 	}
-	section := markdown[start+len("## Keys\n"):]
-	if end := strings.Index(section, "\n## "); end >= 0 {
-		return section[:end]
+	section := after
+	if before, _, ok := strings.Cut(section, "\n## "); ok {
+		return before
 	}
 	t.Fatal("README Keys section has no following level-two section")
 	return ""
@@ -150,9 +150,9 @@ func readmeKeysSection(t *testing.T, markdown string) string {
 
 func readmeKeyGroupTitles(section string) []string {
 	var titles []string
-	for _, line := range strings.Split(section, "\n") {
-		if strings.HasPrefix(line, "### ") {
-			titles = append(titles, strings.TrimPrefix(line, "### "))
+	for line := range strings.SplitSeq(section, "\n") {
+		if after, ok := strings.CutPrefix(line, "### "); ok {
+			titles = append(titles, after)
 		}
 	}
 	return titles
@@ -160,13 +160,13 @@ func readmeKeyGroupTitles(section string) []string {
 
 func readmeKeyGroupBody(section, title string) string {
 	heading := "### " + title + "\n"
-	start := strings.Index(section, heading)
-	if start < 0 {
+	_, after, ok := strings.Cut(section, heading)
+	if !ok {
 		return ""
 	}
-	body := section[start+len(heading):]
-	if end := strings.Index(body, "\n### "); end >= 0 {
-		return body[:end]
+	body := after
+	if before, _, ok := strings.Cut(body, "\n### "); ok {
+		return before
 	}
 	return body
 }
@@ -206,7 +206,7 @@ func readmeKeyTokens(keys []string) []string {
 
 func readmeKeyRows(markdown string) []readmeKeyRow {
 	var rows []readmeKeyRow
-	for _, line := range strings.Split(markdown, "\n") {
+	for line := range strings.SplitSeq(markdown, "\n") {
 		if !strings.HasPrefix(strings.TrimSpace(line), "|") {
 			continue
 		}

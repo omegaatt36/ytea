@@ -306,13 +306,16 @@ func TestInlineKeyHintsUseKeymapOrAreAbsent(t *testing.T) {
 			model: func(t *testing.T) Model {
 				m := overlayModel(t, focusQueue)
 				m.overlay = overlayInfo
+				m.keys.info.Open = customBinding("w", "w", "open in browser")
 				m.keys.info.Copy = customBinding("x", "x", "copy url")
 				m.keys.info.Close = customBinding("z", "z", "close")
 				return m
 			},
 
 			duplicateHints: []string{"Track info — y copy URL, esc to close"},
-			wantBindings:   func(m Model) []key.Binding { return []key.Binding{m.keys.info.Copy, m.keys.info.Close} },
+			wantBindings: func(m Model) []key.Binding {
+				return []key.Binding{m.keys.info.Open, m.keys.info.Copy, m.keys.info.Close}
+			},
 		},
 	}
 	for _, tt := range tests {

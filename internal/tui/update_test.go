@@ -137,3 +137,55 @@ func TestRepeatKeyCyclesThroughMPV(t *testing.T) {
 		}
 	}
 }
+
+func TestPlaybackErrorClearedOnFileLoaded(t *testing.T) {
+	m := New(Deps{})
+	m.applyEvent(mpv.Event{Name: "end-file", Reason: "error", FileError: "loading failed"})
+	if !m.statusErr || !strings.Contains(m.status, "playback failed: loading failed") {
+		t.Fatalf("statusErr = %v, status = %q, want error status", m.statusErr, m.status)
+	}
+
+	m.applyEvent(mpv.Event{Name: "file-loaded"})
+	if m.statusErr || m.status != "" {
+		t.Errorf("after file-loaded: statusErr = %v, status = %q, want empty", m.statusErr, m.status)
+	}
+}
+
+func TestPlaybackErrorClearedOnPlaybackRestart(t *testing.T) {
+	m := New(Deps{})
+	m.applyEvent(mpv.Event{Name: "end-file", Reason: "error", FileError: "loading failed"})
+	if !m.statusErr || !strings.Contains(m.status, "playback failed: loading failed") {
+		t.Fatalf("statusErr = %v, status = %q, want error status", m.statusErr, m.status)
+	}
+
+	m.applyEvent(mpv.Event{Name: "playback-restart"})
+	if m.statusErr || m.status != "" {
+		t.Errorf("after playback-restart: statusErr = %v, status = %q, want empty", m.statusErr, m.status)
+	}
+}
+
+func TestStatusTimeoutDismissesError(t *testing.T) {
+	m := New(Deps{})
+	m.setError("something failed")
+	v := m.statusVersion
+
+	// Update schedules a timer tick
+	got, cmd := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	gm := got.(Model)
+	if cmd == nil {
+		t.Fatal("Update returned nil cmd, want status timeout tick")
+	}
+
+	// Stale timeout message is ignored
+	gotStale, _ := gm.Update(statusTimeoutMsg{version: v - 1})
+	if gotStale.(Model).status == "" {
+		t.Error("stale statusTimeoutMsg cleared status")
+	}
+
+	// Matching timeout message clears status
+	gotFresh, _ := gm.Update(statusTimeoutMsg{version: v})
+	mFresh := gotFresh.(Model)
+	if mFresh.status != "" || mFresh.statusErr {
+		t.Errorf("status = %q, statusErr = %v, want cleared", mFresh.status, mFresh.statusErr)
+	}
+}

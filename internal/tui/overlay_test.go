@@ -5,10 +5,39 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/omegaatt36/ytea/internal/mpv"
 )
+
+func TestHyperlinkAnsi(t *testing.T) {
+	url := "https://www.youtube.com/watch?v=abc"
+	hl := ansi.SetHyperlink(url) + url + ansi.ResetHyperlink()
+	stripped := ansi.Strip(hl)
+	if stripped != url {
+		t.Errorf("stripped = %q, want %q", stripped, url)
+	}
+	width := ansi.StringWidth(hl)
+	if width != len(url) {
+		t.Errorf("width = %d, want %d", width, len(url))
+	}
+	bg := "hello world background line"
+	rendered := lipgloss.NewCompositor(
+		lipgloss.NewLayer(bg),
+		lipgloss.NewLayer(hl).X(0).Y(0).Z(1),
+	).Render()
+	if !strings.Contains(rendered, url) {
+		t.Errorf("rendered does not contain url: %q", rendered)
+	}
+	fitted := fit(hl, 45)
+	if !strings.Contains(fitted, url) {
+		t.Errorf("fit missing url: %q", fitted)
+	}
+	if ansi.StringWidth(fitted) != 45 {
+		t.Errorf("fit width = %d, want 45", ansi.StringWidth(fitted))
+	}
+}
 
 func devicePickerModel(device string) Model {
 	m := New(Deps{})
@@ -74,7 +103,12 @@ func TestInfoPanel(t *testing.T) {
 	if m = openInfo(t, m); m.overlay != overlayInfo {
 		t.Fatalf("overlay = %v, want info panel", m.overlay)
 	}
-	body := ansi.Strip(strings.Join(m.infoLines(), "\n"))
+	rawLines := strings.Join(m.infoLines(), "\n")
+	wantLink := ansi.SetHyperlink(watchURL) + watchURL + ansi.ResetHyperlink()
+	if !strings.Contains(rawLines, wantLink) {
+		t.Errorf("info lines missing hyperlink %q:\n%s", wantLink, rawLines)
+	}
+	body := ansi.Strip(rawLines)
 	for _, want := range []string{watchURL, "Opus (Opus", "itag 251 · audio/webm", "160 kbps average", "3.8 MiB"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("info lines missing %q:\n%s", want, body)
@@ -132,5 +166,44 @@ func TestOverlayCloseRestoresOriginPane(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestInfoOpenURL(t *testing.T) {
+	for _, key := range []string{"o", "enter"} {
+		t.Run(key, func(t *testing.T) {
+			var opened string
+			m := overlayModel(t, focusQueue)
+			m.deps.OpenURL = func(u string) error {
+				opened = u
+				return nil
+			}
+			m = openInfo(t, m)
+			if m.overlay != overlayInfo {
+				t.Fatalf("overlay = %v, want info panel", m.overlay)
+			}
+			got, cmd := m.update(keyPress(key))
+			m = got.(Model)
+			if cmd == nil {
+				t.Fatal("cmd = nil, want openURL cmd")
+			}
+			msg := cmd()
+			if msg != nil {
+				t.Errorf("cmd() = %v, want nil msg", msg)
+			}
+			if opened != watchURL {
+				t.Errorf("opened = %q, want %q", opened, watchURL)
+			}
+		})
+	}
+}
+
+func TestInfoRenderContainsHyperlink(t *testing.T) {
+	m := overlayModel(t, focusQueue)
+	m.width, m.height = 100, 30
+	m = openInfo(t, m)
+	out := m.render()
+	if !strings.Contains(out, "]8;") {
+		t.Fatalf("m.render() does not contain OSC 8 hyperlink: %q", out)
 	}
 }

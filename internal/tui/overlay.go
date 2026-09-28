@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"os/exec"
+	"runtime"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -56,7 +58,43 @@ func (m Model) handleInfoKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, tea.SetClipboard(e.Filename)
 		}
 		return m, nil
+	case key.Matches(msg, k.Open):
+		if e, _, ok := m.current(); ok && e.Filename != "" {
+			m.setStatus("opening in browser…")
+			return m, m.openURL(e.Filename)
+		}
+		return m, nil
 	}
 	cmd, _ := m.handlePlaybackKey(msg)
 	return m, cmd
+}
+
+func (m Model) openURL(raw string) tea.Cmd {
+	return func() tea.Msg {
+		fn := m.deps.OpenURL
+		if fn == nil {
+			fn = defaultOpenURL
+		}
+		if err := fn(raw); err != nil {
+			return errMsg{err: err}
+		}
+		return nil
+	}
+}
+
+func defaultOpenURL(raw string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.CommandContext(context.Background(), "open", raw)
+	case "windows":
+		cmd = exec.CommandContext(context.Background(), "rundll32", "url.dll,FileProtocolHandler", raw)
+	default:
+		cmd = exec.CommandContext(context.Background(), "xdg-open", raw)
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }

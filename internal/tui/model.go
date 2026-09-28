@@ -23,11 +23,12 @@ import (
 )
 
 const (
-	seekStep   = 5 * time.Second
-	volumeStep = 5
-	thumbCols  = 18
-	thumbRows  = 5
-	cmdTimeout = 5 * time.Second
+	seekStep      = 5 * time.Second
+	volumeStep    = 5
+	thumbCols     = 18
+	thumbRows     = 5
+	cmdTimeout    = 5 * time.Second
+	statusTimeout = 4 * time.Second
 )
 
 type Searcher interface {
@@ -76,6 +77,7 @@ type Deps struct {
 	Normalize     bool
 	InitialTracks map[string]youtube.Track
 	Library       *library.Store
+	OpenURL       func(string) error
 }
 
 type focus int
@@ -134,8 +136,10 @@ type Model struct {
 
 	stream mpv.StreamInfo
 
-	status    string
-	statusErr bool
+	status              string
+	statusErr           bool
+	statusVersion       uint64
+	statusTickScheduled uint64
 
 	thumb thumbImage
 
@@ -238,7 +242,8 @@ type (
 		open bool
 		err  error
 	}
-	errMsg struct{ err error }
+	errMsg           struct{ err error }
+	statusTimeoutMsg struct{ version uint64 }
 )
 
 func (m *Model) syncPlacement() tea.Cmd {
@@ -254,7 +259,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Any message can shift the layout under a directly placed image. Called
 	// before the return: Go leaves the order of nm's read vs. this mutation unspecified.
 	placeCmd := nm.syncPlacement()
-	return nm, tea.Batch(cmd, placeCmd)
+	var statusCmd tea.Cmd
+	if nm.status != "" && nm.statusErr && nm.statusTickScheduled != nm.statusVersion {
+		nm.statusTickScheduled = nm.statusVersion
+		v := nm.statusVersion
+		statusCmd = tea.Tick(statusTimeout, func(time.Time) tea.Msg {
+			return statusTimeoutMsg{version: v}
+		})
+	}
+	return nm, tea.Batch(cmd, placeCmd, statusCmd)
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -372,6 +385,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.setError(msg.err.Error())
 		return m, nil
+
+	case statusTimeoutMsg:
+		if msg.version == m.statusVersion {
+			m.status = ""
+			m.statusErr = false
+		}
+		return m, nil
 	}
 
 	if m.overlay == overlayNone && m.focus == focusSearch {
@@ -419,10 +439,19 @@ func (m *Model) focusSearch() tea.Cmd {
 
 func (m *Model) setStatus(s string) {
 	m.status, m.statusErr = s, false
+	m.statusVersion++
 }
 
 func (m *Model) setError(s string) {
 	m.status, m.statusErr = s, true
+	m.statusVersion++
+}
+
+func (m *Model) clearError() {
+	if m.statusErr {
+		m.status, m.statusErr = "", false
+		m.statusVersion++
+	}
 }
 
 func (m Model) current() (mpv.PlaylistEntry, youtube.Track, bool) {

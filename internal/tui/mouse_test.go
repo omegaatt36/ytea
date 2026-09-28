@@ -18,6 +18,14 @@ func TestMouseEnablesCellMotionOnly(t *testing.T) {
 	}
 }
 
+func TestMouseSuspendedDuringInfoOverlay(t *testing.T) {
+	m := New(Deps{})
+	m.overlay = overlayInfo
+	if got := m.View().MouseMode; got != tea.MouseModeNone {
+		t.Errorf("MouseMode = %v, want None during overlayInfo", got)
+	}
+}
+
 func TestClickSelectsRowUnderPointer(t *testing.T) {
 	m := mouseModel()
 	m.focus = focusResults

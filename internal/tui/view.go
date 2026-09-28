@@ -48,8 +48,13 @@ func (m Model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
 	// Cell motion reports clicks and the wheel but not bare movement, so an idle
-	// pointer costs no renders.
-	v.MouseMode = tea.MouseModeCellMotion
+	// pointer costs no renders. Suspend mouse capture while track info is open
+	// so the terminal handles text selection and link clicks natively.
+	if m.overlay == overlayInfo {
+		v.MouseMode = tea.MouseModeNone
+	} else {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	v.Cursor = m.cursor()
 	v.WindowTitle = "ytea"
 	if e, t, ok := m.current(); ok {
