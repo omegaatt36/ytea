@@ -125,9 +125,21 @@ func (m Model) renderPlayer() string {
 		block = lipgloss.JoinHorizontal(lipgloss.Top, art, "  ", block)
 	}
 
-	status := dimStyle.Render(m.status)
-	if m.statusErr {
-		status = errorStyle.Render(m.status)
+	statusText, statusErr := m.status, m.statusErr
+	if !statusErr {
+		statusText = m.spectrumUnavailable
+		if statusText == "" {
+			statusText = m.spectrumFailure
+		}
+		if statusText == "" {
+			statusText = m.status
+		} else {
+			statusErr = true
+		}
+	}
+	status := dimStyle.Render(statusText)
+	if statusErr {
+		status = errorStyle.Render(statusText)
 	}
 	return box("Now playing", status, padRows(strings.Split(block, "\n")), false, m.width, playerRows)
 }
@@ -175,7 +187,7 @@ func progressBarWidth(width int, elapsed, total string) int {
 // vizWidth leaves the details at least a readable column; the spectrum is
 // decoration and gives way first.
 func (m Model) vizWidth(textW int) int {
-	if !m.showViz {
+	if !m.showViz || m.spectrumUnavailable != "" || m.spectrumFailure != "" {
 		return 0
 	}
 	w := min(48, textW*2/5)

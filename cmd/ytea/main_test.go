@@ -88,16 +88,19 @@ func TestCheckVisualizerTools(t *testing.T) {
 	missing := errors.New("missing binary")
 	for _, tt := range []struct {
 		name       string
+		goos       string
 		missingBin string
 		wantCalls  string
 	}{
-		{name: "both present", wantCalls: "pw-cat,pw-dump"},
-		{name: "pw-cat missing", missingBin: "pw-cat", wantCalls: "pw-cat"},
-		{name: "pw-dump missing", missingBin: "pw-dump", wantCalls: "pw-cat,pw-dump"},
+		{name: "linux tools present", goos: "linux", wantCalls: "pw-cat,pw-dump"},
+		{name: "pw-cat missing", goos: "linux", missingBin: "pw-cat", wantCalls: "pw-cat"},
+		{name: "pw-dump missing", goos: "linux", missingBin: "pw-dump", wantCalls: "pw-cat,pw-dump"},
+		{name: "audiotee present", goos: "darwin", wantCalls: "audiotee"},
+		{name: "audiotee missing", goos: "darwin", missingBin: "audiotee", wantCalls: "audiotee"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var calls []string
-			err := checkVisualizerTools(func(bin string) (string, error) {
+			err := checkVisualizerTools(tt.goos, func(bin string) (string, error) {
 				calls = append(calls, bin)
 				if bin == tt.missingBin {
 					return "", missing
@@ -117,6 +120,10 @@ func TestCheckVisualizerTools(t *testing.T) {
 				t.Errorf("checkVisualizerTools() = %v, want error for %s", err, tt.missingBin)
 			}
 		})
+	}
+
+	if err := checkVisualizerTools("windows", exec.LookPath); err == nil {
+		t.Error("checkVisualizerTools(windows) = nil, want unsupported error")
 	}
 }
 

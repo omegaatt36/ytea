@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,6 +11,69 @@ import (
 
 	"github.com/omegaatt36/ytea/internal/mpv"
 )
+
+type deviceSpectrumStub struct{ devices []string }
+
+func (*deviceSpectrumStub) Levels() <-chan []float64 { return nil }
+func (s *deviceSpectrumStub) SetAudioDevice(device string) error {
+	s.devices = append(s.devices, device)
+	if device != "auto" && device != "" {
+		return errors.New("spectrum only supports the system default output")
+	}
+	return nil
+}
+
+func TestSpectrumFollowsOutputDevice(t *testing.T) {
+	tap := &deviceSpectrumStub{}
+	m := New(Deps{Tap: tap})
+	m.width, m.height = 100, 30
+	m.applyProperty(mpv.Event{Prop: mpv.PropAudioDevice, Data: json.RawMessage(`"coreaudio/other"`)})
+	if got := m.vizWidth(100); got != 0 {
+		t.Errorf("vizWidth on explicit output = %d, want 0", got)
+	}
+	if !m.statusErr || !strings.Contains(m.status, "system default output") {
+		t.Errorf("status on explicit output = %q, want visible reason", m.status)
+	}
+	updated, _ := m.Update(statusTimeoutMsg{version: m.statusVersion})
+	m = updated.(Model)
+	if !strings.Contains(ansi.Strip(m.renderPlayer()), "system default output") {
+		t.Error("output limitation disappeared after status timeout")
+	}
+	m.applyProperty(mpv.Event{Prop: mpv.PropAudioDevice, Data: json.RawMessage(`"auto"`)})
+	if got := m.vizWidth(100); got == 0 {
+		t.Error("visualizer did not return on default output")
+	}
+	if strings.Join(tap.devices, ",") != "coreaudio/other,auto" {
+		t.Errorf("tap devices = %v", tap.devices)
+	}
+}
+
+func TestSpectrumCaptureFailureIsVisible(t *testing.T) {
+	m := New(Deps{Tap: spectrumStub{}})
+	m.width, m.height = 100, 30
+	updated, _ := m.Update(spectrumErrorMsg{err: errors.New("audio recording permission denied")})
+	m = updated.(Model)
+	if !m.statusErr || !strings.Contains(m.status, "audio recording permission denied") {
+		t.Errorf("status = %q, want spectrum failure", m.status)
+	}
+	if got := m.vizWidth(100); got != 0 {
+		t.Errorf("vizWidth after failure = %d, want 0", got)
+	}
+	updated, _ = m.Update(statusTimeoutMsg{version: m.statusVersion})
+	m = updated.(Model)
+	if !strings.Contains(ansi.Strip(m.renderPlayer()), "audio recording permission denied") {
+		t.Error("capture failure disappeared after status timeout")
+	}
+	m.setStatus("queueing a track…")
+	if !strings.Contains(ansi.Strip(m.renderPlayer()), "audio recording permission denied") {
+		t.Error("ordinary status hid a persistent capture failure")
+	}
+	updated, _ = m.Update(spectrumErrorMsg{})
+	m = updated.(Model)
+	if got := m.vizWidth(100); got == 0 {
+		t.Error("spectrum did not return after capture recovered")
+	}
+}
 
 func TestHyperlinkAnsi(t *testing.T) {
 	url := "https://www.youtube.com/watch?v=abc"

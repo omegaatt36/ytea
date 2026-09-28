@@ -40,8 +40,8 @@ type Searcher interface {
 	Lookup(ctx context.Context, url string, limit int) ([]youtube.Track, error)
 }
 
-// Spectrum delivers visualizer band levels. It is satisfied by pipewire.Tap,
-// whose capture is PipeWire-specific and therefore unavailable off Linux.
+// Spectrum delivers visualizer band levels. It is satisfied by pipewire.Tap
+// on Linux and audiotee.Tap on macOS.
 type Spectrum interface {
 	Levels() <-chan []float64
 }
@@ -173,9 +173,11 @@ type Model struct {
 	// historyLast is the queue entry last recorded, so one play is recorded once.
 	historyLast string
 
-	levels   []float64
-	showViz  bool
-	fullHelp bool
+	levels              []float64
+	showViz             bool
+	spectrumUnavailable string
+	spectrumFailure     string
+	fullHelp            bool
 
 	devices   []mpv.AudioDevice
 	deviceCur int
@@ -274,16 +276,20 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.deps.Tap != nil {
 		cmds = append(cmds, waitLevels(m.deps.Tap.Levels()))
+		if source, ok := m.deps.Tap.(interface{ Errors() <-chan error }); ok {
+			cmds = append(cmds, waitSpectrumError(source.Errors()))
+		}
 	}
 	cmds = append(cmds, m.thumb.init())
 	return tea.Batch(cmds...)
 }
 
 type (
-	mpvEventMsg  mpv.Event
-	mpvClosedMsg struct{}
-	levelsMsg    []float64
-	devicesMsg   struct {
+	mpvEventMsg      mpv.Event
+	mpvClosedMsg     struct{}
+	levelsMsg        []float64
+	spectrumErrorMsg struct{ err error }
+	devicesMsg       struct {
 		devices []mpv.AudioDevice
 		open    bool
 		err     error
@@ -444,6 +450,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case levelsMsg:
 		m.levels = msg
 		return m, waitLevels(m.deps.Tap.Levels())
+
+	case spectrumErrorMsg:
+		old := m.spectrumFailure
+		m.spectrumFailure = ""
+		if msg.err != nil {
+			m.spectrumFailure = "spectrum: " + msg.err.Error()
+			m.setError(m.spectrumFailure)
+		} else if m.status == old {
+			m.clearError()
+		}
+		if source, ok := m.deps.Tap.(interface{ Errors() <-chan error }); ok {
+			return m, waitSpectrumError(source.Errors())
+		}
+		return m, nil
 
 	case devicesMsg:
 		if msg.err != nil {

@@ -363,7 +363,22 @@ func (m *Model) applyEvent(ev mpv.Event) tea.Cmd {
 // reconciliation below sees the updated playlist position.
 func (m *Model) applyProperty(ev mpv.Event) tea.Cmd {
 	_, queueCmd := m.updateQueue(mpvEventMsg(ev))
-	if !m.player.apply(ev) {
+	switchesTrack := m.player.apply(ev)
+	if ev.Prop == mpv.PropAudioDevice {
+		if tap, ok := m.deps.Tap.(interface{ SetAudioDevice(string) error }); ok {
+			old := m.spectrumUnavailable
+			m.spectrumUnavailable = ""
+			if err := tap.SetAudioDevice(m.player.deviceName()); err != nil {
+				m.spectrumUnavailable = "spectrum: " + err.Error()
+				if old != m.spectrumUnavailable {
+					m.setError(m.spectrumUnavailable)
+				}
+			} else if m.status == old {
+				m.clearError()
+			}
+		}
+	}
+	if !switchesTrack {
 		return queueCmd
 	}
 	return tea.Batch(queueCmd, m.refreshThumb())
@@ -426,6 +441,10 @@ func waitLevels(ch <-chan []float64) tea.Cmd {
 	return func() tea.Msg {
 		return levelsMsg(<-ch)
 	}
+}
+
+func waitSpectrumError(ch <-chan error) tea.Cmd {
+	return func() tea.Msg { return spectrumErrorMsg{err: <-ch} }
 }
 
 func seconds(s float64) time.Duration {

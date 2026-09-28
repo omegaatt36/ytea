@@ -409,6 +409,11 @@ func (p *Player) SetNormalize(ctx context.Context, on bool) error {
 	return err
 }
 
+// PID is mpv's process id; the macOS spectrum tap captures audio by it.
+func (p *Player) PID() int {
+	return p.cmd.Process.Pid
+}
+
 // Quit stops mpv and waits for it to exit. Closing the IPC connection is what
 // makes mpv quit.
 func (p *Player) Quit() error {

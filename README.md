@@ -7,6 +7,8 @@ Stream music without opening a browser. Features an interactive queue, local pla
 ## Install
 
 Requires [`mpv`](https://mpv.io) and [`yt-dlp`](https://github.com/yt-dlp/yt-dlp).
+The spectrum additionally needs `pw-cat` on Linux, or [`audiotee`](https://github.com/makeusabrew/audiotee) on macOS 14.2+, which your terminal must be allowed to use under System Settings → Privacy & Security → Screen & System Audio Recording.
+On macOS, the spectrum follows the system default output. Choosing a specific `coreaudio/<id>` output disables it because audiotee cannot capture that route.
 
 ```sh
 go install -trimpath -ldflags="-s -w" github.com/omegaatt36/ytea/cmd/ytea@latest

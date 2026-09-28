@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -18,6 +19,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/urfave/cli/v3"
 
+	"github.com/omegaatt36/ytea/internal/audiotee"
 	"github.com/omegaatt36/ytea/internal/history"
 	"github.com/omegaatt36/ytea/internal/library"
 	"github.com/omegaatt36/ytea/internal/mpris"
@@ -70,7 +72,7 @@ func newCommand(action func(context.Context, options) error) *cli.Command {
 			&cli.IntFlag{Name: "volume", Value: 80, Usage: "initial volume in percent", Sources: env("volume"), Destination: &opts.volume},
 			&cli.BoolWithInverseFlag{Name: "normalize", Value: true, Usage: "even out loudness between tracks (toggle with N)", Sources: env("normalize"), Destination: &opts.normalize},
 			&cli.BoolWithInverseFlag{Name: "thumbnails", Value: true, Usage: "show cover thumbnails (kitty graphics when available, else half-block art)", Sources: env("thumbnails"), Destination: &opts.thumbnails},
-			&cli.BoolWithInverseFlag{Name: "visualizer", Value: true, Usage: "show a spectrum of ytea's own audio (Linux with PipeWire)", Sources: env("visualizer"), Destination: &opts.visualizer},
+			&cli.BoolWithInverseFlag{Name: "visualizer", Value: true, Usage: "show a spectrum of ytea's own audio (Linux with PipeWire, macOS 14.2+ with audiotee)", Sources: env("visualizer"), Destination: &opts.visualizer},
 			&cli.BoolWithInverseFlag{Name: "mpris", Value: true, Usage: "register as an MPRIS player for media keys", Sources: env("mpris"), Destination: &opts.mpris},
 			&cli.StringFlag{Name: "audio-device", Usage: `mpv audio device from its list, e.g. "pipewire/<sink>" (Linux) or "coreaudio/<id>" (macOS); default: system default`, Sources: env("audio-device"), Destination: &opts.device},
 			&cli.StringFlag{Name: "mpv", Value: "mpv", Usage: "mpv binary", Sources: env("mpv"), Destination: &opts.mpvBin},
@@ -169,14 +171,14 @@ func run(ctx context.Context, opts options) error {
 		}
 	}
 	if opts.visualizer {
-		if err := checkVisualizerTools(exec.LookPath); err != nil {
+		if err := checkVisualizerTools(runtime.GOOS, exec.LookPath); err != nil {
 			slog.Warn("visualizer disabled", "error", err)
 			opts.visualizer = false
 		}
 	}
 
-	// The spectrum tap finds mpv's stream by node.name in the PipeWire graph
-	// (Linux only); the pid keeps two running instances from tapping each other.
+	// The Linux spectrum tap finds mpv's stream by node.name in the PipeWire
+	// graph; the pid keeps two running instances from tapping each other.
 	streamName := fmt.Sprintf("%s-%d", appName, os.Getpid())
 
 	player, err := mpv.Start(ctx, mpv.Config{
@@ -240,7 +242,10 @@ func run(ctx context.Context, opts options) error {
 	}
 
 	if opts.visualizer {
-		tap := pipewire.NewTap(streamName, spectrumBands)
+		tap := newSpectrumTap(streamName, player.PID())
+		if deviceTap, ok := tap.(interface{ SetAudioDevice(string) error }); ok {
+			_ = deviceTap.SetAudioDevice(opts.device)
+		}
 		go tap.Run(ctx)
 		deps.Tap = tap
 	}
@@ -312,9 +317,32 @@ func sessionFromSnapshot(snapshot mpv.PlaybackState, model tui.Model) session.St
 	return state
 }
 
-// Both tools are needed by the PipeWire tap after the TUI starts.
-func checkVisualizerTools(lookPath func(string) (string, error)) error {
-	for _, bin := range []string{"pw-cat", "pw-dump"} {
+type spectrumTap interface {
+	tui.Spectrum
+	Run(context.Context)
+}
+
+// newSpectrumTap picks the capture backend for this OS; checkVisualizerTools
+// has already rejected the rest.
+func newSpectrumTap(streamName string, mpvPID int) spectrumTap {
+	if runtime.GOOS == "darwin" {
+		return audiotee.NewTap(mpvPID, spectrumBands)
+	}
+	return pipewire.NewTap(streamName, spectrumBands)
+}
+
+// checkVisualizerTools finds the binaries the spectrum tap on goos runs after the TUI starts.
+func checkVisualizerTools(goos string, lookPath func(string) (string, error)) error {
+	var bins []string
+	switch goos {
+	case "linux":
+		bins = []string{"pw-cat", "pw-dump"}
+	case "darwin":
+		bins = []string{"audiotee"}
+	default:
+		return fmt.Errorf("no spectrum capture on %s", goos)
+	}
+	for _, bin := range bins {
 		if _, err := lookPath(bin); err != nil {
 			return fmt.Errorf("find %s in PATH: %w", bin, err)
 		}

@@ -15,7 +15,6 @@ import (
 	"math"
 	"os/exec"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/omegaatt36/ytea/internal/spectrum"
@@ -23,40 +22,29 @@ import (
 
 const (
 	tapRate     = 48000
-	frameRate   = 30
 	rescanEvery = time.Second
 )
 
 // Tap records a playback stream with pw-cat and publishes spectrum levels.
 // It follows the stream across reconnects by re-resolving its serial.
 type Tap struct {
-	node   string
-	bands  int
-	levels chan []float64
-
-	mu    sync.Mutex
-	ring  []float64
-	fresh bool
+	node  string
+	meter *spectrum.Meter
 }
 
 // NewTap returns a Tap for the output stream whose node.name is node.
 func NewTap(node string, bands int) *Tap {
-	return &Tap{
-		node:   node,
-		bands:  bands,
-		levels: make(chan []float64, 1),
-		ring:   make([]float64, spectrum.Size),
-	}
+	return &Tap{node: node, meter: spectrum.NewMeter(bands, tapRate)}
 }
 
 // Levels delivers band levels in [0, 1] at up to 30fps.
 func (t *Tap) Levels() <-chan []float64 {
-	return t.levels
+	return t.meter.Levels()
 }
 
 // Run supervises pw-cat until ctx is cancelled.
 func (t *Tap) Run(ctx context.Context) {
-	go t.publish(ctx)
+	go t.meter.Run(ctx)
 
 	var rec *recording
 	defer func() { rec.stop() }()
@@ -210,7 +198,7 @@ func (t *Tap) record(ctx context.Context, serial int) *recording {
 	return rec
 }
 
-// consume reads interleaved stereo float32 frames into the mono ring buffer.
+// consume downmixes interleaved stereo float32 frames into the meter.
 func (t *Tap) consume(r io.Reader) {
 	br := bufio.NewReaderSize(r, 16*1024)
 	frame := make([]byte, 8)
@@ -224,48 +212,8 @@ func (t *Tap) consume(r io.Reader) {
 		rr := math.Float32frombits(binary.LittleEndian.Uint32(frame[4:8]))
 		chunk = append(chunk, float64(l+rr)/2)
 		if len(chunk) == batch {
-			t.push(chunk)
+			t.meter.Push(chunk)
 			chunk = chunk[:0]
 		}
-	}
-}
-
-func (t *Tap) push(samples []float64) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	n := copy(t.ring, t.ring[len(samples):])
-	copy(t.ring[n:], samples)
-	t.fresh = true
-}
-
-func (t *Tap) publish(ctx context.Context) {
-	analyzer := spectrum.New(t.bands, tapRate)
-	window := make([]float64, spectrum.Size)
-	ticker := time.NewTicker(time.Second / frameRate)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-
-		t.mu.Lock()
-		if t.fresh {
-			copy(window, t.ring)
-		} else {
-			// No samples (paused or stream gone): feed silence so bars fall instead of freezing.
-			clear(window)
-		}
-		t.fresh = false
-		t.mu.Unlock()
-
-		levels := append([]float64(nil), analyzer.Process(window)...)
-		// Drop stale frames rather than block when the UI is behind.
-		select {
-		case <-t.levels:
-		default:
-		}
-		t.levels <- levels
 	}
 }
