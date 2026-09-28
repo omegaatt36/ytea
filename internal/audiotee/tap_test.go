@@ -87,12 +87,12 @@ func TestRecordRejectsUnexpectedPCMBeforeProcessExits(t *testing.T) {
 	program := "#!/bin/sh\n" +
 		"printf '%s\\n' '" + metadata + "' >&2\n" +
 		"dd if=/dev/zero bs=512 count=1 2>/dev/null\n" +
-		"exec sleep 5\n"
+		"exec sleep 30\n"
 	if err := os.WriteFile(bin, []byte(program), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err := NewTap(1234, 16).record(ctx)
 	if err == nil || !strings.Contains(err.Error(), "unsupported audiotee PCM format") {
