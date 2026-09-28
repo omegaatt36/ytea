@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -118,6 +119,8 @@ func (m Model) render() string {
 		body = m.renderPlaylistName(bodyHeight)
 	case m.overlay == overlayPicker, m.focus == focusPlaylists, m.focus == focusPlaylistTracks:
 		body = m.renderPlaylistPanes(bodyHeight)
+	case m.focus == focusQueue:
+		body = m.renderQueue(m.width, bodyHeight, true)
 	default:
 		body = m.renderPanes(bodyHeight)
 	}
@@ -225,6 +228,8 @@ func (m Model) bodyPanes() (left, right listPane, leftW int) {
 		return paneNone, paneNone, m.width
 	case m.overlay == overlayPicker, m.focus == focusPlaylists, m.focus == focusPlaylistTracks:
 		return panePlaylists, panePlaylistTracks, m.width * 2 / 5
+	case m.focus == focusQueue:
+		return paneQueue, paneNone, m.width
 	default:
 		return paneResults, paneQueue, m.resultsWidth()
 	}
@@ -319,14 +324,6 @@ func (m Model) renderPanes(height int) string {
 	_, _, leftW := m.bodyPanes()
 	rightW := m.width - leftW
 
-	queue := make([]string, len(m.queue.entries))
-	for i, e := range m.queue.entries {
-		queue[i] = m.queueLine(i, e, rightW-4)
-	}
-	if len(queue) == 0 {
-		queue = []string{dimStyle.Render("empty — press " + m.keys.results.Enqueue.Help().Key + " on a result")}
-	}
-
 	title := m.resultsHeading()
 	if m.filterOpen() {
 		title += m.filterInput.View()
@@ -347,8 +344,20 @@ func (m Model) renderPanes(height int) string {
 			return line
 		}, m.resultCur, focused, leftW, height)
 	}
-	right := pane(fmt.Sprintf("Queue (%d)", len(m.queue.entries)), queue, m.queueCur, m.focus == focusQueue, rightW, height)
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, m.renderQueue(rightW, height, false))
+}
+
+// The Queue tab has the full width to itself, so its rows carry the position,
+// channel and length that the narrow pane beside Results has no room for.
+func (m Model) renderQueue(width, height int, detailed bool) string {
+	lines := make([]string, len(m.queue.entries))
+	for i, e := range m.queue.entries {
+		lines[i] = m.queueLine(i, e, width-4, detailed)
+	}
+	if len(lines) == 0 {
+		lines = []string{dimStyle.Render("empty — press " + m.keys.results.Enqueue.Help().Key + " on a result")}
+	}
+	return pane(fmt.Sprintf("Queue (%d)", len(m.queue.entries)), lines, m.queueCur, m.focus == focusQueue, width, height)
 }
 
 func (m Model) filterOpen() bool {
@@ -410,6 +419,10 @@ func resultLine(t youtube.Track, width int, match filterMatch, selected bool) st
 	if selected {
 		text, dim = cursorStyle, cursorStyle
 	}
+	return trackLine(t, width, match, text, dim)
+}
+
+func trackLine(t youtube.Track, width int, match filterMatch, text, dim lipgloss.Style) string {
 	meta := formatDuration(t.Duration)
 	if t.Live {
 		meta = "LIVE"
@@ -487,14 +500,18 @@ func mergeSpans(spans []span) []span {
 	return out
 }
 
-func (m Model) queueLine(i int, e mpv.PlaylistEntry, width int) string {
-	title := displayTitle(e, m.tracks[e.Filename])
-	marker := "  "
+func (m Model) queueLine(i int, e mpv.PlaylistEntry, width int, detailed bool) string {
+	t := m.tracks[e.Filename]
+	t.Title = displayTitle(e, t)
+	text, marker := lipgloss.NewStyle(), "  "
 	if i == m.queue.pos {
-		marker = "▶ "
-		return playingStyle.Render(ansi.Truncate(marker+title, width, "…"))
+		text, marker = playingStyle, "▶ "
 	}
-	return ansi.Truncate(marker+title, width, "…")
+	if !detailed {
+		return text.Render(ansi.Truncate(marker+t.Title, width, "…"))
+	}
+	prefix := text.Render(marker) + dimStyle.Render(fmt.Sprintf("%*d ", len(strconv.Itoa(len(m.queue.entries))), i+1))
+	return prefix + trackLine(t, width-lipgloss.Width(prefix), filterMatch{}, text, dimStyle)
 }
 
 func (m Model) renderNowPlaying() string {

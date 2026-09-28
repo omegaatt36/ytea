@@ -18,8 +18,8 @@ and cover art in the terminal, including inside Zellij.
 
 ## Features
 
-- **Search while you listen.** Queue results with `a`, or play one right after the current track with `enter`. The queue is mpv's own playlist, so the next track is resolved ahead of time and track changes are near-gapless.
-- **Paste a link.** A playlist URL pasted into search imports its first 200 tracks straight into the queue, a mix queues its first 25 with the seed playing first, and a single video URL queues just that video. `r` queues a mix seeded by the track playing now.
+- **Search while you listen.** Queue results with `a`, or play one right after the current track with `enter`. The queue is mpv's own playlist, so the next track is resolved ahead of time and track changes are near-gapless. The Results tab shows a compact queue beside the results; the Queue tab gives the queue the full width, with each track's position, channel, and length.
+- **Paste a link.** A playlist URL pasted into search imports its first 200 tracks straight into the queue and switches to the Queue tab, a mix queues its first 25 with the seed playing first, and a single video URL queues just that video. `r` queues a mix seeded by the track playing now.
 - **Keep local playlists.** Save a result or queued track with `s`, or save the whole queue with `S`. Create named playlists and queue a saved track or an entire playlist later. Playlists are stored on this device and do not modify your YouTube account.
 - **Resume your session.** On exit, ytea saves the queue, selected track, volume, and repeat mode locally. On the next launch it restores them with playback paused.
 - **Repeat and shuffle.** `L` cycles repeat through off, all, and one; the now-playing line shows `repeat all` or `repeat one` while it is on. `Z` in the Queue shuffles the tracks after the current one.

@@ -1711,8 +1711,44 @@ func TestRestoredMetadataTitlesUnplayedQueueEntries(t *testing.T) {
 		url: {URL: url, ID: "abc", Title: "Saved song", Channel: "Artist"},
 	}})
 	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"https://www.youtube.com/watch?v=abc"}]`)})
-	if got := m.queueLine(0, m.queue.entries[0], 60); !strings.Contains(got, "Saved song") || strings.Contains(got, url) {
-		t.Errorf("restored queue line = %q, want saved title", got)
+	for _, detailed := range []bool{false, true} {
+		if got := m.queueLine(0, m.queue.entries[0], 60, detailed); !strings.Contains(got, "Saved song") || strings.Contains(got, url) {
+			t.Errorf("restored queue line (detailed=%v) = %q, want saved title", detailed, got)
+		}
+	}
+}
+
+func TestQueueTabShowsDetailedQueueFullWidth(t *testing.T) {
+	m := mouseModel()
+	m.help.SetWidth(m.width)
+	m.input.Blur()
+	m.tracks["u1"] = youtube.Track{Title: "queued 1", Channel: "Some Channel", Duration: 256 * time.Second}
+
+	m.focus = focusResults
+	split := ansi.Strip(m.render())
+	if !strings.Contains(split, "song 00") || strings.Contains(split, "Some Channel") {
+		t.Fatalf("results tab should show results beside a compact queue:\n%s", split)
+	}
+
+	m.focus = focusQueue
+	got := ansi.Strip(m.render())
+	if strings.Contains(got, "song 00") {
+		t.Errorf("queue tab still renders search results:\n%s", got)
+	}
+	if !strings.Contains(got, "2 queued 1") || !strings.Contains(got, "Some Channel · 4:16") {
+		t.Errorf("queue tab row lacks position, channel or length:\n%s", got)
+	}
+	if w, h := lipgloss.Width(m.render()), lipgloss.Height(m.render()); w > m.width || h > m.height {
+		t.Errorf("render() size = %dx%d, want within %dx%d", w, h, m.width, m.height)
+	}
+}
+
+func TestLinkImportSwitchesToQueueTab(t *testing.T) {
+	m := New(Deps{})
+	m.input.SetValue("https://www.youtube.com/playlist?list=PL123")
+	got, _ := m.handleSearchKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m = got.(Model); !atPane(m, focusQueue) {
+		t.Errorf("focus after link import = %v, want queue", m.focus)
 	}
 }
 
@@ -1851,6 +1887,7 @@ func TestWheelMovesCursorOfPaneUnderPointer(t *testing.T) {
 		t.Errorf("wheel past end: queueCur=%d, want 2", m.queueCur)
 	}
 
+	m.focus = focusResults
 	m = wheel(m, cellAt(t, m, "song 00"), tea.MouseWheelUp)
 	if !atPane(m, focusResults) || m.resultCur != 0 {
 		t.Errorf("wheel up over results top: focus=%v resultCur=%d", m.focus, m.resultCur)
@@ -2517,7 +2554,7 @@ func TestFullHelpClosesWithQuestionMarkOrEsc(t *testing.T) {
 }
 
 func TestFullHelpReplacesListPanesKeepsNowPlayingAndStatus(t *testing.T) {
-	m := overlayModel(t, focusQueue)
+	m := overlayModel(t, focusResults)
 	m.results = []youtube.Track{{Title: "A search result"}}
 	m.setStatus("status line text")
 	before := rendered(m)

@@ -106,6 +106,7 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.focus = focusResults
 		m.input.Blur()
 		if link, ok := youtube.RefOf(query); ok {
+			m.focus = focusQueue
 			m.imports = append(m.imports, pendingImport{requestID: requestID})
 			m.setStatus("importing " + quote(link.URL) + "…")
 			return m, tea.Batch(m.spinner.Tick, fetchQueue(m.deps.Searcher, link, requestID))
