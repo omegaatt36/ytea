@@ -50,7 +50,9 @@ ytea
 volume = 70
 normalize = false
 audio-device = ""       # mpv audio device name
-cookies = "cookies.txt" # optional, for YouTube Premium high-bitrate audio
+# optional, for YouTube Premium 256k audio; set one of:
+cookies-from-browser = "firefox" # or "firefox:<profile dir>" for Firefox forks, e.g. Zen
+# cookies = "cookies.txt"        # full login export
 ```
 
 ## Acknowledgements
