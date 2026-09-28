@@ -5,6 +5,7 @@ linters:
     - bodyclose
     - errcheck
     - errorlint
+    - exhaustive
     - govet
     - ineffassign
     - noctx

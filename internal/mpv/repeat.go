@@ -6,40 +6,38 @@ import (
 )
 
 // Repeat is the playlist repeat mode, carried by mpv's loop-playlist and loop-file.
-type Repeat int
+// The zero value behaves as RepeatOff.
+type Repeat string
 
 const (
-	RepeatOff Repeat = iota
-	RepeatAll
-	RepeatOne
+	RepeatOff Repeat = "off"
+	RepeatAll Repeat = "all"
+	RepeatOne Repeat = "one"
 )
 
 func (r Repeat) String() string {
-	switch r {
-	case RepeatAll:
-		return "all"
-	case RepeatOne:
-		return "one"
-	default:
-		return "off"
-	}
+	return string(r)
 }
 
 // ParseRepeat is the inverse of String; unknown values are RepeatOff.
 func ParseRepeat(s string) Repeat {
-	switch s {
-	case "all":
-		return RepeatAll
-	case "one":
-		return RepeatOne
-	default:
-		return RepeatOff
+	switch r := Repeat(s); r {
+	case RepeatOff, RepeatAll, RepeatOne:
+		return r
 	}
+	return RepeatOff
 }
 
 // Next is the mode after r in the cycle off → all → one → off.
 func (r Repeat) Next() Repeat {
-	return (r + 1) % 3
+	switch r {
+	case RepeatAll:
+		return RepeatOne
+	case RepeatOne:
+		return RepeatOff
+	case RepeatOff:
+	}
+	return RepeatAll
 }
 
 // SetRepeat sets loop-file and loop-playlist for r. Mode one turns
@@ -51,6 +49,7 @@ func (p *Player) SetRepeat(ctx context.Context, r Repeat) error {
 		loopPlaylist = "inf"
 	case RepeatOne:
 		loopFile = "inf"
+	case RepeatOff:
 	}
 	// loop-file first: all → one passes through all+one, which reads as one, never off.
 	if _, err := p.client.Command(ctx, "set_property", PropLoopFile, loopFile); err != nil {

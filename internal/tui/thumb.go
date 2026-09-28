@@ -53,9 +53,9 @@ func (g graphicsSupport) String() string {
 		return "kitty direct placement"
 	case graphicsNone:
 		return "half-blocks"
-	default:
-		return "unknown"
+	case graphicsUnknown:
 	}
+	return "unknown"
 }
 
 type (

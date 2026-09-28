@@ -100,6 +100,7 @@ func (m Model) panes(r image.Rectangle) []paneBox {
 		return split(panePlaylists, panePlaylistTracks, r.Dx()*2/5)
 	case focusHistory:
 		return []paneBox{{paneHistory, r}}
+	case focusSearch, focusResults, focusPlaylistTracks:
 	}
 	if w := resultsWidth(r.Dx()); w < r.Dx() {
 		return split(paneResults, paneQueue, w)
@@ -177,9 +178,9 @@ func (m Model) listCursor(p listPane) (cursor, n int) {
 		return m.historyCur, len(m.history)
 	case paneDevices:
 		return m.deviceCur, len(m.devices)
-	default:
-		return 0, 0
+	case paneNone:
 	}
+	return 0, 0
 }
 
 // list is one scrolling list box. head rows stay above the scrolled rows.

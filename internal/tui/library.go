@@ -38,9 +38,9 @@ func (n nameMode) title() string {
 		return "Rename playlist"
 	case nameSeek:
 		return "Seek to"
-	default:
-		return "New playlist"
+	case nameCreate, nameSave:
 	}
+	return "New playlist"
 }
 
 func (m Model) nameKeys() nameKeyMap {
@@ -50,7 +50,7 @@ func (m Model) nameKeys() nameKeyMap {
 		keys.Create.SetHelp("enter", "rename")
 	case nameSeek:
 		keys.Create.SetHelp("enter", "seek")
-	default:
+	case nameCreate, nameSave:
 	}
 	return keys
 }

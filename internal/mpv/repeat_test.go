@@ -18,6 +18,13 @@ func TestRepeatNextCycles(t *testing.T) {
 	}
 }
 
+func TestRepeatZeroValueActsAsOff(t *testing.T) {
+	var r Repeat
+	if got := r.Next(); got != RepeatAll {
+		t.Errorf("zero Repeat.Next() = %q, want %q", got, RepeatAll)
+	}
+}
+
 func TestSetRepeatProperties(t *testing.T) {
 	tests := []struct {
 		mode                   Repeat

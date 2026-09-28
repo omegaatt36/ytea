@@ -28,7 +28,7 @@ func (m Model) dialog(body image.Rectangle) (paneBox, bool) {
 		w, rows = infoDialogWidth, len(m.infoLines())
 	case overlayName:
 		w, rows = nameDialogWidth, 1
-	default:
+	case overlayNone, overlayPicker:
 		return paneBox{}, false
 	}
 	w = dialogWidth(w, body.Dx())
@@ -49,9 +49,9 @@ func (m Model) renderDialog(width, height int) string {
 		return box("Track info", "", padRows(m.infoLines()), true, width, height)
 	case overlayName:
 		return box(m.nameMode.title(), "", []string{" " + m.nameInput.View()}, true, width, height)
-	default:
-		return ""
+	case overlayNone, overlayPicker:
 	}
+	return ""
 }
 
 func (m Model) renderDevices(width, height int) string {

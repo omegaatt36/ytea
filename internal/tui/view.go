@@ -206,6 +206,7 @@ func (m Model) activeTab() focus {
 		return focusPlaylists
 	case focusHistory:
 		return focusHistory
+	case focusSearch, focusResults:
 	}
 	return focusResults
 }

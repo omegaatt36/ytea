@@ -26,6 +26,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	case tea.MouseReleaseMsg:
 		m.drag = paneNone
 	case tea.MouseWheelMsg:
+		//exhaustive:ignore // only vertical wheel scrolls; the rest are foreign buttons.
 		switch mouse.Button {
 		case tea.MouseWheelUp:
 			m.deletePlaylistPending = -1
@@ -81,9 +82,9 @@ func (m Model) draggable(p listPane, i int) bool {
 		return i < len(m.playlists)
 	case panePlaylistTracks:
 		return !m.accountSelected()
-	default:
-		return false
+	case paneNone, paneResults, paneHistory, paneDevices:
 	}
+	return false
 }
 
 // dragTo moves the dragged row to the row under the pointer, the way K and J
@@ -101,6 +102,7 @@ func (m Model) dragTo(x, y int) (tea.Model, tea.Cmd) {
 		m.movePlaylist(from, to)
 	case panePlaylistTracks:
 		m.movePlaylistTrack(from, to)
+	case paneNone, paneResults, paneHistory, paneDevices:
 	}
 	return m, nil
 }
@@ -134,7 +136,7 @@ func (m *Model) focusPane(p listPane) bool {
 	case paneHistory:
 		m.focus = focusHistory
 	case paneDevices:
-	default:
+	case paneNone:
 		return false
 	}
 	m.input.Blur()
@@ -160,5 +162,6 @@ func (m *Model) selectRow(p listPane, i int) {
 		m.historyCur = i
 	case paneDevices:
 		m.deviceCur = i
+	case paneNone:
 	}
 }
