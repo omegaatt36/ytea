@@ -48,6 +48,9 @@ func (t *Tap) Levels() <-chan []float64 {
 	return t.meter.Levels()
 }
 
+// VU delivers left and right RMS levels in [0, 1] at up to 30fps.
+func (t *Tap) VU() <-chan [2]float64 { return t.meter.VU() }
+
 func (t *Tap) Errors() <-chan error { return t.errors }
 
 // SetAudioDevice pauses capture when mpv is routed away from the system default.
@@ -135,6 +138,7 @@ func (t *Tap) record(ctx context.Context) error {
 	stderr := newStderrLog()
 	cmd := exec.CommandContext(ctx, "audiotee",
 		"--include-processes", strconv.Itoa(t.pid),
+		"--stereo",
 		"--sample-rate", strconv.Itoa(tapRate),
 		"--chunk-duration", "0.02",
 	)
@@ -166,12 +170,12 @@ func (t *Tap) record(ctx context.Context) error {
 	return nil
 }
 
-// consume feeds mono s16le samples into the meter.
+// consume feeds interleaved stereo s16le samples into the meter.
 func (t *Tap) consume(ctx context.Context, r io.Reader, format <-chan error) error {
 	br := bufio.NewReaderSize(r, 16*1024)
 	const batch = 256
-	raw := make([]byte, 2*batch)
-	chunk := make([]float64, batch)
+	raw := make([]byte, 4*batch)
+	chunk := make([]float64, 2*batch)
 	checked := false
 	reported := false
 	for {
@@ -194,7 +198,7 @@ func (t *Tap) consume(ctx context.Context, r io.Reader, format <-chan error) err
 		for i := range chunk {
 			chunk[i] = float64(int16(binary.LittleEndian.Uint16(raw[2*i:]))) / 32768
 		}
-		t.meter.Push(chunk)
+		t.meter.PushStereo(chunk)
 		if !reported {
 			t.report(nil)
 			reported = true
@@ -215,7 +219,7 @@ type message struct {
 }
 
 func (m message) formatError() error {
-	if m.Data.SampleRate == tapRate && m.Data.ChannelsPerFrame == 1 && !m.Data.IsFloat && m.Data.Encoding == "pcm_s16le" {
+	if m.Data.SampleRate == tapRate && m.Data.ChannelsPerFrame == 2 && !m.Data.IsFloat && m.Data.Encoding == "pcm_s16le" {
 		return nil
 	}
 	return fmt.Errorf("unsupported audiotee PCM format: %s, %d Hz, %d channels, float=%t", m.Data.Encoding, m.Data.SampleRate, m.Data.ChannelsPerFrame, m.Data.IsFloat)

@@ -42,6 +42,9 @@ func (t *Tap) Levels() <-chan []float64 {
 	return t.meter.Levels()
 }
 
+// VU delivers left and right RMS levels in [0, 1] at up to 30fps.
+func (t *Tap) VU() <-chan [2]float64 { return t.meter.VU() }
+
 // Run supervises pw-cat until ctx is cancelled.
 func (t *Tap) Run(ctx context.Context) {
 	go t.meter.Run(ctx)
@@ -198,21 +201,21 @@ func (t *Tap) record(ctx context.Context, serial int) *recording {
 	return rec
 }
 
-// consume downmixes interleaved stereo float32 frames into the meter.
+// consume feeds interleaved stereo float32 frames into the meter.
 func (t *Tap) consume(r io.Reader) {
 	br := bufio.NewReaderSize(r, 16*1024)
 	frame := make([]byte, 8)
 	const batch = 256
-	chunk := make([]float64, 0, batch)
+	chunk := make([]float64, 0, 2*batch)
 	for {
 		if _, err := io.ReadFull(br, frame); err != nil {
 			return
 		}
 		l := math.Float32frombits(binary.LittleEndian.Uint32(frame[0:4]))
 		rr := math.Float32frombits(binary.LittleEndian.Uint32(frame[4:8]))
-		chunk = append(chunk, float64(l+rr)/2)
-		if len(chunk) == batch {
-			t.meter.Push(chunk)
+		chunk = append(chunk, float64(l), float64(rr))
+		if len(chunk) == 2*batch {
+			t.meter.PushStereo(chunk)
 			chunk = chunk[:0]
 		}
 	}

@@ -2,10 +2,14 @@ package tui
 
 import (
 	"encoding/json"
+	"image"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/omegaatt36/ytea/internal/mpv"
 )
@@ -62,5 +66,66 @@ func TestRenderSpectrumSize(t *testing.T) {
 	got := m.renderSpectrum(40, detailRows)
 	if w, h := lipgloss.Width(got), lipgloss.Height(got); w != 40 || h != detailRows {
 		t.Errorf("renderSpectrum() size = %dx%d, want 40x%d", w, h, detailRows)
+	}
+}
+
+func TestRenderVUMetersSizeAndNeedles(t *testing.T) {
+	m := New(Deps{})
+	m.vu = [2]float64{0, 1}
+	for _, width := range []int{20, 40, 46} {
+		got := m.renderVU(width, vuRows)
+		if w, h := lipgloss.Width(got), lipgloss.Height(got); w != width || h != vuRows {
+			t.Errorf("renderVU(%d) size = %dx%d, want %dx%d", width, w, h, width, vuRows)
+		}
+	}
+	got := m.renderVU(40, vuRows)
+	if !strings.Contains(got, "L VU") || !strings.Contains(got, "R VU") || !strings.Contains(got, "−20") || !strings.Contains(got, "+3") {
+		t.Errorf("renderVU() has no meter markings: %q", got)
+	}
+	if !strings.Contains(ansi.Strip(got), "●") || !strings.ContainsAny(ansi.Strip(got), "╱╲│") {
+		t.Errorf("renderVU() has no pivot or needle: %q", ansi.Strip(got))
+	}
+	quiet, loud := vuDialLarge(19, 0, 'L'), vuDialLarge(19, 1, 'L')
+	if strings.Join(quiet[2:7], "\n") == strings.Join(loud[2:7], "\n") {
+		t.Error("VU needle stayed in place across the full level range")
+	}
+}
+
+func TestVUExpandsPlayerWhenWindowHasRoom(t *testing.T) {
+	m := New(Deps{Tap: spectrumStub{}})
+	m.vizMode = vizVU
+	for _, size := range []image.Point{{80, 24}, {100, 30}, {120, 40}} {
+		m.width, m.height = size.X, size.Y
+		if got := m.screen().player.Dy(); got != vuRows+3 {
+			t.Errorf("%dx%d VU player height = %d, want %d", size.X, size.Y, got, vuRows+3)
+		}
+		lines := strings.Split(m.render(), "\n")
+		if len(lines) != m.height {
+			t.Errorf("render height = %d, want %d", len(lines), m.height)
+		}
+		for i, line := range lines {
+			if w := lipgloss.Width(line); w > m.width {
+				t.Errorf("row %d width = %d, exceeds %d", i, w, m.width)
+			}
+		}
+	}
+	m.height = 18
+	if got := m.screen().player.Dy(); got != playerRows {
+		t.Errorf("small-window player height = %d, want %d", got, playerRows)
+	}
+	m.height = 24
+	m.fullHelp = true
+	if got := m.screen().player.Dy(); got != playerRows {
+		t.Errorf("help player height = %d, want %d", got, playerRows)
+	}
+}
+
+func TestVUNeedleUsesDecibelScale(t *testing.T) {
+	position := func(level float64) int {
+		row, _, _ := strings.Cut(ansi.Strip(vuDial(20, level, 'L')[2]), "\n")
+		return slices.Index([]rune(row), '▲')
+	}
+	if low, zero, high := position(0.05), position(0.5), position(0.707); low > 2 || zero < 15 || zero >= high {
+		t.Errorf("VU needle positions for −20/0/+3 dB = %d/%d/%d, want left/near right/right", low, zero, high)
 	}
 }

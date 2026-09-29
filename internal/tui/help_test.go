@@ -200,8 +200,8 @@ func TestVizBindingNeedsSpectrum(t *testing.T) {
 
 			m.showViz = true
 			got, _ := m.update(v)
-			if toggled := !got.(Model).showViz; toggled != tc.want {
-				t.Errorf("v toggled the spectrum = %v, want %v", toggled, tc.want)
+			if changed := got.(Model).vizMode == vizVU; changed != tc.want {
+				t.Errorf("v selected VU = %v, want %v", changed, tc.want)
 			}
 		})
 	}
@@ -212,6 +212,35 @@ func TestVizBindingNeedsSpectrum(t *testing.T) {
 				t.Errorf("help %q shows v without a spectrum tap", got)
 			}
 		})
+	}
+}
+
+func TestVizCyclesSpectrumVUOff(t *testing.T) {
+	m := New(Deps{Tap: spectrumStub{}})
+	m.input.Blur()
+	m.focus = focusResults
+	for _, want := range []struct {
+		show bool
+		mode vizMode
+	}{
+		{true, vizVU},
+		{false, vizSpectrum},
+		{true, vizSpectrum},
+	} {
+		got, _ := m.update(keyPress("v"))
+		m = got.(Model)
+		if m.showViz != want.show || m.vizMode != want.mode {
+			t.Errorf("after v: show=%v mode=%v, want show=%v mode=%v", m.showViz, m.vizMode, want.show, want.mode)
+		}
+	}
+}
+
+func TestInactiveVisualizationStopsPolling(t *testing.T) {
+	m := New(Deps{Tap: spectrumStub{}})
+	m.showViz = false
+	got, cmd := m.update(levelsMsg{0.5})
+	if cmd != nil || got.(Model).levelsWaiting {
+		t.Errorf("hidden spectrum continued polling: cmd=%v waiting=%v", cmd, got.(Model).levelsWaiting)
 	}
 }
 

@@ -107,7 +107,7 @@ func newKeyMap() keyMap {
 			PrevPane: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev pane")),
 			Output:   key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "output")),
 			Info:     key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "info")),
-			Viz:      key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "spectrum")),
+			Viz:      key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "viz mode")),
 			Radio:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "radio")),
 			GoTo:     key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "go to")),
 			// Digit n seeks to n×10%, as on YouTube.

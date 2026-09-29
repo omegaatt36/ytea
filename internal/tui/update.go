@@ -78,7 +78,26 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, loadStream(m.deps.Player, true)
 	case key.Matches(msg, g.Viz):
-		m.showViz = !m.showViz
+		switch {
+		case !m.showViz:
+			m.showViz = true
+			m.vizMode = vizSpectrum
+		case m.vizMode == vizSpectrum:
+			m.vizMode = vizVU
+		default:
+			m.showViz = false
+			m.vizMode = vizSpectrum
+		}
+		if m.showViz && m.vizMode == vizSpectrum && !m.levelsWaiting {
+			m.levelsWaiting = true
+			return m, waitLevels(m.deps.Tap.Levels())
+		}
+		if m.showViz && m.vizMode == vizVU && !m.vuWaiting {
+			if source, ok := m.deps.Tap.(interface{ VU() <-chan [2]float64 }); ok {
+				m.vuWaiting = true
+				return m, waitVU(source.VU())
+			}
+		}
 		return m, nil
 	case key.Matches(msg, g.Radio):
 		return m.startRadio()
@@ -441,6 +460,10 @@ func waitLevels(ch <-chan []float64) tea.Cmd {
 	return func() tea.Msg {
 		return levelsMsg(<-ch)
 	}
+}
+
+func waitVU(ch <-chan [2]float64) tea.Cmd {
+	return func() tea.Msg { return vuMsg(<-ch) }
 }
 
 func waitSpectrumError(ch <-chan error) tea.Cmd {

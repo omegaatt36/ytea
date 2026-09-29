@@ -1,9 +1,14 @@
 package pipewire
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"math"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 // Trimmed from real pw-dump output.
@@ -41,4 +46,21 @@ func TestFindStreamSerial(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConsumeStereoPCM(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		tap := NewTap("ytea", 16)
+		go tap.meter.Run(t.Context())
+		pcm := make([]byte, 256*8)
+		for i := range 256 {
+			binary.LittleEndian.PutUint32(pcm[8*i:], math.Float32bits(0.5))
+		}
+		tap.consume(bytes.NewReader(pcm))
+		time.Sleep(time.Second / 30)
+		vu := <-tap.VU()
+		if vu[0] < 0.2 || vu[1] != 0 {
+			t.Fatalf("VU = %v, want left active, right silent", vu)
+		}
+	})
 }

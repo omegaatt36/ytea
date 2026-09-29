@@ -16,9 +16,8 @@ import (
 
 // Colors are ANSI palette indexes, so the terminal's theme decides the actual
 // shades. Only 1-8 are used: some themes (Flexoki) make 9-15 darker, not
-// brighter, so they cannot carry emphasis. No style sets a background except
-// the brand, since explicit cell backgrounds stay opaque over a translucent
-// terminal.
+// brighter, so they cannot carry emphasis. The brand and VU faces use a
+// background; the rest stays transparent with translucent terminal themes.
 var (
 	accent  = lipgloss.Color("5")
 	subtle  = lipgloss.Color("8")
@@ -115,9 +114,10 @@ type screen struct {
 }
 
 func (m Model) screen() screen {
-	bodyH := max(3, m.height-headerRows-playerRows-footerRows)
+	playerH := m.playerRows()
+	bodyH := max(3, m.height-headerRows-playerH-footerRows)
 	body := image.Rect(0, headerRows, m.width, headerRows+bodyH)
-	return screen{body: body, player: image.Rect(0, body.Max.Y, m.width, body.Max.Y+playerRows)}
+	return screen{body: body, player: image.Rect(0, body.Max.Y, m.width, body.Max.Y+playerH)}
 }
 
 func (m Model) thumbOrigin() image.Point {

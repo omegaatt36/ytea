@@ -1,19 +1,22 @@
 package audiotee
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
 // Trimmed from real audiotee stderr.
 const (
 	startedLog = `{"message_type":"info","data":{"message":"Starting AudioTee..."}}
-{"message_type":"metadata","data":{"sample_rate":48000,"channels_per_frame":1,"is_float":false,"encoding":"pcm_s16le"}}
+{"message_type":"metadata","data":{"sample_rate":48000,"channels_per_frame":2,"is_float":false,"encoding":"pcm_s16le"}}
 {"message_type":"stream_start"}
 `
 	notPlayingLog = `{"message_type":"info","data":{"message":"Starting AudioTee..."}}
@@ -63,6 +66,27 @@ func TestLastError(t *testing.T) {
 	}
 }
 
+func TestConsumeStereoPCM(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		tap := NewTap(1234, 16)
+		go tap.meter.Run(t.Context())
+		pcm := make([]byte, 256*4)
+		for i := range 256 {
+			binary.LittleEndian.PutUint16(pcm[4*i:], uint16(16384))
+		}
+		format := make(chan error, 1)
+		format <- nil
+		if err := tap.consume(t.Context(), bytes.NewReader(pcm), format); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Second / 30)
+		vu := <-tap.VU()
+		if vu[0] < 0.2 || vu[1] != 0 {
+			t.Fatalf("VU = %v, want left active, right silent", vu)
+		}
+	})
+}
+
 func TestRecordRejectsUnexpectedPCM(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "audiotee")
@@ -86,7 +110,7 @@ func TestRecordRejectsUnexpectedPCMBeforeProcessExits(t *testing.T) {
 	metadata := strings.TrimSpace(wrongFormatLog[:strings.IndexByte(wrongFormatLog, '\n')])
 	program := "#!/bin/sh\n" +
 		"printf '%s\\n' '" + metadata + "' >&2\n" +
-		"dd if=/dev/zero bs=512 count=1 2>/dev/null\n" +
+		"dd if=/dev/zero bs=1024 count=1 2>/dev/null\n" +
 		"exec sleep 30\n"
 	if err := os.WriteFile(bin, []byte(program), 0o755); err != nil {
 		t.Fatal(err)

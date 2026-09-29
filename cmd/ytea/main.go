@@ -72,7 +72,7 @@ func newCommand(action func(context.Context, options) error) *cli.Command {
 			&cli.IntFlag{Name: "volume", Value: 80, Usage: "initial volume in percent", Sources: env("volume"), Destination: &opts.volume},
 			&cli.BoolWithInverseFlag{Name: "normalize", Value: true, Usage: "even out loudness between tracks (toggle with N)", Sources: env("normalize"), Destination: &opts.normalize},
 			&cli.BoolWithInverseFlag{Name: "thumbnails", Value: true, Usage: "show cover thumbnails (kitty graphics when available, else half-block art)", Sources: env("thumbnails"), Destination: &opts.thumbnails},
-			&cli.BoolWithInverseFlag{Name: "visualizer", Value: true, Usage: "show a spectrum of ytea's own audio (Linux with PipeWire, macOS 14.2+ with audiotee)", Sources: env("visualizer"), Destination: &opts.visualizer},
+			&cli.BoolWithInverseFlag{Name: "visualizer", Value: true, Usage: "show spectrum or stereo VU meters for ytea's audio (Linux with PipeWire, macOS 14.2+ with audiotee)", Sources: env("visualizer"), Destination: &opts.visualizer},
 			&cli.BoolWithInverseFlag{Name: "mpris", Value: true, Usage: "register as an MPRIS player for media keys", Sources: env("mpris"), Destination: &opts.mpris},
 			&cli.StringFlag{Name: "audio-device", Usage: `mpv audio device from its list, e.g. "pipewire/<sink>" (Linux) or "coreaudio/<id>" (macOS); default: system default`, Sources: env("audio-device"), Destination: &opts.device},
 			&cli.StringFlag{Name: "mpv", Value: "mpv", Usage: "mpv binary", Sources: env("mpv"), Destination: &opts.mpvBin},

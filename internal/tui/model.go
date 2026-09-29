@@ -174,7 +174,11 @@ type Model struct {
 	historyLast string
 
 	levels              []float64
+	vu                  [2]float64
+	levelsWaiting       bool
+	vuWaiting           bool
 	showViz             bool
+	vizMode             vizMode
 	spectrumUnavailable string
 	spectrumFailure     string
 	fullHelp            bool
@@ -263,6 +267,7 @@ func New(deps Deps) Model {
 		thumb:                 newThumbImage(deps.Thumbnails, deps.HTTP),
 		player:                playerState{idle: true, volume: 100, normalize: deps.Normalize},
 		showViz:               deps.Tap != nil,
+		levelsWaiting:         deps.Tap != nil,
 		rng:                   rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
 	}
 }
@@ -288,6 +293,7 @@ type (
 	mpvEventMsg      mpv.Event
 	mpvClosedMsg     struct{}
 	levelsMsg        []float64
+	vuMsg            [2]float64
 	spectrumErrorMsg struct{ err error }
 	devicesMsg       struct {
 		devices []mpv.AudioDevice
@@ -449,7 +455,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case levelsMsg:
 		m.levels = msg
-		return m, waitLevels(m.deps.Tap.Levels())
+		m.levelsWaiting = false
+		if m.showViz && m.vizMode == vizSpectrum {
+			m.levelsWaiting = true
+			return m, waitLevels(m.deps.Tap.Levels())
+		}
+		return m, nil
+
+	case vuMsg:
+		m.vu = msg
+		m.vuWaiting = false
+		if source, ok := m.deps.Tap.(interface{ VU() <-chan [2]float64 }); ok && m.showViz && m.vizMode == vizVU {
+			m.vuWaiting = true
+			return m, waitVU(source.VU())
+		}
+		return m, nil
 
 	case spectrumErrorMsg:
 		old := m.spectrumFailure
