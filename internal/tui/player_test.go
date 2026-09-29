@@ -69,35 +69,55 @@ func TestRenderSpectrumSize(t *testing.T) {
 	}
 }
 
-func TestRenderVUMetersSizeAndNeedles(t *testing.T) {
+func TestRenderVUShowsTwinNeedleDials(t *testing.T) {
 	m := New(Deps{})
 	m.vu = [2]float64{0, 1}
-	for _, width := range []int{20, 40, 46} {
-		got := m.renderVU(width, vuRows)
-		if w, h := lipgloss.Width(got), lipgloss.Height(got); w != width || h != vuRows {
-			t.Errorf("renderVU(%d) size = %dx%d, want %dx%d", width, w, h, width, vuRows)
+	for _, width := range []int{26, 40, 46} {
+		got := m.renderVU(width, detailRows)
+		if w, h := lipgloss.Width(got), lipgloss.Height(got); w != width || h != detailRows {
+			t.Errorf("renderVU(%d) size = %dx%d, want %dx%d", width, w, h, width, detailRows)
 		}
 	}
-	got := m.renderVU(40, vuRows)
-	if !strings.Contains(got, "L VU") || !strings.Contains(got, "R VU") || !strings.Contains(got, "−20") || !strings.Contains(got, "+3") {
-		t.Errorf("renderVU() has no meter markings: %q", got)
+	got := ansi.Strip(m.renderVU(40, detailRows))
+	if !strings.Contains(got, "L VU") || !strings.Contains(got, "R VU") || !strings.Contains(got, "−20") || !strings.Contains(got, "+3") || !strings.Contains(got, "●") {
+		t.Errorf("renderVU() lacks analog dial details: %q", got)
 	}
-	if !strings.Contains(ansi.Strip(got), "●") || !strings.ContainsAny(ansi.Strip(got), "╱╲│") {
-		t.Errorf("renderVU() has no pivot or needle: %q", ansi.Strip(got))
+	if scale := ansi.Strip(analogDial(17, 0.5, 'L')[1]); !strings.Contains(scale, "−10") || !strings.Contains(scale, "0") {
+		t.Errorf("17-column dial lacks intermediate scale marks: %q", scale)
 	}
-	quiet, loud := vuDialLarge(19, 0, 'L'), vuDialLarge(19, 1, 'L')
-	if strings.Join(quiet[2:7], "\n") == strings.Join(loud[2:7], "\n") {
-		t.Error("VU needle stayed in place across the full level range")
+	if scale := ansi.Strip(analogDial(13, 0.5, 'L')[1]); !strings.Contains(scale, "−20") || !strings.Contains(scale, "+3") {
+		t.Errorf("13-column dial lacks endpoint scale marks: %q", scale)
+	}
+	for _, width := range []int{18, 19} {
+		base := ansi.Strip(analogDial(width, 0.5, 'L')[4])
+		if pivot := slices.Index([]rune(base), '●'); pivot != (width-1)/2 {
+			t.Errorf("%d-column dial pivot at %d, want %d", width, pivot, (width-1)/2)
+		}
+	}
+	if strings.Contains(m.renderVU(40, detailRows), "\x1b[43m") {
+		t.Error("analog VU uses a solid yellow face")
+	}
+	quiet, loud := analogDial(19, 0, 'L'), analogDial(19, 1, 'L')
+	if strings.Join(quiet[2:4], "\n") == strings.Join(loud[2:4], "\n") {
+		t.Error("analog needle stays in place across the full level range")
+	}
+	compact := ansi.Strip(m.renderVU(40, detailRows-1))
+	if !strings.Contains(compact, "L VU") || !strings.Contains(compact, "R VU") || !strings.Contains(compact, "▲") {
+		t.Errorf("compact VU lost its analog needle: %q", compact)
 	}
 }
 
-func TestVUExpandsPlayerWhenWindowHasRoom(t *testing.T) {
+func TestVUDoesNotResizePlayer(t *testing.T) {
 	m := New(Deps{Tap: spectrumStub{}})
 	m.vizMode = vizVU
-	for _, size := range []image.Point{{80, 24}, {100, 30}, {120, 40}} {
+	for _, size := range []image.Point{{80, 18}, {80, 24}, {100, 30}, {120, 40}} {
 		m.width, m.height = size.X, size.Y
-		if got := m.screen().player.Dy(); got != vuRows+3 {
-			t.Errorf("%dx%d VU player height = %d, want %d", size.X, size.Y, got, vuRows+3)
+		want := playerRows
+		if m.height >= 20 {
+			want++
+		}
+		if got := m.screen().player.Dy(); got != want {
+			t.Errorf("%dx%d VU player height = %d, want %d", size.X, size.Y, got, want)
 		}
 		lines := strings.Split(m.render(), "\n")
 		if len(lines) != m.height {
@@ -108,6 +128,11 @@ func TestVUExpandsPlayerWhenWindowHasRoom(t *testing.T) {
 				t.Errorf("row %d width = %d, exceeds %d", i, w, m.width)
 			}
 		}
+		m.vizMode = vizSpectrum
+		if got := m.screen().player.Dy(); got != want {
+			t.Errorf("%dx%d spectrum player height = %d, want %d", size.X, size.Y, got, want)
+		}
+		m.vizMode = vizVU
 	}
 	m.height = 18
 	if got := m.screen().player.Dy(); got != playerRows {
@@ -120,12 +145,21 @@ func TestVUExpandsPlayerWhenWindowHasRoom(t *testing.T) {
 	}
 }
 
-func TestVUNeedleUsesDecibelScale(t *testing.T) {
-	position := func(level float64) int {
-		row, _, _ := strings.Cut(ansi.Strip(vuDial(20, level, 'L')[2]), "\n")
-		return slices.Index([]rune(row), '▲')
+func TestPlayerSettingsStayOnBottomDetailRow(t *testing.T) {
+	m := New(Deps{})
+	m.width, m.height = 100, 30
+	m.player.volume = 70
+	lines := strings.Split(ansi.Strip(m.renderPlayer()), "\n")
+	if !strings.Contains(lines[detailRows], "vol 70%") {
+		t.Errorf("last detail row = %q, want volume settings", lines[detailRows])
 	}
-	if low, zero, high := position(0.05), position(0.5), position(0.707); low > 2 || zero < 15 || zero >= high {
-		t.Errorf("VU needle positions for −20/0/+3 dB = %d/%d/%d, want left/near right/right", low, zero, high)
+}
+
+func TestVULevelUsesDecibelScale(t *testing.T) {
+	for _, width := range []int{12, 19, 24} {
+		low, zero, high := vuPosition(width, 0.05), vuPosition(width, 0.5), vuPosition(width, 0.707)
+		if low >= zero || zero >= high {
+			t.Errorf("dial width %d: needle at −20/0/+3 dB = %d/%d/%d, want increasing positions", width, low, zero, high)
+		}
 	}
 }

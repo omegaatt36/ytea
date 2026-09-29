@@ -23,7 +23,7 @@ const boxInset = 2
 func box(title, note string, rows []string, focused bool, width, height int) string {
 	border, label := dimStyle, dimStyle.Bold(true)
 	if focused {
-		border, label = lipgloss.NewStyle().Foreground(accent), headStyle
+		label = headStyle
 	}
 	if title != "" {
 		title = label.Render(title)
@@ -103,6 +103,9 @@ func (m Model) panes(r image.Rectangle) []paneBox {
 	case focusSearch, focusResults, focusPlaylistTracks:
 	}
 	if w := resultsWidth(r.Dx()); w < r.Dx() {
+		if len(m.results.tracks) == 0 {
+			w = max(30, r.Dx()*2/5)
+		}
 		return split(paneResults, paneQueue, w)
 	}
 	return []paneBox{{paneResults, r}}
@@ -185,10 +188,10 @@ func (m Model) listCursor(p listPane) (cursor, n int) {
 
 // list is one scrolling list box. head rows stay above the scrolled rows.
 type list struct {
-	title, empty string
-	head         []string
-	n, cursor    int
-	focused      bool
+	title, empty, emptyTitle string
+	head                     []string
+	n, cursor                int
+	focused                  bool
 	// row renders item i in w cells; selected rows draw on the cursor bar.
 	row func(i, w int, selected bool) string
 }
@@ -202,7 +205,15 @@ func (l list) render(width, height int) string {
 	innerW := width - 2
 	rows := slices.Clone(l.head)
 	if l.n == 0 {
-		rows = append(rows, " "+dimStyle.Render(l.empty))
+		if l.emptyTitle != "" && visible >= 6 {
+			rows = append(rows, make([]string, max(0, (visible-2)/2))...)
+			rows = append(rows,
+				centerLine(headStyle.Render(l.emptyTitle), innerW),
+				centerLine(dimStyle.Render(l.empty), innerW),
+			)
+		} else {
+			rows = append(rows, " "+dimStyle.Render(l.empty))
+		}
 	}
 	start := scrollStart(l.cursor, visible)
 	for i := start; i < min(l.n, start+visible); i++ {
@@ -214,6 +225,10 @@ func (l list) render(width, height int) string {
 		note = dimStyle.Render(fmt.Sprintf("%d/%d", l.cursor+1, l.n))
 	}
 	return box(l.title, note, rows, l.focused, width, height)
+}
+
+func centerLine(s string, width int) string {
+	return strings.Repeat(" ", max(0, (width-lipgloss.Width(s))/2)) + s
 }
 
 // listRow keeps the cursor visible in an unfocused list as a thin mark, so
@@ -255,6 +270,9 @@ func (m Model) list(p listPane) list {
 	case paneResults:
 		rows := m.results.rows()
 		l.title, l.empty = resultsTitle, "press "+m.keys.global.Search.Help().Key+" to search"
+		if len(m.results.tracks) == 0 {
+			l.emptyTitle = "Search music"
+		}
 		if len(m.results.tracks) > 0 {
 			more := ""
 			if m.results.canLoadMore() {

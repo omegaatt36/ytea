@@ -86,6 +86,45 @@ func TestNarrowResultsTabDropsQueuePane(t *testing.T) {
 	}
 }
 
+func TestEmptyResultsShowCenteredSearchPrompt(t *testing.T) {
+	m := New(Deps{})
+	m.width, m.height = 120, 36
+	m.input.Blur()
+	m.focus = focusResults
+	lines := strings.Split(rendered(m), "\n")
+	promptRow := -1
+	for i, line := range lines {
+		if strings.Contains(line, "Search music") {
+			promptRow = i
+			break
+		}
+	}
+	if promptRow < m.screen().body.Min.Y+5 || promptRow > m.screen().body.Max.Y-5 {
+		t.Errorf("empty search prompt row = %d, want it inside the body with breathing room", promptRow)
+	}
+	if !strings.Contains(rendered(m), "press / to search") {
+		t.Error("empty results lost the search shortcut")
+	}
+}
+
+func TestResultsSplitFollowsAvailableContent(t *testing.T) {
+	m := New(Deps{})
+	m.width, m.height = 120, 30
+	m.input.Blur()
+	m.focus = focusResults
+	emptyResults := m.paneRect(paneResults).Dx()
+	emptyQueue := m.paneRect(paneQueue).Dx()
+	if emptyResults >= emptyQueue {
+		t.Errorf("empty Results/Queue widths = %d/%d, want the queue wider", emptyResults, emptyQueue)
+	}
+	m.results.tracks = []youtube.Track{{Title: "found song"}}
+	loadedResults := m.paneRect(paneResults).Dx()
+	loadedQueue := m.paneRect(paneQueue).Dx()
+	if loadedResults <= loadedQueue {
+		t.Errorf("loaded Results/Queue widths = %d/%d, want the results wider", loadedResults, loadedQueue)
+	}
+}
+
 // Every screen fills the window exactly: no row is wider, and the row count
 // matches so the terminal never scrolls or leaves stale rows.
 func TestRenderFillsWindow(t *testing.T) {

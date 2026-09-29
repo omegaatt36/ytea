@@ -82,10 +82,7 @@ func (p playerState) deviceName() string {
 	return p.device
 }
 
-const (
-	detailRows = thumbRows - 1
-	vuRows     = 9
-)
+const detailRows = thumbRows
 
 type vizMode uint8
 
@@ -95,11 +92,8 @@ const (
 )
 
 func (m Model) playerContentRows() int {
-	if m.showViz && m.vizMode == vizVU && m.height >= 22 && !m.fullHelp && m.overlay == overlayNone {
-		_, textW := m.playerText()
-		if m.vizWidth(textW) > 0 {
-			return vuRows
-		}
+	if m.height < 20 || m.fullHelp {
+		return thumbRows - 1
 	}
 	return detailRows
 }
@@ -128,8 +122,6 @@ func (m Model) renderPlayer() string {
 	} else {
 		details = append(details, dimStyle.Render("nothing playing"))
 	}
-	details = append(details, m.modeLine())
-
 	vizW := m.vizWidth(textW)
 	infoW := textW - vizW
 	rows := make([]string, contentRows)
@@ -137,6 +129,9 @@ func (m Model) renderPlayer() string {
 		if i < len(details) {
 			rows[i] = details[i]
 		}
+	}
+	rows[contentRows-1] = m.modeLine()
+	for i := range rows {
 		rows[i] = fit(rows[i], infoW)
 	}
 	block := strings.Join(rows, "\n")
@@ -220,10 +215,15 @@ func (m Model) vizWidth(textW int) int {
 		return 0
 	}
 	w := min(48, textW*2/5)
-	if m.vizMode == vizVU && w < 20 {
-		return 0
+	minTextW := 32
+	if m.vizMode == vizVU {
+		w = min(48, (textW+4)/2)
+		minTextW = 26
+		if w < 24 {
+			return 0
+		}
 	}
-	if textW-w < 32 {
+	if textW-w < minTextW {
 		return 0
 	}
 	return w
@@ -299,39 +299,54 @@ func (m Model) renderVU(width, height int) string {
 	leftW := (width - 2) / 2
 	rightW := width - 2 - leftW
 	rows := make([]string, height)
-	if height >= vuRows {
-		left, right := vuDialLarge(leftW, m.vu[0], 'L'), vuDialLarge(rightW, m.vu[1], 'R')
-		for i := range vuRows {
+	if height >= detailRows {
+		left, right := analogDial(leftW, m.vu[0], 'L'), analogDial(rightW, m.vu[1], 'R')
+		for i := range detailRows {
 			rows[i] = left[i] + "  " + right[i]
 		}
 	} else {
-		left, right := vuDial(leftW, m.vu[0], 'L'), vuDial(rightW, m.vu[1], 'R')
+		left, right := compactAnalogDial(leftW, m.vu[0], 'L'), compactAnalogDial(rightW, m.vu[1], 'R')
 		for i := range 4 {
 			rows[i] = left[i] + "  " + right[i]
 		}
 	}
-	for i := 4; i < height; i++ {
-		if rows[i] != "" {
-			continue
-		}
+	for i := detailRows; i < height; i++ {
 		rows[i] = strings.Repeat(" ", width)
 	}
 	return strings.Join(rows, "\n")
 }
 
-func vuDialLarge(width int, level float64, channel rune) [vuRows]string {
-	var rows [vuRows]string
-	face := []rune("╭" + strings.Repeat("─", width-2) + "╮")
-	copy(face[(width-4)/2:], []rune{channel, ' ', 'V', 'U'})
-	rows[0] = dimStyle.Render(string(face))
+func compactAnalogDial(width int, level float64, channel rune) [4]string {
+	frame := []rune("╭" + strings.Repeat("─", width-2) + "╮")
+	copy(frame[(width-4)/2:], []rune{channel, ' ', 'V', 'U'})
+	needle := []rune("│" + strings.Repeat(" ", width-2) + "│")
+	needle[vuPosition(width, level)] = '▲'
+	base := []rune("╰" + strings.Repeat("─", width-2) + "╯")
+	base[(width-1)/2] = '●'
+	needleStyle := lipgloss.NewStyle().Foreground(match)
+	if level > 0.5 {
+		needleStyle = errorStyle
+	}
+	return [4]string{
+		dimStyle.Render(string(frame)),
+		lipgloss.NewStyle().Foreground(match).Render(string(vuScale(width))),
+		needleStyle.Render(string(needle)),
+		dimStyle.Render(string(base)),
+	}
+}
 
-	faceStyle := lipgloss.NewStyle().Background(match).Foreground(lipgloss.Color("0"))
-	needleStyle := lipgloss.NewStyle().Background(match).Foreground(danger)
-	rows[1] = faceStyle.Render(string(vuScale(width)))
+// analogDial draws an arc and moving needle in two braille rows. It keeps the
+// twin-dial shape without making the player taller than the album art.
+func analogDial(width int, level float64, channel rune) [detailRows]string {
+	var rows [detailRows]string
+	frame := []rune("╭" + strings.Repeat("─", width-2) + "╮")
+	copy(frame[(width-4)/2:], []rune{channel, ' ', 'V', 'U'})
+	rows[0] = dimStyle.Render(string(frame))
+	rows[1] = lipgloss.NewStyle().Foreground(match).Render(string(vuScale(width)))
 
-	const pixelRows = 20
-	arc := make([][]uint8, 5)
-	needle := make([][]uint8, 5)
+	const pixelRows = 8
+	arc := make([][]uint8, pixelRows/4)
+	needle := make([][]uint8, pixelRows/4)
 	for i := range arc {
 		arc[i] = make([]uint8, width)
 		needle[i] = make([]uint8, width)
@@ -339,14 +354,14 @@ func vuDialLarge(width int, level float64, channel rune) [vuRows]string {
 	center, radius := width-1, width-3
 	arcY := func(x int) int {
 		t := min(max(float64(x-center)/float64(radius), -1), 1)
-		return 1 + int(math.Round(8*(1-math.Sqrt(1-t*t))))
+		return int(math.Round(3 * (1 - math.Sqrt(1-t*t))))
 	}
 	for x := center - radius; x <= center+radius; x++ {
 		setVUDot(arc, x, arcY(x))
 	}
-	for _, db := range []float64{-20, -10, -5, 0, 3} {
+	for _, db := range []float64{-20, -10, 0, 3} {
 		x := 2 * vuPosition(width, 0.5*math.Pow(10, db/20))
-		for y := arcY(x); y <= min(arcY(x)+2, pixelRows-1); y++ {
+		for y := arcY(x); y <= min(arcY(x)+1, pixelRows-1); y++ {
 			setVUDot(arc, x, y)
 		}
 	}
@@ -359,17 +374,17 @@ func vuDialLarge(width int, level float64, channel rune) [vuRows]string {
 		y := pivotY + int(math.Round(float64(endY-pivotY)*float64(step)/float64(steps)))
 		setVUDot(needle, x, y)
 	}
-	for i := range 5 {
-		var row strings.Builder
-		var segment strings.Builder
+	arcStyle := lipgloss.NewStyle().Foreground(match)
+	for i := range arc {
+		var row, segment strings.Builder
 		red := false
 		flush := func() {
 			if segment.Len() == 0 {
 				return
 			}
-			style := faceStyle
+			style := arcStyle
 			if red {
-				style = needleStyle
+				style = errorStyle
 			}
 			row.WriteString(style.Render(segment.String()))
 			segment.Reset()
@@ -383,19 +398,18 @@ func vuDialLarge(width int, level float64, channel rune) [vuRows]string {
 			if x == 0 || x == width-1 {
 				cell = '│'
 			}
-			if colorNeedle := needle[i][x] != 0; colorNeedle != red {
+			if onNeedle := needle[i][x] != 0; onNeedle != red {
 				flush()
-				red = colorNeedle
+				red = onNeedle
 			}
 			segment.WriteRune(cell)
 		}
 		flush()
 		rows[i+2] = row.String()
 	}
-	pivot := []rune("│" + strings.Repeat(" ", width-2) + "│")
-	pivot[(width-1)/2] = '●'
-	rows[7] = faceStyle.Render(string(pivot))
-	rows[8] = dimStyle.Render("╰" + strings.Repeat("─", width-2) + "╯")
+	base := []rune("╰" + strings.Repeat("─", width-2) + "╯")
+	base[(width-1)/2] = '●'
+	rows[4] = dimStyle.Render(string(base))
 	return rows
 }
 
@@ -412,36 +426,15 @@ func vuScale(width int) []rune {
 	mark := func(at int, label string) { copy(scale[at:width-1], []rune(label)) }
 	mark(1, "−")
 	mark(width-2, "+")
-	if width >= 14 {
+	if width >= 12 {
 		mark(1, "−20")
 		mark(width-3, "+3")
 	}
-	if width >= 18 {
+	if width >= 16 {
 		mark(vuPosition(width, math.Pow(10, -10.0/20)*0.5)-1, "−10")
 		mark(vuPosition(width, 0.5)-1, "0")
 	}
 	return scale
-}
-
-func vuDial(width int, level float64, channel rune) [4]string {
-	face := []rune("╭" + strings.Repeat("─", width-2) + "╮")
-	copy(face[(width-4)/2:], []rune{channel, ' ', 'V', 'U'})
-	scale := vuScale(width)
-	needle := []rune("│" + strings.Repeat(" ", width-2) + "│")
-	position := vuPosition(width, level)
-	needle[position] = '▲'
-	base := []rune("╰" + strings.Repeat("─", width-2) + "╯")
-	base[width/2] = '●'
-	needleColor := match
-	if level > 0.5 {
-		needleColor = danger
-	}
-	return [4]string{
-		dimStyle.Render(string(face)),
-		lipgloss.NewStyle().Foreground(match).Render(string(scale)),
-		lipgloss.NewStyle().Foreground(needleColor).Render(string(needle)),
-		dimStyle.Render(string(base)),
-	}
 }
 
 func vuPosition(width int, level float64) int {

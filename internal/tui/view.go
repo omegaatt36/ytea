@@ -16,8 +16,8 @@ import (
 
 // Colors are ANSI palette indexes, so the terminal's theme decides the actual
 // shades. Only 1-8 are used: some themes (Flexoki) make 9-15 darker, not
-// brighter, so they cannot carry emphasis. The brand and VU faces use a
-// background; the rest stays transparent with translucent terminal themes.
+// brighter, so they cannot carry emphasis. Surfaces stay transparent for
+// translucent terminal themes; color identifies focus, playback and peaks.
 var (
 	accent  = lipgloss.Color("5")
 	subtle  = lipgloss.Color("8")
@@ -28,11 +28,11 @@ var (
 
 	brandStyle    = lipgloss.NewStyle().Bold(true).Reverse(true).Foreground(accent).Padding(0, 1)
 	tabStyle      = lipgloss.NewStyle().Foreground(subtle).Padding(0, 1)
-	tabActive     = lipgloss.NewStyle().Bold(true).Foreground(accent).Padding(0, 1)
+	tabActive     = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(accent).Padding(0, 1)
 	headStyle     = lipgloss.NewStyle().Bold(true).Foreground(accent)
 	dimStyle      = lipgloss.NewStyle().Foreground(subtle)
 	mutedStyle    = lipgloss.NewStyle().Foreground(muted)
-	cursorStyle   = lipgloss.NewStyle().Bold(true).Foreground(accent)
+	cursorStyle   = lipgloss.NewStyle().Bold(true)
 	cursorDim     = mutedStyle
 	cursorMark    = lipgloss.NewStyle().Foreground(accent)
 	playingStyle  = lipgloss.NewStyle().Foreground(playing)
@@ -40,7 +40,7 @@ var (
 	nowTitleStyle = lipgloss.NewStyle().Bold(true)
 	matchStyle    = lipgloss.NewStyle().Bold(true).Foreground(match)
 
-	vizGradient = []string{"4", "6", "2", "3", "5", "1"}
+	vizGradient = []string{"2", "2", "6", "6"}
 )
 
 func (m Model) View() tea.View {
