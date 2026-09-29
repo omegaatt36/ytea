@@ -287,7 +287,7 @@ func run(ctx context.Context, opts options) error {
 func tracksFromSession(saved session.State) map[string]youtube.Track {
 	tracks := make(map[string]youtube.Track, len(saved.Metadata))
 	for url, info := range saved.Metadata {
-		tracks[url] = youtube.Track{URL: url, ID: info.ID, Title: info.Title, Channel: info.Channel, Live: info.Live}
+		tracks[url] = youtube.Track{URL: url, ID: info.ID, Title: info.Title, Channel: info.Channel, Duration: info.Duration, Live: info.Live}
 	}
 	return tracks
 }
@@ -303,7 +303,7 @@ func sessionFromSnapshot(snapshot mpv.PlaybackState, model tui.Model) session.St
 	}
 	for i, url := range snapshot.URLs {
 		track := model.KnownTrack(url)
-		info := session.Metadata{ID: track.ID, Title: track.Title, Channel: track.Channel, Live: track.Live}
+		info := session.Metadata{ID: track.ID, Title: track.Title, Channel: track.Channel, Duration: track.Duration, Live: track.Live}
 		if info.Title == "" && i < len(snapshot.Entries) {
 			info.Title = snapshot.Entries[i].Title
 		}

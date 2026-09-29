@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/omegaatt36/ytea/internal/mpv"
 	"github.com/omegaatt36/ytea/internal/session"
@@ -149,7 +150,7 @@ func TestCLIHelpProcess(t *testing.T) {
 func TestSessionRoundTripKeepsUnplayedTrackMetadata(t *testing.T) {
 	const first, second = "https://www.youtube.com/watch?v=first", "https://www.youtube.com/watch?v=second"
 	model := tui.New(tui.Deps{InitialTracks: map[string]youtube.Track{
-		second: {URL: second, ID: "second", Title: "Unplayed song", Channel: "Artist"},
+		second: {URL: second, ID: "second", Title: "Unplayed song", Channel: "Artist", Duration: 3 * time.Minute},
 	}})
 	snapshot := mpv.PlaybackState{
 		URLs:    []string{first, second},
@@ -166,7 +167,7 @@ func TestSessionRoundTripKeepsUnplayedTrackMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	restored := tui.New(tui.Deps{InitialTracks: tracksFromSession(saved)})
-	if got := restored.KnownTrack(second); got.Title != "Unplayed song" || got.Channel != "Artist" || got.ID != "second" {
+	if got := restored.KnownTrack(second); got.Title != "Unplayed song" || got.Channel != "Artist" || got.ID != "second" || got.Duration != 3*time.Minute {
 		t.Errorf("unplayed track after restart = %+v", got)
 	}
 	if got := restored.KnownTrack(first).Title; got != "Already playing" {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 )
 
 const (
@@ -31,10 +32,11 @@ type State struct {
 
 // Metadata is the search information mpv does not retain for unplayed tracks.
 type Metadata struct {
-	ID      string `json:"id,omitempty"`
-	Title   string `json:"title,omitempty"`
-	Channel string `json:"channel,omitempty"`
-	Live    bool   `json:"live,omitempty"`
+	ID       string        `json:"id,omitempty"`
+	Title    string        `json:"title,omitempty"`
+	Channel  string        `json:"channel,omitempty"`
+	Duration time.Duration `json:"duration,omitempty"`
+	Live     bool          `json:"live,omitempty"`
 }
 
 // Load reads a prior session. A missing file returns a zero State.
