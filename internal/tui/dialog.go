@@ -73,7 +73,7 @@ func (m Model) infoLines() []string {
 	}
 	rows := [][2]string{
 		{"Title", displayTitle(e, t)},
-		{"Channel", t.Channel},
+		{"Channel", sanitize(t.Channel)},
 		{"URL", url},
 		{"Video ID", t.ID},
 		{"Length", length},

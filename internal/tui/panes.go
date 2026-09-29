@@ -313,11 +313,11 @@ func (m Model) list(p listPane) list {
 		l.row = func(i, w int, selected bool) string {
 			text, dim := styles(selected)
 			if i >= len(m.playlists) {
-				return text.Render(ansi.Truncate(stripControl(m.accountPlaylistNames()[i-len(m.playlists)]), w, "…"))
+				return text.Render(ansi.Truncate(sanitize(m.accountPlaylistNames()[i-len(m.playlists)]), w, "…"))
 			}
 			pl := m.playlists[i]
 			count := dim.Render(" " + strconv.Itoa(len(pl.Tracks)))
-			return pad(text.Render(ansi.Truncate(stripControl(pl.Name), w-lipgloss.Width(count), "…")), w-lipgloss.Width(count), text) + count
+			return pad(text.Render(ansi.Truncate(sanitize(pl.Name), w-lipgloss.Width(count), "…")), w-lipgloss.Width(count), text) + count
 		}
 	case panePlaylistTracks:
 		tracks := m.selectedPlaylistTracks()
@@ -326,17 +326,17 @@ func (m Model) list(p listPane) list {
 			l.title = fmt.Sprintf("%s (%d)", m.playlists[m.playlistCur].Name, len(tracks))
 		}
 		if m.accountSelected() && m.account.err != nil {
-			l.title, l.empty = "YouTube", stripControl(m.account.err.Error())
+			l.title, l.empty = "YouTube", sanitize(m.account.err.Error())
 		}
 		if pl, ok := m.selectedAccountPlaylist(); ok {
-			l.title = "YouTube — " + stripControl(pl.Title)
+			l.title = "YouTube — " + sanitize(pl.Title)
 			switch {
 			case m.account.trackLoading[pl.ID]:
 				l.empty = "loading…"
 			case m.account.trackErrors[pl.ID] != nil:
-				l.empty = stripControl(m.account.trackErrors[pl.ID].Error())
+				l.empty = sanitize(m.account.trackErrors[pl.ID].Error())
 			case m.account.queueErrors[pl.ID] != nil:
-				l.empty = stripControl(m.account.queueErrors[pl.ID].Error())
+				l.empty = sanitize(m.account.queueErrors[pl.ID].Error())
 			}
 		}
 		l.focused = m.focus == focusPlaylistTracks && m.overlay == overlayNone
@@ -447,8 +447,7 @@ func (m Model) queueLine(i int, t youtube.Track, w, lenW int, detailed, selected
 }
 
 // highlight cuts s to width on a grapheme boundary of s itself, so the byte
-// spans stay valid, and styles each segment separately. Control bytes in
-// remote titles render as nothing, so they cannot move the cursor or restyle.
+// spans stay valid, and styles each segment separately, sanitized.
 func highlight(s string, spans []span, width int, base lipgloss.Style) string {
 	keep, tail := cutAt(s, width), ""
 	if keep < len(s) {
@@ -456,7 +455,7 @@ func highlight(s string, spans []span, width int, base lipgloss.Style) string {
 	}
 	var b strings.Builder
 	styled := func(style lipgloss.Style, text string) {
-		if text = stripControl(text); text != "" {
+		if text = sanitize(text); text != "" {
 			b.WriteString(style.Render(text))
 		}
 	}
@@ -477,13 +476,13 @@ func highlight(s string, spans []span, width int, base lipgloss.Style) string {
 // cutAt is the byte length of the longest prefix of s that fits width cells,
 // leaving a cell for "…" when s does not fit whole.
 func cutAt(s string, width int) int {
-	if ansi.StringWidth(stripControl(s)) <= width {
+	if ansi.StringWidth(sanitize(s)) <= width {
 		return len(s)
 	}
 	cut, used := 0, 0
 	for cut < len(s) {
 		c, _ := ansi.FirstGraphemeCluster(s[cut:], ansi.GraphemeWidth)
-		w := ansi.StringWidth(stripControl(c))
+		w := ansi.StringWidth(sanitize(c))
 		if used+w > width-1 {
 			break
 		}
@@ -492,9 +491,12 @@ func cutAt(s string, width int) int {
 	return cut
 }
 
-func stripControl(s string) string {
+// sanitize drops what remote text must not put on a terminal: control bytes,
+// which move the cursor or restyle, and default-ignorable fillers such as
+// U+3164, which width tables count as wide but terminals draw as nothing.
+func sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) {
 			return -1
 		}
 		return r

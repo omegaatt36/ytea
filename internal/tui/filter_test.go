@@ -419,6 +419,7 @@ func TestHighlightSurvivesControlBytes(t *testing.T) {
 		{"escape before span", "x\x1b[0mlofi", []span{{5, 9}}, 20, 8},
 		{"wide runes", "日本語日本語", nil, 5, 5},
 		{"fits", "ab\x07c", nil, 5, 3},
+		{"hangul fillers", "\u3164\u3164abc\u3164", nil, 5, 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

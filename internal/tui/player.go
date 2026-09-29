@@ -115,8 +115,8 @@ func (m Model) renderPlayer() string {
 			icon = "⏸"
 		}
 		details = append(details, nowTitleStyle.Render(icon+" "+displayTitle(e, t)))
-		if t.Channel != "" {
-			details = append(details, dimStyle.Render(t.Channel))
+		if channel := sanitize(t.Channel); channel != "" {
+			details = append(details, dimStyle.Render(channel))
 		}
 		details = append(details, dimStyle.Render(m.audioLine()))
 	} else {

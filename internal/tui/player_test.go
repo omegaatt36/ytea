@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/omegaatt36/ytea/internal/mpv"
+	"github.com/omegaatt36/ytea/internal/youtube"
 )
 
 func TestPlayerStateApply(t *testing.T) {
@@ -152,6 +153,25 @@ func TestPlayerSettingsStayOnBottomDetailRow(t *testing.T) {
 	lines := strings.Split(ansi.Strip(m.renderPlayer()), "\n")
 	if !strings.Contains(lines[detailRows], "vol 70%") {
 		t.Errorf("last detail row = %q, want volume settings", lines[detailRows])
+	}
+}
+
+func TestPlayerDropsFillerRunesTerminalsDrawAsNothing(t *testing.T) {
+	m := New(Deps{})
+	m.width, m.height = 100, 30
+	m.player.idle = false
+	m.queue.entries = []mpv.PlaylistEntry{{Filename: watchURL}}
+	m.queue.pos = 0
+	m.tracks[watchURL] = youtube.Track{Title: strings.Repeat("\u3164", 37), Channel: strings.Repeat("\u3164", 49) + "김"}
+	lines := strings.Split(ansi.Strip(m.renderPlayer()), "\n")
+	if strings.ContainsRune(strings.Join(lines, ""), '\u3164') {
+		t.Fatalf("player renders hangul fillers:\n%s", strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(lines[1], watchURL) {
+		t.Errorf("title row = %q, want the URL in place of a blank title", lines[1])
+	}
+	if !strings.Contains(lines[2], "김") {
+		t.Errorf("channel row = %q, want the visible part of the channel", lines[2])
 	}
 }
 

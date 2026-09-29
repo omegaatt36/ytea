@@ -647,12 +647,10 @@ func (m Model) syncMPRIS() {
 }
 
 func displayTitle(e mpv.PlaylistEntry, t youtube.Track) string {
-	switch {
-	case t.Title != "":
-		return t.Title
-	case e.Title != "":
-		return e.Title
-	default:
-		return e.Filename
+	for _, title := range []string{t.Title, e.Title} {
+		if title = sanitize(title); title != "" {
+			return title
+		}
 	}
+	return e.Filename
 }

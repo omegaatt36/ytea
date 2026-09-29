@@ -475,7 +475,7 @@ func seconds(s float64) time.Duration {
 }
 
 func quote(s string) string {
-	return "“" + s + "”"
+	return "“" + sanitize(s) + "”"
 }
 
 func pluralize(n int, noun string) string {
