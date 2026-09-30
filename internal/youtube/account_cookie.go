@@ -136,7 +136,7 @@ func (c *CookieAccountClient) dump(ctx context.Context, target string, extra []s
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		if message := strings.TrimSpace(stderr.String()); message != "" {
+		if message := stderrSummary(stderr.Bytes()); message != "" {
 			return fmt.Errorf("run yt-dlp %q: %w: %s", target, err, message)
 		}
 		return fmt.Errorf("run yt-dlp %q: %w", target, err)

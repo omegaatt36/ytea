@@ -145,3 +145,22 @@ func TestLookupCapsListing(t *testing.T) {
 		})
 	}
 }
+
+func TestStderrSummary(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+		want   string
+	}{
+		{name: "empty", stderr: "  \n", want: ""},
+		{name: "keeps the final line", stderr: "noise\nERROR: [youtube] abc: Sign in to confirm\n", want: "ERROR: [youtube] abc: Sign in to confirm"},
+		{name: "caps a huge line", stderr: strings.Repeat("界", maxStderrRunes+50), want: strings.Repeat("界", maxStderrRunes) + "…"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stderrSummary([]byte(tt.stderr)); got != tt.want {
+				t.Errorf("stderrSummary() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

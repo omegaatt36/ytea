@@ -421,7 +421,7 @@ func (p *Player) Quit() error {
 	select {
 	case <-p.exited:
 	case <-time.After(2 * time.Second):
-		if err := p.cmd.Process.Kill(); err != nil {
+		if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return fmt.Errorf("kill mpv: %w", err)
 		}
 		<-p.exited

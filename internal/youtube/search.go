@@ -84,7 +84,7 @@ func (s *Searcher) extract(ctx context.Context, what, target string, skip, end i
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		if msg := stderrSummary(stderr.Bytes()); msg != "" {
 			return nil, fmt.Errorf("run yt-dlp %s %q: %w: %s", what, target, err, msg)
 		}
 		return nil, fmt.Errorf("run yt-dlp %s %q: %w", what, target, err)
@@ -94,6 +94,19 @@ func (s *Searcher) extract(ctx context.Context, what, target string, skip, end i
 		return nil, fmt.Errorf("parse yt-dlp %s %q: %w", what, target, err)
 	}
 	return tracks, nil
+}
+
+const maxStderrRunes = 300
+
+// stderrSummary keeps yt-dlp's last diagnostic line, the ERROR that explains
+// the exit, so paywall and geo-block dumps stay within one status line.
+func stderrSummary(stderr []byte) string {
+	lines := strings.Split(strings.TrimSpace(string(stderr)), "\n")
+	last := []rune(strings.TrimSpace(lines[len(lines)-1]))
+	if len(last) > maxStderrRunes {
+		return string(last[:maxStderrRunes]) + "…"
+	}
+	return string(last)
 }
 
 // flatDump is a yt-dlp dump: entries for playlists, or a bare video at the top level.
