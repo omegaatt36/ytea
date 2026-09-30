@@ -48,6 +48,12 @@ func loadConfig(cmd *cli.Command, path string, required bool) error {
 		return fmt.Errorf("parse config %s: %w", path, err)
 	}
 
+	if _, ok := values["google-client-secret"]; ok {
+		if err := warnIfShared(path, "config file holding a client secret"); err != nil {
+			return fmt.Errorf("read config: %w", err)
+		}
+	}
+
 	known := flagNames(cmd)
 	var cookieSources int
 	for _, key := range cookieKeys {
@@ -140,12 +146,19 @@ func cookiesFile(configured string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve cookies path: %w", err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
+	if err := warnIfShared(path, "cookies file"); err != nil {
 		return "", fmt.Errorf("read cookies file: %w", err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		slog.Warn("cookies file is readable by other users; chmod 600 it", "path", path, "mode", info.Mode().Perm())
-	}
 	return path, nil
+}
+
+func warnIfShared(path, what string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		slog.Warn(what+" is readable by other users; chmod 600 it", "path", path, "mode", info.Mode().Perm())
+	}
+	return nil
 }
