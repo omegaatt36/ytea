@@ -52,8 +52,9 @@ type request struct {
 
 // Client is a goroutine-safe mpv IPC connection.
 type Client struct {
-	conn   net.Conn
-	events chan Event
+	conn     net.Conn
+	incoming chan Event
+	events   chan Event
 
 	writeMu sync.Mutex
 
@@ -66,18 +67,44 @@ type Client struct {
 
 func newClient(conn net.Conn) *Client {
 	c := &Client{
-		conn: conn,
-		// Buffered so a slow UI render does not stall mpv's socket reader;
-		// time-pos alone fires several times a second.
-		events:  make(chan Event, 256),
-		pending: make(map[int64]chan response),
-		done:    make(chan struct{}),
+		conn:     conn,
+		incoming: make(chan Event),
+		events:   make(chan Event),
+		pending:  make(map[int64]chan response),
+		done:     make(chan struct{}),
 	}
+	go pumpEvents(c.incoming, c.events)
 	go c.readLoop()
 	return c
 }
 
-// Events delivers asynchronous mpv events. It is closed when the connection ends.
+// pumpEvents forwards in to out through an unbounded queue, preserving order.
+// It closes out once in is closed and the queue is drained.
+func pumpEvents(in <-chan Event, out chan<- Event) {
+	var queue []Event
+	for in != nil || len(queue) > 0 {
+		var send chan<- Event
+		var next Event
+		if len(queue) > 0 {
+			send, next = out, queue[0]
+		}
+		select {
+		case ev, ok := <-in:
+			if !ok {
+				in = nil
+				continue
+			}
+			queue = append(queue, ev)
+		case send <- next:
+			queue[0] = Event{}
+			queue = queue[1:]
+		}
+	}
+	close(out)
+}
+
+// Events delivers asynchronous mpv events. It is closed once the connection
+// ends and the remaining events have been read.
 func (c *Client) Events() <-chan Event {
 	return c.events
 }
@@ -163,7 +190,7 @@ func (c *Client) readLoop() {
 			continue
 		}
 		if msg.Event != "" {
-			c.events <- Event{
+			c.incoming <- Event{
 				Name: msg.Event, ID: msg.ID, Prop: msg.Prop, Data: msg.Data,
 				Reason: msg.Reason, FileError: msg.FileError,
 			}
@@ -178,7 +205,7 @@ func (c *Client) readLoop() {
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.EOF) {
-		c.events <- Event{Name: "ipc-error", Reason: err.Error()}
+		c.incoming <- Event{Name: "ipc-error", Reason: err.Error()}
 	}
 }
 
@@ -190,6 +217,6 @@ func (c *Client) shutdown() {
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
-	close(c.events)
+	close(c.incoming)
 	close(c.done)
 }

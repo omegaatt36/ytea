@@ -47,8 +47,8 @@ func (p *Player) Snapshot(ctx context.Context) (PlaybackState, error) {
 
 // Restore loads a playlist paused, selecting the previous track when present.
 func (p *Player) Restore(ctx context.Context, state PlaybackState) (retErr error) {
-	// The UI is not consuming events yet. A long restored playlist can otherwise
-	// fill Client.events and block the socket reader before it reads replies.
+	// The UI is not consuming events yet. Discard the restore-time events so a
+	// long playlist does not queue thousands of stale property changes for it.
 	stopDrain := make(chan struct{})
 	drained := make(chan struct{})
 	go func() {

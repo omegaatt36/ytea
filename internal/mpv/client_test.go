@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -99,6 +101,33 @@ func TestClientDeliversEvents(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no event received")
+	}
+}
+
+func TestClientRepliesWhileEventsAreUnread(t *testing.T) {
+	const burst = 1000
+	c := newFakePair(t, func(req request) string {
+		var events strings.Builder
+		for i := range burst {
+			fmt.Fprintf(&events, `{"event":"property-change","id":%d,"name":"playlist","data":[]}`+"\n", i)
+		}
+		return events.String() + fmt.Sprintf(`{"request_id":%d,"error":"success"}`, req.RequestID)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := c.Command(ctx, "get_property", "volume"); err != nil {
+		t.Fatalf("Command() with %d unread events error = %v", burst, err)
+	}
+	for i := range burst {
+		select {
+		case ev := <-c.Events():
+			if ev.ID != i {
+				t.Fatalf("event %d has id %d, want delivery in order", i, ev.ID)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("event %d never delivered", i)
+		}
 	}
 }
 
