@@ -21,12 +21,12 @@ import (
 )
 
 const (
-	tapRate     = 48000
-	rescanEvery = time.Second
+	tapRate    = 48000
+	retryEvery = time.Second
 )
 
 // Tap records a playback stream with pw-cat and publishes spectrum levels.
-// It follows the stream across reconnects by re-resolving its serial.
+// It follows the stream across reconnects by watching the PipeWire graph.
 type Tap struct {
 	node  string
 	meter *spectrum.Meter
@@ -48,16 +48,24 @@ func (t *Tap) VU() <-chan [2]float64 { return t.meter.VU() }
 // Run supervises pw-cat until ctx is cancelled.
 func (t *Tap) Run(ctx context.Context) {
 	go t.meter.Run(ctx)
+	serials := make(chan int)
+	go t.watch(ctx, serials)
 
 	var rec *recording
 	defer func() { rec.stop() }()
-
-	ticker := time.NewTicker(rescanEvery)
-	defer ticker.Stop()
+	var serial int
+	var retry <-chan time.Time
 	for {
-		serial, err := t.streamSerial(ctx)
-		if err != nil && !errors.Is(err, errNodeNotFound) {
-			slog.WarnContext(ctx, "resolve playback stream", "node", t.node, "error", err)
+		select {
+		case <-ctx.Done():
+			return
+		case serial = <-serials:
+		case <-retry:
+		case <-rec.done():
+			rec.stop()
+			rec = nil
+			retry = time.After(retryEvery)
+			continue
 		}
 		if serial != rec.target() {
 			rec.stop()
@@ -65,16 +73,6 @@ func (t *Tap) Run(ctx context.Context) {
 			if serial != 0 {
 				rec = t.record(ctx, serial)
 			}
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-rec.done():
-			// pw-cat died (e.g. its target vanished); restart on the next scan.
-			rec.stop()
-			rec = nil
-		case <-ticker.C:
 		}
 	}
 }
@@ -108,32 +106,94 @@ func (r *recording) stop() {
 	}
 }
 
-// errNodeNotFound is returned when no pw-dump object matches the requested stream.
-var errNodeNotFound = errors.New("pipewire stream not found")
-
-// streamSerial resolves the object.serial of the output stream whose node.name
-// is the tap's node; pw-cat --target takes serials. It re-resolves on every
-// scan because the serial changes whenever mpv reopens its audio output
-// (device switch, format change).
-func (t *Tap) streamSerial(ctx context.Context) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "pw-dump")
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return 0, fmt.Errorf("run pw-dump: %w: %s", err, bytes.TrimSpace(stderr.Bytes()))
+// watch sends the tap's stream serial each time it changes, restarting
+// pw-dump whenever it exits.
+func (t *Tap) watch(ctx context.Context, serials chan<- int) {
+	var last int
+	report := func(serial int) {
+		if serial == last {
+			return
+		}
+		last = serial
+		select {
+		case serials <- serial:
+		case <-ctx.Done():
+		}
 	}
-	var objects []dumpObject
-	if err := json.Unmarshal(stdout.Bytes(), &objects); err != nil {
-		return 0, fmt.Errorf("decode pw-dump output: %w", err)
+	for {
+		err := t.monitor(ctx, report)
+		if ctx.Err() != nil {
+			return
+		}
+		slog.WarnContext(ctx, "monitor pipewire graph", "node", t.node, "error", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(retryEvery):
+		}
 	}
-	return findStreamSerial(objects, t.node)
 }
 
-// dumpObject is one entry of pw-dump's JSON output; only nodes are of interest.
+// monitor runs pw-dump --monitor until it exits and returns why it did.
+func (t *Tap) monitor(ctx context.Context, report func(int)) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "pw-dump", "--monitor")
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("pipe pw-dump: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start pw-dump: %w", err)
+	}
+	followErr := followStreams(stdout, t.node, report)
+	cancel()
+	waitErr := cmd.Wait()
+	switch {
+	case followErr != nil:
+		return followErr
+	case waitErr != nil:
+		return fmt.Errorf("pw-dump exited: %w: %s", waitErr, bytes.TrimSpace(stderr.Bytes()))
+	default:
+		return errors.New("pw-dump exited")
+	}
+}
+
+// followStreams decodes pw-dump --monitor output, a full dump followed by one
+// JSON array per change, and reports the matching stream's serial (0 if none)
+// after each array. pw-cat --target takes serials, and mpv gets a new one
+// whenever it reopens its audio output (device switch, format change).
+func followStreams(r io.Reader, node string, report func(int)) error {
+	dec := json.NewDecoder(r)
+	serials := map[int]int{}
+	for {
+		var objects []dumpObject
+		if err := dec.Decode(&objects); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("decode pw-dump output: %w", err)
+		}
+		for _, o := range objects {
+			if serial, ok := streamSerial(o, node); ok {
+				serials[o.ID] = serial
+			} else {
+				delete(serials, o.ID)
+			}
+		}
+		var newest int
+		for _, serial := range serials {
+			newest = max(newest, serial)
+		}
+		report(newest)
+	}
+}
+
+// dumpObject is one entry of pw-dump's JSON output; removed objects arrive
+// with a null info.
 type dumpObject struct {
 	ID   int         `json:"id"`
 	Type string      `json:"type"`
@@ -146,22 +206,16 @@ type objectInfo struct {
 
 const typeNode = "PipeWire:Interface:Node"
 
-// findStreamSerial returns the object.serial of the output stream whose
-// node.name is node.
-func findStreamSerial(objects []dumpObject, node string) (int, error) {
-	for _, o := range objects {
-		if o.Type != typeNode || o.Info == nil {
-			continue
-		}
-		props := o.Info.Props
-		if propString(props, "media.class") != "Stream/Output/Audio" || propString(props, "node.name") != node {
-			continue
-		}
-		if serial, ok := props["object.serial"].(float64); ok {
-			return int(serial), nil
-		}
+func streamSerial(o dumpObject, node string) (int, bool) {
+	if o.Type != typeNode || o.Info == nil {
+		return 0, false
 	}
-	return 0, fmt.Errorf("find stream %q: %w", node, errNodeNotFound)
+	props := o.Info.Props
+	if propString(props, "media.class") != "Stream/Output/Audio" || propString(props, "node.name") != node {
+		return 0, false
+	}
+	serial, ok := props["object.serial"].(float64)
+	return int(serial), ok
 }
 
 func propString(props map[string]any, key string) string {
