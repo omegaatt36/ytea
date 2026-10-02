@@ -10,9 +10,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/omegaatt36/ytea/domain"
 	"github.com/omegaatt36/ytea/internal/library"
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/youtube"
 )
 
 func TestCursorFollowsFocusedInput(t *testing.T) {
@@ -26,7 +25,7 @@ func TestCursorFollowsFocusedInput(t *testing.T) {
 			m.input.CursorEnd()
 		}},
 		{name: "results filter", setup: func(m *Model) {
-			m.results.tracks = []youtube.Track{{Title: "song"}}
+			m.core.Search.Tracks = []domain.Track{{Title: "song"}}
 			m.focus = focusResults
 			m.input.Blur()
 			m.results.filter.Focus()
@@ -137,8 +136,8 @@ func TestKeysRunTheirActions(t *testing.T) {
 		m := New(Deps{Player: p})
 		m.input.Blur()
 		m.focus = f
-		m.results.tracks = []youtube.Track{{URL: "r0"}, {URL: "r1"}, {URL: "r2"}}
-		m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
+		m.core.Search.Tracks = []domain.Track{{URL: "r0"}, {URL: "r1"}, {URL: "r2"}}
+		m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
 		return m
 	}
 	playerCall := func(want string) func(t *testing.T, m Model, cmd tea.Cmd, player *spyPlayer) {
@@ -190,7 +189,7 @@ func TestKeysRunTheirActions(t *testing.T) {
 				return m
 			},
 			check: func(t *testing.T, m Model, _ tea.Cmd, _ *spyPlayer) {
-				if got := filenames(m.queue.entries); !slices.Equal(got, []string{"A", "C"}) {
+				if got := filenames(m.core.Queue.Entries); !slices.Equal(got, []string{"A", "C"}) {
 					t.Errorf("queue = %v, want [A C]", got)
 				}
 			},

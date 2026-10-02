@@ -7,9 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/omegaatt36/ytea/domain"
 	"github.com/omegaatt36/ytea/internal/library"
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/youtube"
 )
 
 func TestMouseEnablesCellMotionOnly(t *testing.T) {
@@ -100,14 +99,14 @@ func TestMouseInPlaylistPicker(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"Alpha", "Beta"} {
-		if _, err := store.CreateWithTracks(name, []youtube.Track{{Title: name + " song", URL: "https://www.youtube.com/watch?v=" + name}}); err != nil {
+		if _, err := store.CreateWithTracks(name, []domain.Track{{Title: name + " song", URL: "https://www.youtube.com/watch?v=" + name}}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	m := New(Deps{Library: store})
 	m.width, m.height = 100, 30
 	m.focus = focusResults
-	m.results.tracks = []youtube.Track{{Title: "pick me", URL: "https://www.youtube.com/watch?v=pick"}}
+	m.core.Search.Tracks = []domain.Track{{Title: "pick me", URL: "https://www.youtube.com/watch?v=pick"}}
 	got, _ := m.update(keyPress("s"))
 	m = got.(Model)
 
@@ -135,7 +134,7 @@ func TestDialogFloatsOverPanesAndTakesClicks(t *testing.T) {
 	m := mouseModel()
 	m.input.Blur()
 	m.focus = focusQueue
-	m.devices = []mpv.AudioDevice{{Name: "auto", Description: "Autoselect device"}, {Name: "b", Description: "Second output"}}
+	m.core.Devices = []domain.AudioDevice{{Name: "auto", Description: "Autoselect device"}, {Name: "b", Description: "Second output"}}
 	m.overlay = overlayDevices
 	if got := rendered(m); !strings.Contains(got, "Second output") || !strings.Contains(got, "queued 0") {
 		t.Fatalf("device dialog should float over the queue it was opened from:\n%s", got)

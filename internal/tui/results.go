@@ -5,22 +5,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/service"
 )
 
-// resultsPane holds the search results and the filter narrowing them. cur
-// indexes the visible rows, not tracks.
+// cur indexes the visible rows, not tracks.
 type resultsPane struct {
-	tracks []youtube.Track
 	cur    int
 	filter textinput.Model
-
-	// query is the search the results came from; fetched counts the results
-	// its pages have covered, including ones dropped as duplicates or non-videos.
-	query       string
-	fetched     int
-	more        bool
-	loadingMore bool
 }
 
 // update feeds the filter input; any change to the query starts over at the top row.
@@ -34,72 +26,23 @@ func (r resultsPane) update(msg tea.Msg) (resultsPane, tea.Cmd) {
 	return r, cmd
 }
 
-func (r resultsPane) rows() []filterMatch {
-	return filterResults(r.tracks, r.filter.Value())
+func (r *resultsPane) moveTo(i, rows int) {
+	r.cur = max(0, min(rows-1, i))
 }
 
-func (r resultsPane) selected() (youtube.Track, bool) {
-	rows := r.rows()
-	if r.cur < 0 || r.cur >= len(rows) {
-		return youtube.Track{}, false
-	}
-	return r.tracks[rows[r.cur].index], true
-}
-
-func (r *resultsPane) moveTo(i int) {
-	r.cur = max(0, min(len(r.rows())-1, i))
-}
-
-// set replaces the results and clears the filter; a filter being typed stays
-// open for the new list.
-func (r *resultsPane) set(tracks []youtube.Track) {
-	r.tracks, r.cur = tracks, 0
-	r.query, r.fetched, r.more = "", 0, false
+func (r *resultsPane) reset(n int) {
+	r.cur = 0
 	r.filter.Reset()
-	if len(tracks) == 0 {
+	if n == 0 {
 		r.filter.Blur()
 	}
 }
 
-// extend appends a later page, skipping tracks already listed, and reports
-// how many were new. The cursor and filter stay put.
-func (r *resultsPane) extend(tracks []youtube.Track, fetched int) int {
-	seen := make(map[string]bool, len(r.tracks))
-	for _, t := range r.tracks {
-		seen[t.URL] = true
-	}
-	added := 0
-	for _, t := range tracks {
-		if !seen[t.URL] {
-			seen[t.URL] = true
-			r.tracks = append(r.tracks, t)
-			added++
-		}
-	}
-	r.fetched = fetched
-	// An empty page is the end; a page of only duplicates is not.
-	r.more = len(tracks) > 0
-	return added
-}
-
-func (r resultsPane) canLoadMore() bool {
-	return r.query != "" && r.more
-}
-
-func (r *resultsPane) openFilter() tea.Cmd {
-	if len(r.tracks) == 0 {
+func (r *resultsPane) openFilter(n int) tea.Cmd {
+	if n == 0 {
 		return nil
 	}
 	return r.filter.Focus()
-}
-
-// clearFilter keeps the selected track selected in the full list.
-func (r *resultsPane) clearFilter() {
-	if rows := r.rows(); r.cur >= 0 && r.cur < len(rows) {
-		r.cur = rows[r.cur].index
-	}
-	r.filter.Reset()
-	r.filter.Blur()
 }
 
 func (r resultsPane) filterOpen() bool {
@@ -108,4 +51,32 @@ func (r resultsPane) filterOpen() bool {
 
 func (r *resultsPane) setWidth(paneWidth int) {
 	r.filter.SetWidth(max(1, paneWidth-2*boxInset-lipgloss.Width(r.filter.Prompt)-1))
+}
+
+func (m Model) resultRows() []service.Match {
+	return service.FilterTracks(m.core.Search.Tracks, m.results.filter.Value())
+}
+
+func (m Model) selectedResult() (domain.Track, bool) {
+	rows := m.resultRows()
+	if m.results.cur < 0 || m.results.cur >= len(rows) {
+		return domain.Track{}, false
+	}
+	return m.core.Search.Tracks[rows[m.results.cur].Index], true
+}
+
+func (m *Model) moveResult(i int) {
+	m.results.moveTo(i, len(m.resultRows()))
+}
+
+func (m *Model) openResultFilter() tea.Cmd {
+	return m.results.openFilter(len(m.core.Search.Tracks))
+}
+
+func (m *Model) clearResultFilter() {
+	if rows := m.resultRows(); m.results.cur >= 0 && m.results.cur < len(rows) {
+		m.results.cur = rows[m.results.cur].Index
+	}
+	m.results.filter.Reset()
+	m.results.filter.Blur()
 }

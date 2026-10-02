@@ -8,12 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/session"
-	"github.com/omegaatt36/ytea/internal/tui"
-	"github.com/omegaatt36/ytea/internal/youtube"
 )
 
 // parse runs the command line with an empty config dir, so the developer's
@@ -143,60 +137,6 @@ func TestCLIHelpProcess(t *testing.T) {
 	for _, flag := range []string{"--[no-]visualizer", "--mpv", "--yt-dlp"} {
 		if !strings.Contains(string(output), flag) {
 			t.Errorf("CLI help missing %q:\n%s", flag, output)
-		}
-	}
-}
-
-func TestSessionRoundTripKeepsUnplayedTrackMetadata(t *testing.T) {
-	const first, second = "https://www.youtube.com/watch?v=first", "https://www.youtube.com/watch?v=second"
-	model := tui.New(tui.Deps{InitialTracks: map[string]youtube.Track{
-		second: {URL: second, ID: "second", Title: "Unplayed song", Channel: "Artist", Duration: 3 * time.Minute},
-	}})
-	snapshot := mpv.PlaybackState{
-		URLs:    []string{first, second},
-		Entries: []mpv.PlaylistEntry{{Filename: first, Title: "Already playing"}, {Filename: second}},
-		Index:   0,
-		Volume:  65,
-	}
-	dir := t.TempDir()
-	if err := session.Save(dir, sessionFromSnapshot(snapshot, model)); err != nil {
-		t.Fatal(err)
-	}
-	saved, err := session.Load(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restored := tui.New(tui.Deps{InitialTracks: tracksFromSession(saved)})
-	if got := restored.KnownTrack(second); got.Title != "Unplayed song" || got.Channel != "Artist" || got.ID != "second" || got.Duration != 3*time.Minute {
-		t.Errorf("unplayed track after restart = %+v", got)
-	}
-	if got := restored.KnownTrack(first).Title; got != "Already playing" {
-		t.Errorf("mpv title after restart = %q, want Already playing", got)
-	}
-}
-
-func TestSessionRoundTripKeepsRepeat(t *testing.T) {
-	for _, mode := range []mpv.Repeat{mpv.RepeatOff, mpv.RepeatAll, mpv.RepeatOne} {
-		snapshot := mpv.PlaybackState{URLs: []string{"song"}, Index: 0, Volume: 50, Repeat: mode}
-		dir := t.TempDir()
-		if err := session.Save(dir, sessionFromSnapshot(snapshot, tui.New(tui.Deps{}))); err != nil {
-			t.Fatal(err)
-		}
-		saved, err := session.Load(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := playbackFromSession(saved).Repeat; got != mode {
-			t.Errorf("restored repeat = %v, want %v", got, mode)
-		}
-	}
-}
-
-func TestPlaybackFromSessionRepeatFallsBackToOff(t *testing.T) {
-	for _, stored := range []string{"", "shuffle"} {
-		saved := session.State{Version: 1, URLs: []string{"song"}, Volume: 50, Repeat: stored}
-		if got := playbackFromSession(saved).Repeat; got != mpv.RepeatOff {
-			t.Errorf("repeat for stored %q = %v, want off", stored, got)
 		}
 	}
 }

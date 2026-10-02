@@ -8,13 +8,14 @@ import (
 	"os"
 	"time"
 
+	"github.com/omegaatt36/ytea/domain"
 	"github.com/omegaatt36/ytea/internal/googleauth"
-	"github.com/omegaatt36/ytea/internal/tui"
 	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/service"
 )
 
 // accountPlaylistSource selects one read-only source for the account section.
-func accountPlaylistSource(opts options) (tui.AccountPlaylistSource, error) {
+func accountPlaylistSource(opts options) (service.AccountSource, error) {
 	token, err := googleauth.LoadToken()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return &accountPlaylistErrorSource{fmt.Errorf("load Google authorization; check the token file or run `ytea auth login` again: %w", err)}, nil
@@ -54,11 +55,11 @@ func accountPlaylistSource(opts options) (tui.AccountPlaylistSource, error) {
 // accountPlaylistErrorSource keeps the account section visible while local use continues.
 type accountPlaylistErrorSource struct{ err error }
 
-func (source *accountPlaylistErrorSource) ListPlaylists(context.Context) ([]youtube.AccountPlaylist, error) {
+func (source *accountPlaylistErrorSource) ListPlaylists(context.Context) ([]domain.AccountPlaylist, error) {
 	return nil, source.err
 }
 
-func (source *accountPlaylistErrorSource) ListTracks(context.Context, string) ([]youtube.Track, error) {
+func (source *accountPlaylistErrorSource) ListTracks(context.Context, string) ([]domain.Track, error) {
 	return nil, source.err
 }
 

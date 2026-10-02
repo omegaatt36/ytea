@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -10,82 +9,73 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/service"
 )
 
 func TestApplyPlaylistPos(t *testing.T) {
 	tests := []struct {
 		name string
-		data string
+		pos  int
 		want int
 	}{
-		{name: "index", data: "2", want: 2},
-		{name: "none selected", data: "-1", want: -1},
-		{name: "unavailable", data: "null", want: -1},
+		{name: "index", pos: 2, want: 2},
+		{name: "none selected", pos: -1, want: -1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := New(Deps{})
-			m.applyProperty(mpv.Event{Name: "property-change", Prop: mpv.PropPlaylistPos, Data: json.RawMessage(tt.data)})
-			if m.queue.pos != tt.want {
-				t.Errorf("pos = %d, want %d", m.queue.pos, tt.want)
+			m.applyChange(service.QueuePosChanged{Pos: tt.pos})
+			if m.core.Queue.Pos != tt.want {
+				t.Errorf("pos = %d, want %d", m.core.Queue.Pos, tt.want)
 			}
 		})
 	}
 }
 
-func TestWaitMPVDropsTimePosWithinShownSecond(t *testing.T) {
-	timePos := func(data string) mpv.Event {
-		return mpv.Event{Name: "property-change", Prop: mpv.PropTimePos, Data: json.RawMessage(data)}
-	}
+func TestWaitPlayerDropsPositionWithinShownSecond(t *testing.T) {
+	pos := func(d time.Duration) service.PlayerEvent { return service.PositionChanged{Pos: d} }
 	tests := []struct {
 		name   string
 		shown  time.Duration
-		events []mpv.Event
+		events []service.PlayerEvent
 		want   tea.Msg
 	}{
 		{
 			name:   "same second is dropped",
 			shown:  12 * time.Second,
-			events: []mpv.Event{timePos("12.2"), timePos("12.4"), timePos("12.6")},
-			want:   mpvEventMsg(timePos("12.6")),
+			events: []service.PlayerEvent{pos(12200 * time.Millisecond), pos(12400 * time.Millisecond), pos(12600 * time.Millisecond)},
+			want:   playerEventMsg{pos(12600 * time.Millisecond)},
 		},
 		{
 			name:   "backward seek into a new second",
 			shown:  12 * time.Second,
-			events: []mpv.Event{timePos("3.1")},
-			want:   mpvEventMsg(timePos("3.1")),
-		},
-		{
-			name:   "unavailable",
-			shown:  0,
-			events: []mpv.Event{timePos("null")},
-			want:   mpvEventMsg(timePos("null")),
+			events: []service.PlayerEvent{pos(3100 * time.Millisecond)},
+			want:   playerEventMsg{pos(3100 * time.Millisecond)},
 		},
 		{
 			name:   "other events pass",
 			shown:  12 * time.Second,
-			events: []mpv.Event{timePos("12.1"), {Name: "playback-restart"}},
-			want:   mpvEventMsg(mpv.Event{Name: "playback-restart"}),
+			events: []service.PlayerEvent{pos(12100 * time.Millisecond), service.PlaybackRestarted{}},
+			want:   playerEventMsg{service.PlaybackRestarted{}},
 		},
 		{
 			name:   "closed after dropped events",
 			shown:  12 * time.Second,
-			events: []mpv.Event{timePos("12.1")},
-			want:   mpvClosedMsg{},
+			events: []service.PlayerEvent{pos(12100 * time.Millisecond)},
+			want:   playerClosedMsg{},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ch := make(chan mpv.Event, len(tt.events))
+			ch := make(chan service.PlayerEvent, len(tt.events))
 			for _, ev := range tt.events {
 				ch <- ev
 			}
 			close(ch)
-			got := waitMPV(ch, tt.shown)()
+			got := waitPlayer(ch, tt.shown)()
 			if fmt.Sprint(got) != fmt.Sprint(tt.want) {
-				t.Errorf("waitMPV() = %v, want %v", got, tt.want)
+				t.Errorf("waitPlayer() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -103,7 +93,7 @@ func TestRepeatKeyCyclesThroughMPV(t *testing.T) {
 			t.Fatalf("focus %d: L returned no command", f)
 		}
 		cmd()
-		if !slices.Equal(player.repeats, []mpv.Repeat{mpv.RepeatAll}) {
+		if !slices.Equal(player.repeats, []domain.Repeat{domain.RepeatAll}) {
 			t.Fatalf("focus %d: SetRepeat calls = %v, want [all]", f, player.repeats)
 		}
 		if strings.Contains(m.modeLine(), "repeat") {
@@ -115,38 +105,38 @@ func TestRepeatKeyCyclesThroughMPV(t *testing.T) {
 	m := New(Deps{Player: player})
 	m.focus = focusResults
 	steps := []struct {
-		prop, value string
-		display     string
-		next        mpv.Repeat
+		ev      service.PlayerEvent
+		display string
+		next    domain.Repeat
 	}{
-		{mpv.PropLoopPlaylist, `"inf"`, "repeat all", mpv.RepeatOne},
-		{mpv.PropLoopFile, `"inf"`, "repeat one", mpv.RepeatOff},
-		{mpv.PropLoopPlaylist, `false`, "repeat one", mpv.RepeatOff},
-		{mpv.PropLoopFile, `false`, "", mpv.RepeatAll},
+		{service.LoopPlaylistChanged{On: true}, "repeat all", domain.RepeatOne},
+		{service.LoopFileChanged{On: true}, "repeat one", domain.RepeatOff},
+		{service.LoopPlaylistChanged{}, "repeat one", domain.RepeatOff},
+		{service.LoopFileChanged{}, "", domain.RepeatAll},
 	}
 	for _, step := range steps {
-		m.applyProperty(mpv.Event{Name: "property-change", Prop: step.prop, Data: json.RawMessage(step.value)})
+		m.applyChange(step.ev)
 		line := m.modeLine()
 		if step.display == "" && strings.Contains(line, "repeat") || step.display != "" && !strings.Contains(line, step.display) {
-			t.Fatalf("after %s=%s audio line = %q, want %q", step.prop, step.value, line, step.display)
+			t.Fatalf("after %#v audio line = %q, want %q", step.ev, line, step.display)
 		}
 		got, cmd := m.update(keyPress("L"))
 		m = got.(Model)
 		cmd()
 		if last := player.repeats[len(player.repeats)-1]; last != step.next {
-			t.Fatalf("after %s=%s L requested %v, want %v", step.prop, step.value, last, step.next)
+			t.Fatalf("after %#v L requested %v, want %v", step.ev, last, step.next)
 		}
 	}
 }
 
 func TestPlaybackErrorClearedOnFileLoaded(t *testing.T) {
 	m := New(Deps{})
-	m.applyEvent(mpv.Event{Name: "end-file", Reason: "error", FileError: "loading failed"})
+	m.applyEvent(service.PlaybackFailed{Reason: "loading failed"})
 	if !m.statusErr || !strings.Contains(m.status, "playback failed: loading failed") {
 		t.Fatalf("statusErr = %v, status = %q, want error status", m.statusErr, m.status)
 	}
 
-	m.applyEvent(mpv.Event{Name: "file-loaded"})
+	m.applyEvent(service.FileLoaded{})
 	if m.statusErr || m.status != "" {
 		t.Errorf("after file-loaded: statusErr = %v, status = %q, want empty", m.statusErr, m.status)
 	}
@@ -154,12 +144,12 @@ func TestPlaybackErrorClearedOnFileLoaded(t *testing.T) {
 
 func TestPlaybackErrorClearedOnPlaybackRestart(t *testing.T) {
 	m := New(Deps{})
-	m.applyEvent(mpv.Event{Name: "end-file", Reason: "error", FileError: "loading failed"})
+	m.applyEvent(service.PlaybackFailed{Reason: "loading failed"})
 	if !m.statusErr || !strings.Contains(m.status, "playback failed: loading failed") {
 		t.Fatalf("statusErr = %v, status = %q, want error status", m.statusErr, m.status)
 	}
 
-	m.applyEvent(mpv.Event{Name: "playback-restart"})
+	m.applyEvent(service.PlaybackRestarted{})
 	if m.statusErr || m.status != "" {
 		t.Errorf("after playback-restart: statusErr = %v, status = %q, want empty", m.statusErr, m.status)
 	}
@@ -194,10 +184,10 @@ func TestStatusTimeoutDismissesError(t *testing.T) {
 func TestMPRISSync(t *testing.T) {
 	spy := &spyMPRIS{}
 	m := New(Deps{MPRIS: spy})
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: "https://example.com/song"}}
-	m.queue.pos = 0
-	m.player.idle = false
-	m.tracks["https://example.com/song"] = youtube.Track{Title: "Song Title", Channel: "Artist"}
+	m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: "https://example.com/song"}}
+	m.core.Queue.Pos = 0
+	m.core.Playback.Idle = false
+	m.core.Tracks["https://example.com/song"] = domain.Track{Title: "Song Title", Channel: "Artist"}
 
 	m.syncMPRIS()
 
@@ -213,9 +203,9 @@ func TestMPRISSync(t *testing.T) {
 func TestMPRISSeeked(t *testing.T) {
 	spy := &spyMPRIS{}
 	m := New(Deps{MPRIS: spy})
-	m.player.timePos = 15 * time.Second
+	m.core.Playback.TimePos = 15 * time.Second
 
-	m.applyEvent(mpv.Event{Name: "playback-restart"})
+	m.applyEvent(service.PlaybackRestarted{})
 
 	if len(spy.seeked) == 0 {
 		t.Fatal("expected MPRIS Seeked, got none")

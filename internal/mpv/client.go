@@ -63,6 +63,11 @@ type Client struct {
 	pending map[int64]chan response
 	closed  bool
 	done    chan struct{}
+
+	stop      chan struct{}
+	closeOnce sync.Once
+	closeErr  error
+	workers   sync.WaitGroup
 }
 
 func newClient(conn net.Conn) *Client {
@@ -72,15 +77,17 @@ func newClient(conn net.Conn) *Client {
 		events:   make(chan Event),
 		pending:  make(map[int64]chan response),
 		done:     make(chan struct{}),
+		stop:     make(chan struct{}),
 	}
-	go pumpEvents(c.incoming, c.events)
-	go c.readLoop()
+	c.workers.Go(func() { pumpEvents(c.incoming, c.events, c.stop) })
+	c.workers.Go(c.readLoop)
 	return c
 }
 
 // pumpEvents forwards in to out through an unbounded queue, preserving order.
-// It closes out once in is closed and the queue is drained.
-func pumpEvents(in <-chan Event, out chan<- Event) {
+// Natural EOF drains the queue; an explicit stop discards it.
+func pumpEvents(in <-chan Event, out chan<- Event, stop <-chan struct{}) {
+	defer close(out)
 	var queue []Event
 	for in != nil || len(queue) > 0 {
 		var send chan<- Event
@@ -89,6 +96,8 @@ func pumpEvents(in <-chan Event, out chan<- Event) {
 			send, next = out, queue[0]
 		}
 		select {
+		case <-stop:
+			return
 		case ev, ok := <-in:
 			if !ok {
 				in = nil
@@ -100,11 +109,10 @@ func pumpEvents(in <-chan Event, out chan<- Event) {
 			queue = queue[1:]
 		}
 	}
-	close(out)
 }
 
 // Events delivers asynchronous mpv events. It is closed once the connection
-// ends and the remaining events have been read.
+// ends and the remaining events have been read, or immediately after Close.
 func (c *Client) Events() <-chan Event {
 	return c.events
 }
@@ -167,9 +175,14 @@ func (e *CommandError) Error() string {
 	return fmt.Sprintf("mpv command %v: %s", e.Command, e.Reason)
 }
 
-// Close terminates the connection.
+// Close terminates the connection, discards unread events, and waits for workers.
 func (c *Client) Close() error {
-	return c.conn.Close()
+	c.closeOnce.Do(func() {
+		close(c.stop)
+		c.closeErr = c.conn.Close()
+	})
+	c.workers.Wait()
+	return c.closeErr
 }
 
 func (c *Client) forget(id int64) {
@@ -190,9 +203,13 @@ func (c *Client) readLoop() {
 			continue
 		}
 		if msg.Event != "" {
-			c.incoming <- Event{
+			select {
+			case c.incoming <- Event{
 				Name: msg.Event, ID: msg.ID, Prop: msg.Prop, Data: msg.Data,
 				Reason: msg.Reason, FileError: msg.FileError,
+			}:
+			case <-c.stop:
+				return
 			}
 			continue
 		}
@@ -205,7 +222,10 @@ func (c *Client) readLoop() {
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.EOF) {
-		c.incoming <- Event{Name: "ipc-error", Reason: err.Error()}
+		select {
+		case c.incoming <- Event{Name: "ipc-error", Reason: err.Error()}:
+		case <-c.stop:
+		}
 	}
 }
 

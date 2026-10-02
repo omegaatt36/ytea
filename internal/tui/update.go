@@ -1,7 +1,7 @@
 package tui
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,8 +11,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/service"
 )
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -70,13 +69,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.cycleTab(true)
 		return m, nil
 	case key.Matches(msg, g.Output):
-		return m, loadDevices(m.deps.Player, true)
+		return m, loadDevices(m.core, true)
 	case key.Matches(msg, g.Info):
-		if _, _, ok := m.current(); !ok {
+		if _, _, ok := m.core.Current(); !ok {
 			m.setStatus("nothing playing")
 			return m, nil
 		}
-		return m, loadStream(m.deps.Player, true)
+		return m, loadStream(m.core, true)
 	case key.Matches(msg, g.Viz):
 		switch {
 		case !m.showViz:
@@ -123,20 +122,16 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if query == "" {
 			return m, nil
 		}
-		requestID := m.nextRequest()
-		m.spinnerRequest = requestID
-		m.searching = true
+		cmd, link := m.core.Submit(query)
 		m.focus = focusResults
 		m.input.Blur()
-		if link, ok := youtube.RefOf(query); ok {
+		if link != nil {
 			m.focus = focusQueue
-			m.imports = m.imports.add(requestID)
 			m.setStatus("importing " + quote(link.URL) + "…")
-			return m, tea.Batch(m.spinner.Tick, fetchQueue(m.deps.Searcher, link, requestID))
+		} else {
+			m.setStatus("searching " + quote(query) + "…")
 		}
-		m.setStatus("searching " + quote(query) + "…")
-		m.searchRequest = requestID
-		return m, tea.Batch(m.spinner.Tick, search(m.deps.Searcher, query, 0, requestID))
+		return m, tea.Batch(m.spinner.Tick, teaCmd(cmd))
 	case key.Matches(msg, m.keys.search.Leave):
 		m.focus = focusResults
 		m.input.Blur()
@@ -151,13 +146,13 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := m.keys.filter
 	switch {
 	case key.Matches(msg, k.Up):
-		m.results.moveTo(m.results.cur - 1)
+		m.moveResult(m.results.cur - 1)
 	case key.Matches(msg, k.Down):
-		m.results.moveTo(m.results.cur + 1)
+		m.moveResult(m.results.cur + 1)
 	case key.Matches(msg, k.Apply):
 		m.results.filter.Blur()
 	case key.Matches(msg, k.Clear):
-		m.results.clearFilter()
+		m.clearResultFilter()
 	default:
 		return m, m.updateResults(msg)
 	}
@@ -169,30 +164,28 @@ func (m Model) inFilter() bool {
 }
 
 func (m Model) handlePlaybackKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
-	p, k := m.deps.Player, m.keys.playback
+	k := m.keys.playback
 	switch {
 	case key.Matches(msg, k.Pause):
-		return do(func(ctx context.Context) error { return p.TogglePause(ctx) }), true
+		return teaCmd(m.core.TogglePause()), true
 	case key.Matches(msg, k.SeekBack):
-		return do(func(ctx context.Context) error { return p.Seek(ctx, -seekStep) }), true
+		return teaCmd(m.core.Seek(-seekStep)), true
 	case key.Matches(msg, k.SeekForward):
-		return do(func(ctx context.Context) error { return p.Seek(ctx, seekStep) }), true
+		return teaCmd(m.core.Seek(seekStep)), true
 	case key.Matches(msg, m.keys.global.SeekPercent):
-		return m.seekPercent(10 * int(msg.Code-'0')), true
+		return teaCmd(m.core.SeekPercent(float64(10 * int(msg.Code-'0')))), true
 	case key.Matches(msg, k.Next):
-		return do(func(ctx context.Context) error { return p.Next(ctx) }), true
+		return teaCmd(m.core.Next()), true
 	case key.Matches(msg, k.Prev):
-		return do(func(ctx context.Context) error { return p.Prev(ctx) }), true
+		return teaCmd(m.core.Prev()), true
 	case key.Matches(msg, k.VolumeUp):
-		return do(func(ctx context.Context) error { return p.AddVolume(ctx, volumeStep) }), true
+		return teaCmd(m.core.AddVolume(volumeStep)), true
 	case key.Matches(msg, k.VolumeDown):
-		return do(func(ctx context.Context) error { return p.AddVolume(ctx, -volumeStep) }), true
+		return teaCmd(m.core.AddVolume(-volumeStep)), true
 	case key.Matches(msg, k.Normalize):
-		on := !m.player.normalize
-		return do(func(ctx context.Context) error { return p.SetNormalize(ctx, on) }), true
+		return teaCmd(m.core.ToggleNormalize()), true
 	case key.Matches(msg, k.Repeat):
-		next := m.player.repeat().Next()
-		return do(func(ctx context.Context) error { return p.SetRepeat(ctx, next) }), true
+		return teaCmd(m.core.CycleRepeat()), true
 	}
 	return nil, false
 }
@@ -201,40 +194,40 @@ func (m Model) handleResultKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k, r := m.keys.results, &m.results
 	switch {
 	case key.Matches(msg, k.Up):
-		r.moveTo(r.cur - 1)
+		m.moveResult(r.cur - 1)
 	case key.Matches(msg, k.Down):
 		// Running off the end of an unfiltered list asks for the next page.
-		if r.cur == len(r.rows())-1 && r.filter.Value() == "" {
+		if r.cur == len(m.resultRows())-1 && r.filter.Value() == "" {
 			return m.loadMoreResults()
 		}
-		r.moveTo(r.cur + 1)
+		m.moveResult(r.cur + 1)
 	case key.Matches(msg, k.More):
 		return m.loadMoreResults()
 	case key.Matches(msg, k.Top):
-		r.moveTo(0)
+		m.moveResult(0)
 	case key.Matches(msg, k.Bottom):
-		r.moveTo(len(r.rows()) - 1)
+		m.moveResult(len(m.resultRows()) - 1)
 	case key.Matches(msg, k.Filter):
-		return m, r.openFilter()
+		return m, m.openResultFilter()
 	case key.Matches(msg, k.ClearFilter):
 		if r.filter.Value() != "" {
-			r.clearFilter()
+			m.clearResultFilter()
 		}
 	case key.Matches(msg, k.Play):
-		if t, ok := r.selected(); ok {
-			cmd := m.queue.playNow(m.nextRequest(), t)
+		if t, ok := m.selectedResult(); ok {
+			cmd := teaCmd(m.core.PlayNow(t))
 			m.setStatus("playing " + quote(t.Title) + "…")
 			return m, cmd
 		}
 	case key.Matches(msg, k.Enqueue):
-		if t, ok := r.selected(); ok {
-			cmd := m.queue.enqueue(m.nextRequest(), t)
+		if t, ok := m.selectedResult(); ok {
+			cmd := teaCmd(m.core.Enqueue(t))
 			m.setStatus("queueing " + quote(t.Title) + "…")
-			r.moveTo(r.cur + 1)
+			m.moveResult(r.cur + 1)
 			return m, cmd
 		}
 	case key.Matches(msg, k.Save):
-		if t, ok := r.selected(); ok {
+		if t, ok := m.selectedResult(); ok {
 			return m.openPlaylistPicker(t)
 		}
 	}
@@ -243,7 +236,7 @@ func (m Model) handleResultKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleQueueKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := m.keys.queue
-	entries := m.queue.entries
+	entries := m.core.Queue.Entries
 	i := m.queueCur
 	switch {
 	case key.Matches(msg, k.Up):
@@ -255,43 +248,30 @@ func (m Model) handleQueueKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, k.Bottom):
 		m.queueCur = max(0, len(entries)-1)
 	case key.Matches(msg, k.Jump):
-		if !m.queue.insertPending && i >= 0 && i < len(entries) {
-			return m, m.queue.playIndex(m.nextRequest(), i)
-		}
+		return m, teaCmd(m.core.PlayIndex(i))
 	case key.Matches(msg, k.Save):
 		if i >= 0 && i < len(entries) {
-			return m.openPlaylistPicker(m.entryTrack(entries[i]))
+			return m.openPlaylistPicker(m.core.EntryTrack(entries[i]))
 		}
 	case key.Matches(msg, k.SaveQueue):
 		if len(entries) == 0 {
 			m.setStatus("queue is empty")
 			return m, nil
 		}
-		tracks := make([]youtube.Track, 0, len(entries))
-		seen := make(map[string]bool, len(entries))
-		for _, e := range entries {
-			if e.Filename == "" || seen[e.Filename] {
-				continue
-			}
-			seen[e.Filename] = true
-			tracks = append(tracks, m.entryTrack(e))
-		}
+		tracks := m.core.QueueTracks()
 		if len(tracks) == 0 {
 			m.setError("queue has no saveable tracks")
 			return m, nil
 		}
 		return m.openPlaylistName(tracks, nameCreate, "name the playlist for the current queue")
 	case key.Matches(msg, k.Remove):
-		if !m.queue.insertPending && i >= 0 && i < len(entries) {
-			cmd := m.queue.remove(m.nextRequest(), i)
-			m.queueCur = min(i, max(0, len(m.queue.entries)-1))
-			return m, cmd
+		if cmd := m.core.RemoveEntry(i); cmd != nil {
+			m.queueCur = min(i, max(0, len(m.core.Queue.Entries)-1))
+			return m, teaCmd(cmd)
 		}
 	case key.Matches(msg, k.Clear):
-		// Imports still resolving take a slot once resolved, so they land after the clear.
-		cmd := m.queue.clear(m.nextRequest())
+		cmd := teaCmd(m.core.ClearQueue())
 		m.queueCur = 0
-		m.player.stop()
 		m.setStatus("clearing queue…")
 		m.syncMPRIS()
 		return m, tea.Batch(cmd, m.refreshThumb())
@@ -305,47 +285,34 @@ func (m Model) handleQueueKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// moveQueueEntry walks the entry at from to to one slot at a time, since the
-// projected queue only swaps neighbours; the cursor follows it.
 func (m *Model) moveQueueEntry(from, to int) tea.Cmd {
-	n := len(m.queue.entries)
-	if m.queue.insertPending || from == to || from < 0 || from >= n || to < 0 || to >= n {
+	cmds := m.core.MoveEntry(from, to)
+	if cmds == nil {
 		return nil
 	}
-	step := 1
-	if to < from {
-		step = -1
-	}
-	var cmds []tea.Cmd
-	for i := from; i != to; i += step {
-		cmds = append(cmds, m.queue.move(m.nextRequest(), i, i+step))
-	}
 	m.queueCur = to
-	return tea.Batch(cmds...)
+	teaCmds := make([]tea.Cmd, len(cmds))
+	for i, cmd := range cmds {
+		teaCmds[i] = teaCmd(cmd)
+	}
+	return tea.Batch(teaCmds...)
 }
 
 // shuffleQueue permutes the tracks after the current one; the cursor follows
 // its track.
 func (m Model) shuffleQueue() (tea.Model, tea.Cmd) {
-	// The current index is only trustworthy once earlier edits are read back from mpv.
-	if m.queue.projection != nil {
+	cmd, order, err := m.core.Shuffle(m.rng)
+	switch {
+	case errors.Is(err, service.ErrEditsPending):
 		return m, nil
-	}
-	n := len(m.queue.entries)
-	after, current := -1, ""
-	if e, _, ok := m.current(); ok {
-		after, current = m.queue.pos, e.Filename
-	}
-	if n-after-1 < 2 {
+	case errors.Is(err, service.ErrNothingToShuffle):
 		m.setStatus("nothing to shuffle")
 		return m, nil
 	}
-	order := mpv.TailShuffle(n, after, m.rng)
-	cmd := m.queue.reorder(m.nextRequest(), after, current, order)
 	if cur := slices.Index(order, m.queueCur); cur >= 0 {
 		m.queueCur = cur
 	}
-	return m, cmd
+	return m, teaCmd(cmd)
 }
 
 func (m Model) quit() (tea.Model, tea.Cmd) {
@@ -355,39 +322,34 @@ func (m Model) quit() (tea.Model, tea.Cmd) {
 	return m, tea.Quit
 }
 
-func (m *Model) applyEvent(ev mpv.Event) tea.Cmd {
-	switch ev.Name {
-	case "property-change":
-		return m.applyProperty(ev)
-	case "playback-restart":
+func (m *Model) applyEvent(ev service.PlayerEvent) tea.Cmd {
+	before := m.core.Queue.Synced
+	result := m.core.Update(ev)
+	cmds := []tea.Cmd{teaCmds(result.Cmds)}
+	if m.core.Queue.Synced != before {
+		m.queueCur = min(max(0, m.queueCur), max(0, len(m.core.Queue.Entries)-1))
+	}
+	if m.core.Queue.Synced != before || result.SwitchesTrack {
+		cmds = append(cmds, m.refreshThumb())
+	}
+	switch ev := ev.(type) {
+	case service.PlaybackRestarted:
 		m.clearError()
-		// MPRIS clients resync on Seeked, which mpv fires after every seek and track start.
 		if m.deps.MPRIS != nil {
-			m.deps.MPRIS.Seeked(m.player.timePos)
+			m.deps.MPRIS.Seeked(m.core.Playback.TimePos)
 		}
-	case "file-loaded":
+	case service.FileLoaded:
 		m.clearError()
 		if m.overlay == overlayInfo {
-			return loadStream(m.deps.Player, false)
+			cmds = append(cmds, loadStream(m.core, false))
 		}
-	case "end-file":
-		if ev.Reason == "error" {
-			m.setError("playback failed: " + ev.FileError)
-		}
-	}
-	return nil
-}
-
-// applyProperty delivers a property change to the queue first, so the root's
-// reconciliation below sees the updated playlist position.
-func (m *Model) applyProperty(ev mpv.Event) tea.Cmd {
-	_, queueCmd := m.updateQueue(mpvEventMsg(ev))
-	switchesTrack := m.player.apply(ev)
-	if ev.Prop == mpv.PropAudioDevice {
+	case service.PlaybackFailed:
+		m.setError("playback failed: " + ev.Reason)
+	case service.DeviceChanged:
 		if tap, ok := m.deps.Tap.(interface{ SetAudioDevice(string) error }); ok {
 			old := m.spectrumUnavailable
 			m.spectrumUnavailable = ""
-			if err := tap.SetAudioDevice(m.player.deviceName()); err != nil {
+			if err := tap.SetAudioDevice(m.core.Playback.DeviceName()); err != nil {
 				m.spectrumUnavailable = "spectrum: " + err.Error()
 				if old != m.spectrumUnavailable {
 					m.setError(m.spectrumUnavailable)
@@ -397,62 +359,37 @@ func (m *Model) applyProperty(ev mpv.Event) tea.Cmd {
 			}
 		}
 	}
-	if !switchesTrack {
-		return queueCmd
-	}
-	return tea.Batch(queueCmd, m.refreshThumb())
+	return tea.Batch(cmds...)
+}
+
+func (m *Model) applyChange(ev service.PlayerEvent) tea.Cmd {
+	return m.applyEvent(ev)
 }
 
 func (m *Model) refreshThumb() tea.Cmd {
-	_, t, _ := m.current()
+	_, t, _ := m.core.Current()
 	return m.thumb.refresh(t)
 }
 
-func do(fn func(ctx context.Context) error) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
-		defer cancel()
-		if err := fn(ctx); err != nil {
-			return errMsg{err}
-		}
-		return nil
-	}
+func loadDevices(c service.Core, open bool) tea.Cmd {
+	load := c.LoadDevices()
+	return func() tea.Msg { return devicesMsg{load().(service.DevicesLoaded), open} }
 }
 
-func (m *Model) nextRequest() uint64 {
-	m.requestID++
-	m.activeRequest = m.requestID
-	return m.requestID
+func loadStream(c service.Core, open bool) tea.Cmd {
+	load := c.LoadStream()
+	return func() tea.Msg { return streamMsg{load().(service.StreamLoaded), open} }
 }
 
-func loadDevices(p Player, open bool) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
-		defer cancel()
-		devices, err := p.AudioDevices(ctx)
-		return devicesMsg{devices: devices, open: open, err: err}
-	}
-}
-
-func loadStream(p Player, open bool) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
-		defer cancel()
-		info, err := p.StreamInfo(ctx)
-		return streamMsg{info: info, open: open, err: err}
-	}
-}
-
-func waitMPV(ch <-chan mpv.Event, shown time.Duration) tea.Cmd {
+func waitPlayer(ch <-chan service.PlayerEvent, shown time.Duration) tea.Cmd {
 	return func() tea.Msg {
 		for ev := range ch {
-			if ev.Name == "property-change" && ev.Prop == mpv.PropTimePos && string(ev.Data) != "null" &&
-				seconds(mpv.Decode[float64](ev.Data)).Round(time.Second) == shown.Round(time.Second) {
+			if pos, ok := ev.(service.PositionChanged); ok && pos.Pos.Round(time.Second) == shown.Round(time.Second) {
 				continue
 			}
-			return mpvEventMsg(ev)
+			return playerEventMsg{ev}
 		}
-		return mpvClosedMsg{}
+		return playerClosedMsg{}
 	}
 }
 
@@ -470,12 +407,28 @@ func waitSpectrumError(ch <-chan error) tea.Cmd {
 	return func() tea.Msg { return spectrumErrorMsg{err: <-ch} }
 }
 
-func seconds(s float64) time.Duration {
-	return time.Duration(s * float64(time.Second))
+func actionStatus(done service.ActionDone) string {
+	switch done.Action {
+	case service.ActionPlayNow:
+		return "playing " + quote(done.Title)
+	case service.ActionEnqueue:
+		return "queued " + quote(done.Title)
+	case service.ActionPlayIndex:
+		return "playing selected track"
+	case service.ActionReorder:
+		return "queue shuffled"
+	case service.ActionReplace:
+		return "playing " + pluralize(done.Tracks, "track")
+	case service.ActionClear:
+		return "queue cleared"
+	case service.ActionRemove, service.ActionMove:
+		return "queue updated"
+	}
+	return ""
 }
 
 func quote(s string) string {
-	return "“" + sanitize(s) + "”"
+	return "“" + service.Sanitize(s) + "”"
 }
 
 func pluralize(n int, noun string) string {

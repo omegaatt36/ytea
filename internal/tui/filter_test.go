@@ -16,68 +16,13 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/service"
 )
 
-func matchIndices(ms []filterMatch) []int {
-	out := make([]int, 0, len(ms))
-	for _, m := range ms {
-		out = append(out, m.index)
-	}
-	return out
-}
-
-func TestFilterResults(t *testing.T) {
-	tracks := []youtube.Track{
-		{Title: "Lofi Hip Hop Radio", Channel: "Lofi Girl"},
-		{Title: "Rock Classics", Channel: "Rock Channel"},
-		{Title: "lofi beats to study", Channel: "ChilledCow"},
-		{Title: "Jazz Night", Channel: "LOFI jazz collective"},
-	}
-	tests := []struct {
-		name  string
-		query string
-		want  []int
-	}{
-		{name: "case-insensitive channel match", query: "chilledcow", want: []int{2}},
-		{name: "channel match upper-case query", query: "COLLECTIVE", want: []int{3}},
-		{name: "title or channel, order preserved", query: "lofi", want: []int{0, 2, 3}},
-		{name: "multi-term AND", query: "lofi study", want: []int{2}},
-		{name: "multi-term AND any order", query: "study lofi", want: []int{2}},
-		{name: "terms may match across title and channel", query: "jazz night lofi", want: []int{3}},
-		{name: "one term missing excludes row", query: "rock lofi", want: []int{}},
-		{name: "extra spaces between terms", query: "  study   lofi ", want: []int{2}},
-		{name: "empty query matches all", query: "", want: []int{0, 1, 2, 3}},
-		{name: "whitespace query matches all", query: "   ", want: []int{0, 1, 2, 3}},
-		{name: "no match", query: "metal", want: []int{}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := matchIndices(filterResults(tracks, tt.query))
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("filterResults(%q) = %v, want %v", tt.query, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestFilterResultsSpans(t *testing.T) {
-	tracks := []youtube.Track{{Title: "Lofi Beats", Channel: "Chill LOFI"}}
-	got := filterResults(tracks, "lofi beat")
-	want := []filterMatch{{
-		index:   0,
-		title:   []span{{0, 4}, {5, 9}},
-		channel: []span{{6, 10}},
-	}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("filterResults spans = %+v, want %+v", got, want)
-	}
-}
-
-// results-filter R1
 func TestFilterKeyIgnoredWithoutResults(t *testing.T) {
 	m, _ := filterModel()
-	m.results.tracks = nil
+	m.core.Search.Tracks = nil
 	m = press(t, m, keyPress("f"))
 	if m.results.filter.Focused() || m.results.filter.Value() != "" {
 		t.Errorf("f without results: filter focused=%v value=%q, want closed and empty", m.results.filter.Focused(), m.results.filter.Value())
@@ -268,7 +213,7 @@ func TestFilterTitleCountsMatchedOverTotal(t *testing.T) {
 // results-filter R3
 func TestFilterHighlightsMatchedSubstrings(t *testing.T) {
 	m, _ := filterModel()
-	m.results.tracks[2].Channel = "Lofi Girl"
+	m.core.Search.Tracks[2].Channel = "Lofi Girl"
 	if strings.Contains(m.render(), matchStyle.Render("lofi")) {
 		t.Error("render highlights lofi without a filter")
 	}
@@ -293,7 +238,7 @@ func TestFilterHighlightsMatchedSubstrings(t *testing.T) {
 func TestFilterHighlightSurvivesTruncation(t *testing.T) {
 	m, _ := filterModel()
 	m = resize(m, 60)
-	m.results.tracks[2].Title = "lofi " + strings.Repeat("x", 100) + " tail"
+	m.core.Search.Tracks[2].Title = "lofi " + strings.Repeat("x", 100) + " tail"
 	m = press(t, m, keyPress("f"))
 	m = typeText(t, m, "lofi tail")
 	leftW := m.paneRect(paneResults).Dx()
@@ -327,8 +272,8 @@ func TestNewResultsClearFilter(t *testing.T) {
 			if typing {
 				m.results.filter.Focus()
 			}
-			m.searchRequest = m.nextRequest()
-			got, _ := m.update(searchDoneMsg{requestID: m.searchRequest, query: "new", tracks: []youtube.Track{
+			id := pendingSearch(&m, "new")
+			got, _ := m.update(service.SearchDone{RequestID: id, Query: "new", Tracks: []domain.Track{
 				{Title: "jazz", URL: "j"}, {Title: "blues", URL: "k"},
 			}})
 			m = got.(Model)
@@ -410,13 +355,13 @@ func TestHighlightSurvivesControlBytes(t *testing.T) {
 	tests := []struct {
 		name  string
 		s     string
-		spans []span
+		spans []service.Span
 		width int
 		want  int
 	}{
 		{"trailing escape", "abcdef\x1b[0m", nil, 5, 5},
 		{"inner escapes", "abc\x1b[31mred\x1b[0m tail", nil, 3, 3},
-		{"escape before span", "x\x1b[0mlofi", []span{{5, 9}}, 20, 8},
+		{"escape before span", "x\x1b[0mlofi", []service.Span{{Start: 5, End: 9}}, 20, 8},
 		{"wide runes", "日本語日本語", nil, 5, 5},
 		{"fits", "ab\x07c", nil, 5, 3},
 		{"hangul fillers", "\u3164\u3164abc\u3164", nil, 5, 3},

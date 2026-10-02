@@ -11,8 +11,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 
+	"github.com/omegaatt36/ytea/domain"
 	"github.com/omegaatt36/ytea/internal/thumbnail"
-	"github.com/omegaatt36/ytea/internal/youtube"
 )
 
 // placeDelay lets the renderer finish the frame (including any post-resize
@@ -126,7 +126,7 @@ func (t thumbImage) update(msg tea.Msg) (thumbImage, tea.Cmd) {
 }
 
 // refresh waits for the graphics probe, which decides the rendering to fetch.
-func (t *thumbImage) refresh(playing youtube.Track) tea.Cmd {
+func (t *thumbImage) refresh(playing domain.Track) tea.Cmd {
 	if !t.enabled || t.graphics == graphicsUnknown {
 		return nil
 	}

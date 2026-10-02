@@ -1,15 +1,14 @@
 package tui
 
 import (
-	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/omegaatt36/ytea/domain"
 	"github.com/omegaatt36/ytea/internal/history"
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/service"
 )
 
 func historyModel(t *testing.T) (Model, *history.Store) {
@@ -18,13 +17,12 @@ func historyModel(t *testing.T) (Model, *history.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := overlayModel(t, focusQueue)
-	m.deps.History = store
-	m.player.paused = true
+	m := overlayModel(t, focusQueue, func(d *Deps) { d.History = store })
+	m.core.Playback.Paused = true
 	return m, store
 }
 
-func historyURLs(entries []history.Entry) []string {
+func historyURLs(entries []domain.HistoryEntry) []string {
 	urls := make([]string, len(entries))
 	for i, e := range entries {
 		urls[i] = e.Track.URL
@@ -34,39 +32,39 @@ func historyURLs(entries []history.Entry) []string {
 
 func TestHistoryRecordsATrackOnceItPlays(t *testing.T) {
 	m, store := historyModel(t)
-	m.player.timePos = 3 * time.Second
-	if cmd := m.recordPlay(); cmd != nil {
+	m.core.Playback.TimePos = 3 * time.Second
+	if cmd := m.core.RecordPlay(); cmd != nil {
 		t.Fatal("a paused, restored track was recorded")
 	}
-	m.player.paused, m.player.timePos = false, 0
-	if cmd := m.recordPlay(); cmd != nil {
+	m.core.Playback.Paused, m.core.Playback.TimePos = false, 0
+	if cmd := m.core.RecordPlay(); cmd != nil {
 		t.Fatal("a track not yet playing was recorded")
 	}
 
-	m.player.timePos = time.Second
-	m.player.duration = 3 * time.Minute
-	cmd := m.recordPlay()
+	m.core.Playback.TimePos = time.Second
+	m.core.Playback.Duration = 3 * time.Minute
+	cmd := m.core.RecordPlay()
 	if cmd == nil {
 		t.Fatal("a playing track was not recorded")
 	}
 	got, _ := m.update(cmd())
 	m = got.(Model)
-	if cmd := m.recordPlay(); cmd != nil {
+	if cmd := m.core.RecordPlay(); cmd != nil {
 		t.Error("one play was recorded twice")
 	}
 	entries := store.Entries()
 	if len(entries) != 1 || entries[0].Track.Title != "Song" || entries[0].Track.Duration != 3*time.Minute {
 		t.Fatalf("history = %+v", entries)
 	}
-	if len(m.history) != 1 {
-		t.Errorf("the pane did not reload: %d entries", len(m.history))
+	if len(m.core.History.Entries) != 1 {
+		t.Errorf("the pane did not reload: %d entries", len(m.core.History.Entries))
 	}
 }
 
 func TestHistoryRecordsFromMPVEvents(t *testing.T) {
 	m, store := historyModel(t)
-	m.player.paused = false
-	_, cmd := m.update(mpvEventMsg(mpv.Event{Name: "property-change", Prop: mpv.PropTimePos, Data: json.RawMessage("2")}))
+	m.core.Playback.Paused = false
+	_, cmd := m.update(playerEventMsg{service.PositionChanged{Pos: 2 * time.Second}})
 	runCmd(cmd)
 	if got := historyURLs(store.Entries()); !slices.Equal(got, []string{watchURL}) {
 		t.Errorf("history after a time-pos event = %q", got)
@@ -78,7 +76,7 @@ func TestHistoryPaneKeys(t *testing.T) {
 	player := m.deps.Player.(*spyPlayer)
 	at := time.Now()
 	for _, url := range []string{"u1", "u2", "u3"} {
-		if err := store.Record(youtube.Track{Title: "track " + url, URL: url}, at); err != nil {
+		if err := store.Record(domain.Track{Title: "track " + url, URL: url}, at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -105,7 +103,7 @@ func TestHistoryPaneKeys(t *testing.T) {
 	}
 
 	// A new play lands on top without moving the cursor off its track.
-	if err := store.Record(youtube.Track{URL: "u4"}, at); err != nil {
+	if err := store.Record(domain.Track{URL: "u4"}, at); err != nil {
 		t.Fatal(err)
 	}
 	m.reloadHistory()

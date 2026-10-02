@@ -7,6 +7,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/omegaatt36/ytea/domain"
 )
 
 func TestSnapshotAndRestore(t *testing.T) {
@@ -32,7 +34,7 @@ func TestSnapshotAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(state.URLs, []string{"u1", "u2"}) || len(state.Entries) != 2 || state.Entries[0].Title != "first song" || state.Index != 1 || state.Volume != 65 || state.Repeat != RepeatAll {
+	if !slices.Equal(state.URLs, []string{"u1", "u2"}) || len(state.Entries) != 2 || state.Entries[0].Title != "first song" || state.Index != 1 || state.Volume != 65 || state.Repeat != domain.RepeatAll {
 		t.Fatalf("snapshot = %+v", state)
 	}
 	if len(sourceOps) != 5 {

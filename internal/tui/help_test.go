@@ -14,9 +14,9 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/omegaatt36/ytea/domain"
 	"github.com/omegaatt36/ytea/internal/library"
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/service"
 )
 
 // Column headings are tui-keymap-help R4's wording; "Navigation and global"
@@ -68,7 +68,7 @@ func helpContexts(t *testing.T) []struct {
 	typing := at(focusResults, overlayNone)
 	typing.results.filter.Focus()
 	paged := at(focusResults, overlayNone)
-	paged.results.query, paged.results.more = "song", true
+	paged.core.Search.Query, paged.core.Search.More = "song", true
 	k := newKeyMap()
 	// More is only offered once a search has a next page.
 	onePage := k.results
@@ -279,7 +279,7 @@ func TestInlineKeyHintsUseKeymapOrAreAbsent(t *testing.T) {
 			name: "empty search results",
 			model: func(_ *testing.T) Model {
 				m := blank(focusResults)
-				m.queue.entries = []mpv.PlaylistEntry{{Filename: "queued"}}
+				m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: "queued"}}
 				m.keys.global.Search = customBinding("x", "x", "search")
 				return m
 			},
@@ -292,7 +292,7 @@ func TestInlineKeyHintsUseKeymapOrAreAbsent(t *testing.T) {
 			name: "empty queue",
 			model: func(_ *testing.T) Model {
 				m := blank(focusResults)
-				m.results.tracks = []youtube.Track{{Title: "Result"}}
+				m.core.Search.Tracks = []domain.Track{{Title: "Result"}}
 				m.keys.results.Enqueue = customBinding("x", "x", "queue")
 				return m
 			},
@@ -460,9 +460,9 @@ func TestFullHelpFitsSmallWindows(t *testing.T) {
 			m.input.Blur()
 			m.focus = focusQueue
 			m.levels = []float64{1}
-			m.queue.entries = []mpv.PlaylistEntry{{Filename: watchURL, Title: "Song"}}
-			m.queue.pos, m.player.idle = 0, false
-			m.tracks[watchURL] = youtube.Track{ID: "abc", Title: "Song", URL: watchURL}
+			m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: watchURL, Title: "Song"}}
+			m.core.Queue.Pos, m.core.Playback.Idle = 0, false
+			m.core.Tracks[watchURL] = domain.Track{ID: "abc", Title: "Song", URL: watchURL}
 			m.setStatus("status line text")
 			got, _ := m.update(tea.WindowSizeMsg{Width: size.X, Height: size.Y})
 			m = press(t, got.(Model), keyPress("?"))
@@ -530,7 +530,7 @@ func TestFullHelpClosesWithQuestionMarkOrEsc(t *testing.T) {
 
 func TestFullHelpReplacesListPanesKeepsNowPlayingAndStatus(t *testing.T) {
 	m := overlayModel(t, focusResults)
-	m.results.tracks = []youtube.Track{{Title: "A search result"}}
+	m.core.Search.Tracks = []domain.Track{{Title: "A search result"}}
 	m.setStatus("status line text")
 	before := rendered(m)
 	for _, s := range []string{"Queue (1)", "A search result"} {
@@ -580,7 +580,7 @@ func TestQuestionMarkInInputIsLiteralNotFullHelp(t *testing.T) {
 func TestFullHelpAppliesPlaybackKeysAndIgnoresPaneKeys(t *testing.T) {
 	m := overlayModel(t, focusQueue)
 	player := m.deps.Player.(*spyPlayer)
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
+	m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
 	m = press(t, m, keyPress("?"))
 
 	got, cmd := m.update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
@@ -600,8 +600,8 @@ func TestFullHelpAppliesPlaybackKeysAndIgnoresPaneKeys(t *testing.T) {
 
 	got, cmd = m.update(keyPress("d"))
 	m = got.(Model)
-	if cmd != nil || len(m.queue.entries) != 3 {
-		t.Errorf("d with full help open: cmd=%v, queue=%v, want no removal", cmd != nil, m.queue.entries)
+	if cmd != nil || len(m.core.Queue.Entries) != 3 {
+		t.Errorf("d with full help open: cmd=%v, queue=%v, want no removal", cmd != nil, m.core.Queue.Entries)
 	}
 	if !fullHelpShown(m) {
 		t.Error("d closed the full help")
@@ -673,7 +673,7 @@ func TestFullHelpOverOverlayReturnsToIt(t *testing.T) {
 		shown string
 	}{
 		{"device picker", func(_ *testing.T, m Model) Model {
-			got, _ := m.update(devicesMsg{devices: m.devices, open: true})
+			got, _ := m.update(devicesMsg{service.DevicesLoaded{Devices: m.core.Devices}, true})
 			return got.(Model)
 		}, overlayDevices, "Autoselect device"},
 		{"track info", openInfo, overlayInfo, "copy url"},

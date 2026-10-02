@@ -10,30 +10,12 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/omegaatt36/ytea/domain"
 )
 
 // ErrEmptyQuery is returned when a search is requested without any keywords.
 var ErrEmptyQuery = errors.New("empty search query")
-
-// MaxPlaylistItems is the default number of videos to import from a playlist.
-const MaxPlaylistItems = 200
-
-// Track is a single playable YouTube entry.
-type Track struct {
-	ID       string
-	Title    string
-	Channel  string
-	URL      string
-	Duration time.Duration
-	Live     bool
-}
-
-// ThumbnailURL returns a small fixed-size JPEG thumbnail.
-// WHY: mqdefault is always JPEG (320x180); the URLs from search results may be
-// WebP or carry signed query strings that expire.
-func (t Track) ThumbnailURL() string {
-	return "https://i.ytimg.com/vi/" + t.ID + "/mqdefault.jpg"
-}
 
 // Searcher runs yt-dlp searches.
 type Searcher struct {
@@ -47,7 +29,7 @@ func NewSearcher(bin string) *Searcher {
 
 // Search returns up to limit tracks matching query, skipping the first offset
 // results so later pages can be fetched without repeating earlier ones.
-func (s *Searcher) Search(ctx context.Context, query string, offset, limit int) ([]Track, error) {
+func (s *Searcher) Search(ctx context.Context, query string, offset, limit int) ([]domain.Track, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, ErrEmptyQuery
@@ -56,11 +38,9 @@ func (s *Searcher) Search(ctx context.Context, query string, offset, limit int) 
 	return s.extract(ctx, "search", fmt.Sprintf("ytsearch%d:%s", offset+limit, query), offset, offset+limit)
 }
 
-// Lookup returns the videos behind a URL from RefOf. Non-positive limits use
-// MaxPlaylistItems; positive limits stop the listing at the requested count.
-func (s *Searcher) Lookup(ctx context.Context, url string, limit int) ([]Track, error) {
+func (s *Searcher) Lookup(ctx context.Context, url string, limit int) ([]domain.Track, error) {
 	if limit <= 0 {
-		limit = MaxPlaylistItems
+		limit = domain.MaxPlaylistItems
 	}
 	tracks, err := s.extract(ctx, "url", url, 0, limit)
 	if err != nil {
@@ -73,7 +53,7 @@ func (s *Searcher) Lookup(ctx context.Context, url string, limit int) ([]Track, 
 }
 
 // extract lists the entries after skip up to end; a non-positive end lists all.
-func (s *Searcher) extract(ctx context.Context, what, target string, skip, end int) ([]Track, error) {
+func (s *Searcher) extract(ctx context.Context, what, target string, skip, end int) ([]domain.Track, error) {
 	// Flat extraction skips per-video stream resolution: ~1s instead of ~10s.
 	args := []string{target, "--flat-playlist", "--dump-single-json", "--no-warnings"}
 	if end > 0 {
@@ -127,14 +107,14 @@ type flatEntry struct {
 	IEKey      string  `json:"ie_key"`
 }
 
-func parseTracks(data []byte) ([]Track, error) {
+func parseTracks(data []byte) ([]domain.Track, error) {
 	var res flatDump
 	if err := json.Unmarshal(data, &res); err != nil {
 		return nil, err
 	}
 
 	if len(res.Entries) > 0 {
-		tracks := make([]Track, 0, len(res.Entries))
+		tracks := make([]domain.Track, 0, len(res.Entries))
 		for _, e := range res.Entries {
 			// Channels and playlists can show up in search results; only videos are playable tracks.
 			if e.ID == "" || (e.IEKey != "" && e.IEKey != "Youtube") {
@@ -146,12 +126,12 @@ func parseTracks(data []byte) ([]Track, error) {
 	}
 	// A bare video dumps itself at the top level.
 	if res.Type == "video" && res.ID != "" {
-		return []Track{trackFromEntry(res.flatEntry)}, nil
+		return []domain.Track{trackFromEntry(res.flatEntry)}, nil
 	}
-	return []Track{}, nil
+	return []domain.Track{}, nil
 }
 
-func trackFromEntry(e flatEntry) Track {
+func trackFromEntry(e flatEntry) domain.Track {
 	channel := e.Channel
 	if channel == "" {
 		channel = e.Uploader
@@ -160,7 +140,7 @@ func trackFromEntry(e flatEntry) Track {
 	if url == "" {
 		url = "https://www.youtube.com/watch?v=" + e.ID
 	}
-	return Track{
+	return domain.Track{
 		ID:       e.ID,
 		Title:    e.Title,
 		Channel:  channel,

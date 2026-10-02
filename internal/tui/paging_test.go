@@ -9,7 +9,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/service"
 )
 
 // pageSearcher serves numbered results and records the offsets asked for.
@@ -18,16 +19,16 @@ type pageSearcher struct {
 	offsets []int
 }
 
-func (s *pageSearcher) Search(_ context.Context, _ string, offset, limit int) ([]youtube.Track, error) {
+func (s *pageSearcher) Search(_ context.Context, _ string, offset, limit int) ([]domain.Track, error) {
 	s.offsets = append(s.offsets, offset)
-	var tracks []youtube.Track
+	var tracks []domain.Track
 	for i := offset; i < min(offset+limit, s.total); i++ {
-		tracks = append(tracks, youtube.Track{Title: fmt.Sprintf("song %d", i), URL: fmt.Sprint(i)})
+		tracks = append(tracks, domain.Track{Title: fmt.Sprintf("song %d", i), URL: fmt.Sprint(i)})
 	}
 	return tracks, nil
 }
 
-func (s *pageSearcher) Lookup(context.Context, string, int) ([]youtube.Track, error) {
+func (s *pageSearcher) Lookup(context.Context, string, int) ([]domain.Track, error) {
 	return nil, nil
 }
 
@@ -50,7 +51,7 @@ func runCmd(cmd tea.Cmd) []tea.Msg {
 func deliverSearch(t *testing.T, m Model, cmd tea.Cmd) Model {
 	t.Helper()
 	for _, msg := range runCmd(cmd) {
-		if done, ok := msg.(searchDoneMsg); ok {
+		if done, ok := msg.(service.SearchDone); ok {
 			got, _ := m.update(done)
 			return got.(Model)
 		}
@@ -69,7 +70,7 @@ func searchedModel(t *testing.T, total int) (Model, *pageSearcher) {
 	return deliverSearch(t, got.(Model), cmd), s
 }
 
-func titles(tracks []youtube.Track) []string {
+func titles(tracks []domain.Track) []string {
 	out := make([]string, len(tracks))
 	for i, t := range tracks {
 		out[i] = t.Title
@@ -79,26 +80,26 @@ func titles(tracks []youtube.Track) []string {
 
 func TestMoreResultsAppendsTheNextPage(t *testing.T) {
 	m, s := searchedModel(t, 45)
-	if len(m.results.tracks) != searchLimit || !m.results.canLoadMore() {
-		t.Fatalf("first page: %d results, more=%v", len(m.results.tracks), m.results.canLoadMore())
+	if len(m.core.Search.Tracks) != service.SearchLimit || !m.core.Search.CanLoadMore() {
+		t.Fatalf("first page: %d results, more=%v", len(m.core.Search.Tracks), m.core.Search.CanLoadMore())
 	}
-	if got := resultsTitleLine(t, m); !strings.Contains(got, fmt.Sprintf("Results (%d+)", searchLimit)) {
+	if got := resultsTitleLine(t, m); !strings.Contains(got, fmt.Sprintf("Results (%d+)", service.SearchLimit)) {
 		t.Errorf("title %q does not hint at more results", got)
 	}
 	m.results.cur = 3
 
 	got, cmd := m.update(keyPress("m"))
 	m = deliverSearch(t, got.(Model), cmd)
-	if want := []int{0, searchLimit}; !slices.Equal(s.offsets, want) {
+	if want := []int{0, service.SearchLimit}; !slices.Equal(s.offsets, want) {
 		t.Errorf("search offsets = %v, want %v", s.offsets, want)
 	}
-	if len(m.results.tracks) != 45 || m.results.tracks[44].Title != "song 44" || m.results.cur != 3 {
-		t.Fatalf("after more: %d results, last %q, cursor %d", len(m.results.tracks), m.results.tracks[len(m.results.tracks)-1].Title, m.results.cur)
+	if len(m.core.Search.Tracks) != 45 || m.core.Search.Tracks[44].Title != "song 44" || m.results.cur != 3 {
+		t.Fatalf("after more: %d results, last %q, cursor %d", len(m.core.Search.Tracks), m.core.Search.Tracks[len(m.core.Search.Tracks)-1].Title, m.results.cur)
 	}
 
 	got, cmd = m.update(keyPress("m"))
 	m = deliverSearch(t, got.(Model), cmd)
-	if m.results.canLoadMore() {
+	if m.core.Search.CanLoadMore() {
 		t.Error("an empty page left more results on offer")
 	}
 	if _, cmd := m.update(keyPress("m")); cmd != nil {
@@ -108,10 +109,10 @@ func TestMoreResultsAppendsTheNextPage(t *testing.T) {
 
 func TestDownPastTheLastResultLoadsMore(t *testing.T) {
 	m, s := searchedModel(t, 100)
-	m.results.cur = len(m.results.tracks) - 1
+	m.results.cur = len(m.core.Search.Tracks) - 1
 	got, cmd := m.update(keyPress("down"))
 	m = got.(Model)
-	if !m.results.loadingMore {
+	if !m.core.Search.LoadingMore {
 		t.Fatal("down on the last result did not load more")
 	}
 	// A second press while the page loads must not ask for it twice.
@@ -119,7 +120,7 @@ func TestDownPastTheLastResultLoadsMore(t *testing.T) {
 		t.Error("down while loading started another search")
 	}
 	m = deliverSearch(t, m, cmd)
-	if len(s.offsets) != 2 || m.results.cur != searchLimit-1 {
+	if len(s.offsets) != 2 || m.results.cur != service.SearchLimit-1 {
 		t.Errorf("offsets %v, cursor %d; want two searches and the cursor left in place", s.offsets, m.results.cur)
 	}
 }
@@ -135,22 +136,7 @@ func TestNewSearchDiscardsAPendingPage(t *testing.T) {
 
 	m = deliverSearch(t, m, searchCmd)
 	m = deliverSearch(t, m, moreCmd)
-	if len(m.results.tracks) != searchLimit || m.results.query != "jazz" || m.results.loadingMore {
-		t.Errorf("stale page applied: %d results for %q, loading=%v", len(m.results.tracks), m.results.query, m.results.loadingMore)
-	}
-}
-
-func TestMoreResultsSkipsDuplicates(t *testing.T) {
-	var r resultsPane
-	r.set([]youtube.Track{{Title: "a", URL: "a"}, {Title: "b", URL: "b"}})
-	r.query = "q"
-	if added := r.extend([]youtube.Track{{Title: "b", URL: "b"}, {Title: "c", URL: "c"}}, 60); added != 1 {
-		t.Errorf("extend() added %d, want 1", added)
-	}
-	if got, want := titles(r.tracks), []string{"a", "b", "c"}; !slices.Equal(got, want) {
-		t.Errorf("results = %q, want %q", got, want)
-	}
-	if !r.canLoadMore() || r.fetched != 60 {
-		t.Errorf("more=%v fetched=%d, want more past offset 60", r.canLoadMore(), r.fetched)
+	if len(m.core.Search.Tracks) != service.SearchLimit || m.core.Search.Query != "jazz" || m.core.Search.LoadingMore {
+		t.Errorf("stale page applied: %d results for %q, loading=%v", len(m.core.Search.Tracks), m.core.Search.Query, m.core.Search.LoadingMore)
 	}
 }

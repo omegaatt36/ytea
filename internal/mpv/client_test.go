@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/omegaatt36/ytea/domain"
 )
 
 func newFakePair(t *testing.T, handle func(req request) string) *Client {
@@ -145,7 +147,61 @@ func TestDecodeNullIsZero(t *testing.T) {
 	if got := Decode[float64](json.RawMessage("null")); got != 0 {
 		t.Errorf("Decode(null) = %v, want 0", got)
 	}
-	if got := Decode[[]PlaylistEntry](nil); got != nil {
+	if got := Decode[[]domain.PlaylistEntry](nil); got != nil {
 		t.Errorf("Decode(nil) = %v, want nil", got)
+	}
+}
+
+func TestClientCloseDiscardsUnreadEvents(t *testing.T) {
+	c := newFakePair(t, func(req request) string {
+		return `{"event":"file-loaded"}` + "\n" + fmt.Sprintf(`{"request_id":%d,"error":"success"}`, req.RequestID)
+	})
+	if _, err := c.Command(context.Background(), "stop"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ev, ok := <-c.Events():
+		if ok {
+			t.Fatalf("Close left an unread event: %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not stop event delivery")
+	}
+}
+
+func TestClientNaturalEOFDrainsEvents(t *testing.T) {
+	ours, theirs := net.Pipe()
+	c := newClient(ours)
+	defer c.Close()
+	go func() {
+		defer theirs.Close()
+		fmt.Fprintln(theirs, `{"event":"file-loaded"}`)
+		fmt.Fprintln(theirs, `{"event":"playback-restart"}`)
+	}()
+	select {
+	case <-c.Done():
+	case <-time.After(time.Second):
+		t.Fatal("connection did not end")
+	}
+	for _, want := range []string{"file-loaded", "playback-restart"} {
+		select {
+		case ev, ok := <-c.Events():
+			if !ok || ev.Name != want {
+				t.Fatalf("event = %+v, open = %v, want %s", ev, ok, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("queued event lost")
+		}
+	}
+	select {
+	case _, ok := <-c.Events():
+		if ok {
+			t.Fatal("unexpected event")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("events not closed")
 	}
 }

@@ -6,33 +6,18 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+
+	"github.com/omegaatt36/ytea/domain"
 )
-
-func TestRepeatNextCycles(t *testing.T) {
-	got := []Repeat{RepeatOff}
-	for range 3 {
-		got = append(got, got[len(got)-1].Next())
-	}
-	if want := []Repeat{RepeatOff, RepeatAll, RepeatOne, RepeatOff}; !slices.Equal(got, want) {
-		t.Errorf("Next() cycle = %v, want %v", got, want)
-	}
-}
-
-func TestRepeatZeroValueActsAsOff(t *testing.T) {
-	var r Repeat
-	if got := r.Next(); got != RepeatAll {
-		t.Errorf("zero Repeat.Next() = %q, want %q", got, RepeatAll)
-	}
-}
 
 func TestSetRepeatProperties(t *testing.T) {
 	tests := []struct {
-		mode                   Repeat
+		mode                   domain.Repeat
 		loopFile, loopPlaylist string
 	}{
-		{mode: RepeatOff, loopFile: "no", loopPlaylist: "no"},
-		{mode: RepeatAll, loopFile: "no", loopPlaylist: "inf"},
-		{mode: RepeatOne, loopFile: "inf", loopPlaylist: "no"},
+		{mode: domain.RepeatOff, loopFile: "no", loopPlaylist: "no"},
+		{mode: domain.RepeatAll, loopFile: "no", loopPlaylist: "inf"},
+		{mode: domain.RepeatOne, loopFile: "inf", loopPlaylist: "no"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.mode.String(), func(t *testing.T) {
@@ -70,38 +55,22 @@ func TestRepeatObservesLoopProperties(t *testing.T) {
 func TestRepeatFromReportedValues(t *testing.T) {
 	tests := []struct {
 		loopPlaylist, loopFile string
-		want                   Repeat
+		want                   domain.Repeat
 	}{
-		{loopPlaylist: `false`, loopFile: `false`, want: RepeatOff},
-		{loopPlaylist: `null`, loopFile: `null`, want: RepeatOff},
-		{loopPlaylist: `"no"`, loopFile: `0`, want: RepeatOff},
-		{loopPlaylist: `"inf"`, loopFile: `false`, want: RepeatAll},
-		{loopPlaylist: `3`, loopFile: `false`, want: RepeatAll},
-		{loopPlaylist: `"force"`, loopFile: `false`, want: RepeatAll},
-		{loopPlaylist: `false`, loopFile: `"inf"`, want: RepeatOne},
-		{loopPlaylist: `"inf"`, loopFile: `"inf"`, want: RepeatOne},
-		{loopPlaylist: `false`, loopFile: `2`, want: RepeatOne},
+		{loopPlaylist: `false`, loopFile: `false`, want: domain.RepeatOff},
+		{loopPlaylist: `null`, loopFile: `null`, want: domain.RepeatOff},
+		{loopPlaylist: `"no"`, loopFile: `0`, want: domain.RepeatOff},
+		{loopPlaylist: `"inf"`, loopFile: `false`, want: domain.RepeatAll},
+		{loopPlaylist: `3`, loopFile: `false`, want: domain.RepeatAll},
+		{loopPlaylist: `"force"`, loopFile: `false`, want: domain.RepeatAll},
+		{loopPlaylist: `false`, loopFile: `"inf"`, want: domain.RepeatOne},
+		{loopPlaylist: `"inf"`, loopFile: `"inf"`, want: domain.RepeatOne},
+		{loopPlaylist: `false`, loopFile: `2`, want: domain.RepeatOne},
 	}
 	for _, tt := range tests {
-		got := RepeatFrom(LoopOn(json.RawMessage(tt.loopPlaylist)), LoopOn(json.RawMessage(tt.loopFile)))
+		got := domain.RepeatFrom(LoopOn(json.RawMessage(tt.loopPlaylist)), LoopOn(json.RawMessage(tt.loopFile)))
 		if got != tt.want {
 			t.Errorf("loop-playlist=%s loop-file=%s: mode = %v, want %v", tt.loopPlaylist, tt.loopFile, got, tt.want)
-		}
-	}
-}
-
-func TestParseRepeat(t *testing.T) {
-	tests := map[string]Repeat{
-		"all":  RepeatAll,
-		"one":  RepeatOne,
-		"off":  RepeatOff,
-		"":     RepeatOff,
-		"loop": RepeatOff,
-		"ALL":  RepeatOff,
-	}
-	for in, want := range tests {
-		if got := ParseRepeat(in); got != want {
-			t.Errorf("ParseRepeat(%q) = %v, want %v", in, got, want)
 		}
 	}
 }

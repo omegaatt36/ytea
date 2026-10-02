@@ -8,60 +8,34 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/omegaatt36/ytea/internal/history"
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/service"
 )
-
-type historyChangedMsg struct{}
-
-// recordPlay adds the current track to the history once it is audibly
-// playing, so a session restored paused or a track that fails to load is not
-// counted as played.
-func (m *Model) recordPlay() tea.Cmd {
-	h := m.deps.History
-	e, _, ok := m.current()
-	if h == nil || !ok || m.player.paused || m.player.timePos <= 0 || e.Filename == m.historyLast {
-		return nil
-	}
-	m.historyLast = e.Filename
-	t := m.entryTrack(e)
-	if t.Duration == 0 && !t.Live {
-		t.Duration = m.player.duration
-	}
-	return func() tea.Msg {
-		if err := h.Record(t, time.Now()); err != nil {
-			return errMsg{fmt.Errorf("record history: %w", err)}
-		}
-		return historyChangedMsg{}
-	}
-}
 
 // reloadHistory keeps the cursor on its track when a new play is prepended.
 func (m *Model) reloadHistory() {
-	if m.deps.History == nil {
-		return
-	}
 	var selected string
 	if t, ok := m.selectedHistoryTrack(); ok {
 		selected = t.URL
 	}
-	m.history = m.deps.History.Entries()
-	if i := slices.IndexFunc(m.history, func(e history.Entry) bool { return e.Track.URL == selected }); i >= 0 {
+	m.core.Update(service.HistoryRecorded{})
+	entries := m.core.History.Entries
+	if i := slices.IndexFunc(entries, func(e domain.HistoryEntry) bool { return e.Track.URL == selected }); i >= 0 {
 		m.historyCur = i
 	}
-	m.historyCur = min(m.historyCur, max(0, len(m.history)-1))
+	m.historyCur = min(m.historyCur, max(0, len(entries)-1))
 }
 
-func (m Model) selectedHistoryTrack() (youtube.Track, bool) {
-	if m.historyCur < 0 || m.historyCur >= len(m.history) {
-		return youtube.Track{}, false
+func (m Model) selectedHistoryTrack() (domain.Track, bool) {
+	if m.historyCur < 0 || m.historyCur >= len(m.core.History.Entries) {
+		return domain.Track{}, false
 	}
-	return m.history[m.historyCur].Track, true
+	return m.core.History.Entries[m.historyCur].Track, true
 }
 
 func (m Model) handleHistoryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := m.keys.history
-	last := max(0, len(m.history)-1)
+	last := max(0, len(m.core.History.Entries)-1)
 	switch {
 	case key.Matches(msg, k.Up):
 		m.historyCur = max(0, m.historyCur-1)
@@ -73,15 +47,13 @@ func (m Model) handleHistoryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.historyCur = last
 	case key.Matches(msg, k.Play):
 		if t, ok := m.selectedHistoryTrack(); ok {
-			m.tracks[t.URL] = t
-			cmd := m.queue.playNow(m.nextRequest(), t)
+			cmd := teaCmd(m.core.PlayNow(t))
 			m.setStatus("playing " + quote(t.Title) + "…")
 			return m, cmd
 		}
 	case key.Matches(msg, k.Enqueue):
 		if t, ok := m.selectedHistoryTrack(); ok {
-			m.tracks[t.URL] = t
-			cmd := m.queue.enqueue(m.nextRequest(), t)
+			cmd := teaCmd(m.core.Enqueue(t))
 			m.setStatus("queueing " + quote(t.Title) + "…")
 			m.historyCur = min(last, m.historyCur+1)
 			return m, cmd
@@ -91,13 +63,12 @@ func (m Model) handleHistoryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.openPlaylistPicker(t)
 		}
 	case key.Matches(msg, k.Remove):
-		if _, ok := m.selectedHistoryTrack(); ok && m.deps.History != nil {
-			if err := m.deps.History.Remove(m.historyCur); err != nil {
+		if _, ok := m.selectedHistoryTrack(); ok && m.core.History.Enabled() {
+			if err := m.core.History.Remove(m.historyCur); err != nil {
 				m.setError(err.Error())
 				return m, nil
 			}
-			m.history = m.deps.History.Entries()
-			m.historyCur = min(m.historyCur, max(0, len(m.history)-1))
+			m.historyCur = min(m.historyCur, max(0, len(m.core.History.Entries)-1))
 			m.setStatus("removed from history")
 		}
 	}

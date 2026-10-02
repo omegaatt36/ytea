@@ -12,6 +12,8 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
 	"github.com/godbus/dbus/v5/prop"
+
+	"github.com/omegaatt36/ytea/service"
 )
 
 const (
@@ -301,4 +303,28 @@ func (p player) SetPosition(track dbus.ObjectPath, posUS int64) *dbus.Error {
 
 func (p player) OpenUri(string) *dbus.Error {
 	return dbus.MakeFailedError(fmt.Errorf("OpenUri is not supported"))
+}
+
+func StateOf(np service.NowPlaying) State {
+	status := Stopped
+	switch np.State {
+	case service.Playing:
+		status = Playing
+	case service.Paused:
+		status = Paused
+	case service.Stopped:
+	}
+	return State{
+		Status:   status,
+		TrackID:  np.TrackID,
+		Title:    np.Title,
+		Artist:   np.Artist,
+		URL:      np.URL,
+		ArtURL:   np.ArtURL,
+		Length:   np.Length,
+		Volume:   np.Volume,
+		Position: np.Position,
+		CanNext:  np.CanNext,
+		CanPrev:  np.CanPrev,
+	}
 }

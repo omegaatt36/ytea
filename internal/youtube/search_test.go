@@ -11,38 +11,40 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/omegaatt36/ytea/domain"
 )
 
 func TestParseTracks(t *testing.T) {
 	tests := []struct {
 		name string
 		data string
-		want []Track
+		want []domain.Track
 	}{
 		{
 			name: "video with channel",
 			data: `{"entries":[{"ie_key":"Youtube","id":"abc","title":"Song","url":"https://www.youtube.com/watch?v=abc","channel":"Artist","duration":212.5}]}`,
-			want: []Track{{ID: "abc", Title: "Song", Channel: "Artist", URL: "https://www.youtube.com/watch?v=abc", Duration: 212500 * time.Millisecond}},
+			want: []domain.Track{{ID: "abc", Title: "Song", Channel: "Artist", URL: "https://www.youtube.com/watch?v=abc", Duration: 212500 * time.Millisecond}},
 		},
 		{
 			name: "single video dumped at the top level",
 			data: `{"_type":"video","id":"abc","title":"Song","channel":"Artist","duration":213,"entries":null}`,
-			want: []Track{{ID: "abc", Title: "Song", Channel: "Artist", URL: "https://www.youtube.com/watch?v=abc", Duration: 213000 * time.Millisecond}},
+			want: []domain.Track{{ID: "abc", Title: "Song", Channel: "Artist", URL: "https://www.youtube.com/watch?v=abc", Duration: 213000 * time.Millisecond}},
 		},
 		{
 			name: "empty playlist yields no tracks",
 			data: `{"_type":"playlist","id":"ytsearch30:nothing","entries":[]}`,
-			want: []Track{},
+			want: []domain.Track{},
 		},
 		{
 			name: "falls back to uploader and builds url",
 			data: `{"entries":[{"ie_key":"Youtube","id":"xyz","title":"Radio","uploader":"Lofi Girl","live_status":"is_live"}]}`,
-			want: []Track{{ID: "xyz", Title: "Radio", Channel: "Lofi Girl", URL: "https://www.youtube.com/watch?v=xyz", Live: true}},
+			want: []domain.Track{{ID: "xyz", Title: "Radio", Channel: "Lofi Girl", URL: "https://www.youtube.com/watch?v=xyz", Live: true}},
 		},
 		{
 			name: "skips channels and entries without id",
 			data: `{"entries":[{"ie_key":"YoutubeTab","id":"UC123","title":"A channel"},{"ie_key":"Youtube","title":"no id"}]}`,
-			want: []Track{},
+			want: []domain.Track{},
 		},
 	}
 
@@ -113,7 +115,7 @@ func TestSearchPagesPastOffset(t *testing.T) {
 func TestLookupCapsListing(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
-	s := fakeYtDlp(t, argsFile, MaxPlaylistItems+5)
+	s := fakeYtDlp(t, argsFile, domain.MaxPlaylistItems+5)
 	ctx := context.Background()
 
 	for _, tt := range []struct {
@@ -122,8 +124,8 @@ func TestLookupCapsListing(t *testing.T) {
 		wantLimit int
 	}{
 		{name: "explicit limit", limit: 25, wantLimit: 25},
-		{name: "zero uses default", limit: 0, wantLimit: MaxPlaylistItems},
-		{name: "negative uses default", limit: -1, wantLimit: MaxPlaylistItems},
+		{name: "zero uses default", limit: 0, wantLimit: domain.MaxPlaylistItems},
+		{name: "negative uses default", limit: -1, wantLimit: domain.MaxPlaylistItems},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			tracks, err := s.Lookup(ctx, "https://www.youtube.com/playlist?list=PLx", tt.limit)

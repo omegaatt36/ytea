@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"math/rand/v2"
 	"slices"
@@ -12,14 +10,14 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/service"
 )
 
 func TestRapidQueueMovesKeepSelectedTrack(t *testing.T) {
 	m := New(Deps{})
 	m.focus = focusQueue
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
+	m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
 	m.queueCur = 2
 
 	for range 2 {
@@ -33,20 +31,16 @@ func TestRapidQueueMovesKeepSelectedTrack(t *testing.T) {
 		t.Errorf("cursor = %d, want 0", m.queueCur)
 	}
 	want := []string{"C", "A", "B"}
-	for i, entry := range m.queue.entries {
+	for i, entry := range m.core.Queue.Entries {
 		if entry.Filename != want[i] {
 			t.Fatalf("queue[%d] = %q, want %q", i, entry.Filename, want[i])
 		}
 	}
 	// mpv may report the first move after both keys were handled. That older
 	// event must not roll back the locally projected second move.
-	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"A"},{"filename":"C"},{"filename":"B"}]`)})
-	if m.queue.entries[0].Filename != "C" {
-		t.Errorf("stale playlist event replaced projected queue: %+v", m.queue.entries)
-	}
-	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"C"},{"filename":"A"},{"filename":"B"}]`)})
-	if m.queue.projection == nil {
-		t.Error("projection cleared before command completion")
+	m.applyChange(service.QueueChanged{Entries: []domain.PlaylistEntry{{Filename: "A"}, {Filename: "C"}, {Filename: "B"}}})
+	if m.core.Queue.Entries[0].Filename != "C" {
+		t.Errorf("stale playlist event replaced projected queue: %+v", m.core.Queue.Entries)
 	}
 }
 
@@ -56,40 +50,32 @@ func TestEmptyQueueNavigationCannotDelete(t *testing.T) {
 	for _, key := range []string{"down", "j", "G", "d", "J", "enter"} {
 		got, cmd := m.update(keyPress(key))
 		m = got.(Model)
-		if cmd != nil || m.queueCur < 0 || len(m.queue.entries) != 0 {
-			t.Fatalf("after %q: cursor=%d queue=%+v cmd=%v", key, m.queueCur, m.queue.entries, cmd != nil)
+		if cmd != nil || m.queueCur < 0 || len(m.core.Queue.Entries) != 0 {
+			t.Fatalf("after %q: cursor=%d queue=%+v cmd=%v", key, m.queueCur, m.core.Queue.Entries, cmd != nil)
 		}
 	}
 }
 
-func TestClearQueueProjectsEmptyAndIgnoresStalePlaylist(t *testing.T) {
-	m := New(Deps{})
+func TestClearQueueResetsCursorAndPlayback(t *testing.T) {
+	player := &spyPlayer{}
+	m := New(Deps{Player: player})
 	m.focus = focusQueue
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
+	m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
 	m.queueCur = 1
-	m.queue.pos, m.player.idle = 0, false
-	m.player.timePos, m.player.duration = 10*time.Second, time.Minute
+	m.core.Queue.Pos, m.core.Playback.Idle = 0, false
+	m.core.Playback.TimePos, m.core.Playback.Duration = 10*time.Second, time.Minute
 	got, cmd := m.update(keyPress("C"))
 	m = got.(Model)
-	if cmd == nil || len(m.queue.entries) != 0 || m.queueCur != 0 || m.queue.pos != -1 || !m.player.idle || m.player.timePos != 0 || m.player.duration != 0 {
-		t.Fatalf("clear projection = queue %+v, cursor %d, pos %d, idle %v, time %v/%v", m.queue.entries, m.queueCur, m.queue.pos, m.player.idle, m.player.timePos, m.player.duration)
+	if cmd == nil || len(m.core.Queue.Entries) != 0 || m.queueCur != 0 || m.core.Queue.Pos != -1 || !m.core.Playback.Idle || m.core.Playback.TimePos != 0 || m.core.Playback.Duration != 0 {
+		t.Fatalf("clear projection = queue %+v, cursor %d, pos %d, idle %v, time %v/%v", m.core.Queue.Entries, m.queueCur, m.core.Queue.Pos, m.core.Playback.Idle, m.core.Playback.TimePos, m.core.Playback.Duration)
 	}
-	if m.queue.editsPending != 1 || m.queue.projection == nil {
-		t.Fatal("clear did not reserve an authoritative queue refresh")
-	}
-	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"A"},{"filename":"B"}]`)})
-	if len(m.queue.entries) != 0 {
-		t.Fatal("stale playlist event repopulated cleared queue")
-	}
-	got, refresh := m.update(queueActionDoneMsg{requestID: m.activeRequest, status: "queue cleared", projected: true})
+	got, refresh := m.update(cmd())
 	m = got.(Model)
 	if refresh == nil || m.status != "queue cleared" {
 		t.Fatalf("clear completion = status %q, refresh %v", m.status, refresh != nil)
 	}
-	got, _ = m.update(queueRefreshMsg{revision: m.queue.revision, entries: nil, pos: -1})
-	m = got.(Model)
-	if len(m.queue.entries) != 0 || m.queue.pos != -1 || m.queue.projection != nil {
-		t.Fatalf("clear refresh = queue %+v, pos %d, projection %v", m.queue.entries, m.queue.pos, m.queue.projection)
+	if want := []string{"stop"}; !slices.Equal(player.calls, want) {
+		t.Errorf("player calls = %v, want %v", player.calls, want)
 	}
 }
 
@@ -99,7 +85,7 @@ func TestClearQueueKeepsImportStillResolving(t *testing.T) {
 	m.input.SetValue("https://youtu.be/x1")
 	got, _ := m.update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = got.(Model)
-	importID := m.activeRequest
+	importID := m.core.Active
 
 	m.focus = focusQueue
 	got, clear := m.update(keyPress("C"))
@@ -112,12 +98,12 @@ func TestClearQueueKeepsImportStillResolving(t *testing.T) {
 		t.Fatal("clear waited on the unresolved import lookup")
 	}
 
-	got, write := m.update(lookupDoneMsg{requestID: importID, tracks: []youtube.Track{{URL: "x1"}}})
+	got, write := m.update(service.LookupDone{RequestID: importID, Tracks: []domain.Track{{URL: "x1"}}})
 	m = got.(Model)
 	if write == nil {
 		t.Fatal("resolved import was not queued after clear")
 	}
-	if err := write().(queueDoneMsg).err; err != nil {
+	if err := write().(service.AppendDone).Err; err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"stop", "append x1"}; !slices.Equal(player.calls, want) {
@@ -125,143 +111,47 @@ func TestClearQueueKeepsImportStillResolving(t *testing.T) {
 	}
 }
 
-func TestQueueEnterReservesSlotAfterProjectedMove(t *testing.T) {
-	m := New(Deps{})
-	m.focus = focusQueue
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
-	m.queueCur = 1
-	got, move := m.update(keyPress("K"))
-	m = got.(Model)
-	if move == nil || m.queueCur != 0 {
-		t.Fatal("move did not project B to index 0")
-	}
-	moveDone := m.queue.tail
-	got, play := m.update(keyPress("enter"))
-	m = got.(Model)
-	if play == nil || m.queue.tail == moveDone {
-		t.Fatal("play selection was not reserved behind the projected move")
-	}
-	if m.queue.editsPending != 1 {
-		t.Errorf("pending projected edits = %d, want 1", m.queue.editsPending)
-	}
-}
-
 func TestPlayNowBlocksIndexEditsUntilQueueRefresh(t *testing.T) {
-	m := New(Deps{})
+	player := &spyPlayer{playlist: []domain.PlaylistEntry{{Filename: "A"}, {Filename: "D"}, {Filename: "B"}}}
+	m := New(Deps{Player: player})
 	m.focus = focusResults
-	m.results.tracks = []youtube.Track{{URL: "D", Title: "D"}}
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
+	m.core.Search.Tracks = []domain.Track{{URL: "D", Title: "D"}}
+	m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: "A"}, {Filename: "B"}}
 	m.queueCur = 1
 	got, play := m.update(keyPress("enter"))
 	m = got.(Model)
-	if play == nil || !m.queue.insertPending || m.queue.editsPending != 1 {
+	if play == nil || !m.core.Queue.InsertPending {
 		t.Fatal("play-now did not reserve an insertion refresh")
 	}
 	m.focus = focusQueue
 	for _, key := range []string{"d", "K", "J", "enter"} {
 		got, cmd := m.update(keyPress(key))
 		m = got.(Model)
-		if cmd != nil || len(m.queue.entries) != 2 || m.queue.entries[1].Filename != "B" {
+		if cmd != nil || len(m.core.Queue.Entries) != 2 || m.core.Queue.Entries[1].Filename != "B" {
 			t.Fatalf("%q edited a stale queue index", key)
 		}
 	}
-	got, refresh := m.update(queueActionDoneMsg{requestID: m.activeRequest, projected: true})
+	got, refresh := m.update(play())
 	m = got.(Model)
-	if refresh == nil || !m.queue.insertPending {
+	if refresh == nil || !m.core.Queue.InsertPending {
 		t.Fatal("insertion was unblocked before mpv queue refresh")
 	}
-	got, _ = m.update(queueRefreshMsg{revision: m.queue.revision, entries: []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "D"}, {Filename: "B"}}, pos: 1})
+	got, _ = m.update(refresh())
 	m = got.(Model)
-	if m.queue.insertPending || len(m.queue.entries) != 3 || m.queue.entries[1].Filename != "D" {
-		t.Fatalf("insertion refresh = %+v; pending = %v", m.queue.entries, m.queue.insertPending)
+	if m.core.Queue.InsertPending || len(m.core.Queue.Entries) != 3 || m.core.Queue.Entries[1].Filename != "D" {
+		t.Fatalf("insertion refresh = %+v; pending = %v", m.core.Queue.Entries, m.core.Queue.InsertPending)
 	}
 	got, edit := m.update(keyPress("d"))
 	m = got.(Model)
-	if edit == nil || len(m.queue.entries) != 2 || m.queue.entries[1].Filename != "B" {
-		t.Fatalf("delete did not target refreshed index: %+v", m.queue.entries)
-	}
-}
-
-func TestOpposingQueueMovesIgnoreOldAndIntermediateEvents(t *testing.T) {
-	m := New(Deps{})
-	m.focus = focusQueue
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
-	m.queueCur = 2
-	for _, key := range []string{"K", "J"} {
-		got, cmd := m.update(keyPress(key))
-		if cmd == nil {
-			t.Fatalf("%s command = nil", key)
-		}
-		m = got.(Model)
-	}
-	if m.queueCur != 2 || m.queue.entries[2].Filename != "C" {
-		t.Fatalf("projection = %+v cursor %d, want original order with C selected", m.queue.entries, m.queueCur)
-	}
-	for _, snapshot := range []string{
-		`[{"filename":"A"},{"filename":"B"},{"filename":"C"}]`, // before either move
-		`[{"filename":"A"},{"filename":"C"},{"filename":"B"}]`, // after only K
-	} {
-		m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(snapshot)})
-		if m.queue.entries[2].Filename != "C" || m.queueCur != 2 {
-			t.Fatalf("stale event %s changed projected selection: %+v cursor %d", snapshot, m.queue.entries, m.queueCur)
-		}
-	}
-	for _, id := range []uint64{1, 2} {
-		got, _ := m.update(queueActionDoneMsg{requestID: id, projected: true})
-		m = got.(Model)
-	}
-	// Both mpv commands have now finished, but older property events can still
-	// be queued for the TUI. Equality with the final order is not a barrier.
-	for _, snapshot := range []string{
-		`[{"filename":"A"},{"filename":"B"},{"filename":"C"}]`,
-		`[{"filename":"A"},{"filename":"C"},{"filename":"B"}]`,
-	} {
-		m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(snapshot)})
-		if m.queue.entries[2].Filename != "C" || m.queueCur != 2 {
-			t.Fatalf("late event %s changed projected selection: %+v cursor %d", snapshot, m.queue.entries, m.queueCur)
-		}
-	}
-	got, _ := m.update(queueRefreshMsg{revision: m.queue.revision, entries: []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}, pos: -1})
-	m = got.(Model)
-	if m.queue.entries[2].Filename != "C" || m.queueCur != 2 {
-		t.Errorf("authoritative refresh = %+v cursor %d, want C selected", m.queue.entries, m.queueCur)
-	}
-	got, _ = m.update(keyPress("K"))
-	m = got.(Model)
-	if m.queue.entries[1].Filename != "C" || m.queueCur != 1 {
-		t.Errorf("next move targeted wrong track: queue=%+v cursor=%d", m.queue.entries, m.queueCur)
-	}
-}
-
-func TestPlaylistEventBurstSchedulesOneAuthoritativeRead(t *testing.T) {
-	m := New(Deps{})
-	m.queue.authoritative = true
-	event := mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"A"}]`)}
-	commands := 0
-	for range 200 {
-		if cmd := m.applyProperty(event); cmd != nil {
-			commands++
-		}
-	}
-	if commands != 1 {
-		t.Fatalf("200 events scheduled %d debounce timers, want 1", commands)
-	}
-	got, cmd := m.update(queueDebounceMsg{version: 1})
-	m = got.(Model)
-	if cmd == nil || !m.queue.debouncePending || m.queue.refreshPending {
-		t.Fatal("changed event generation did not extend debounce")
-	}
-	got, cmd = m.update(queueDebounceMsg{version: m.queue.eventVersion})
-	m = got.(Model)
-	if cmd == nil || !m.queue.refreshPending {
-		t.Fatal("settled burst did not schedule one authoritative read")
+	if edit == nil || len(m.core.Queue.Entries) != 2 || m.core.Queue.Entries[1].Filename != "B" {
+		t.Fatalf("delete did not target refreshed index: %+v", m.core.Queue.Entries)
 	}
 }
 
 func TestRapidQueueDeletesAdvanceToNextTrack(t *testing.T) {
 	m := New(Deps{})
 	m.focus = focusQueue
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
+	m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}}
 	m.queueCur = 0
 
 	for range 2 {
@@ -271,123 +161,20 @@ func TestRapidQueueDeletesAdvanceToNextTrack(t *testing.T) {
 		}
 		m = got.(Model)
 	}
-	if len(m.queue.entries) != 1 || m.queue.entries[0].Filename != "C" {
-		t.Errorf("queue = %+v, want only C", m.queue.entries)
+	if len(m.core.Queue.Entries) != 1 || m.core.Queue.Entries[0].Filename != "C" {
+		t.Errorf("queue = %+v, want only C", m.core.Queue.Entries)
 	}
 }
 
-func TestStalePlaylistEventDoesNotRestoreDeletedEntry(t *testing.T) {
-	m := New(Deps{})
-	m.focus = focusQueue
-	m.queue.entries = []mpv.PlaylistEntry{
-		{Filename: "A"},
-		{Filename: "B"},
-		{Filename: "C"},
-	}
-	m.queueCur = 0
-	got, cmd := m.update(keyPress("d"))
-	if cmd == nil {
-		t.Fatal("delete command = nil")
-	}
-	m = got.(Model)
-
-	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"id":1,"filename":"A"},{"id":2,"filename":"B"},{"id":3,"filename":"C"}]`)})
-	if len(m.queue.entries) != 2 || m.queue.entries[0].Filename != "B" {
-		t.Fatalf("stale event restored deleted A: %+v", m.queue.entries)
-	}
-	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"id":2,"filename":"B"},{"id":4,"filename":"D"},{"id":3,"filename":"C"}]`)})
-	if len(m.queue.entries) != 2 || m.queue.entries[0].Filename != "B" {
-		t.Errorf("event bypassed authoritative refresh: queue=%+v", m.queue.entries)
-	}
-	got, _ = m.update(queueActionDoneMsg{requestID: m.activeRequest, projected: true})
-	m = got.(Model)
-	got, _ = m.update(queueRefreshMsg{revision: m.queue.revision, entries: []mpv.PlaylistEntry{{Filename: "B"}, {Filename: "D"}, {Filename: "C"}}, pos: -1})
-	m = got.(Model)
-	if len(m.queue.entries) != 3 || m.queue.entries[1].Filename != "D" {
-		t.Errorf("authoritative refresh missed insert: queue=%+v", m.queue.entries)
-	}
-}
-
-func TestProjectedDeleteDistinguishesDuplicateURLs(t *testing.T) {
-	m := New(Deps{})
-	m.focus = focusQueue
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: "same"}, {Filename: "same"}}
-	got, _ := m.update(keyPress("d"))
-	m = got.(Model)
-	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"id":1,"filename":"same"},{"id":2,"filename":"same"}]`)})
-	if len(m.queue.entries) != 1 || m.queue.entries[0].Filename != "same" {
-		t.Errorf("stale duplicate event restored removed entry: %+v", m.queue.entries)
-	}
-	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"id":2,"filename":"same"},{"id":3,"filename":"same"}]`)})
-	if len(m.queue.entries) != 1 {
-		t.Errorf("duplicate event bypassed authoritative refresh: queue=%+v", m.queue.entries)
-	}
-}
-
-func TestQueueRefreshPreservesEntryTitlesWithDuplicateURLs(t *testing.T) {
-	m := New(Deps{})
-	m.queue.authoritative = true
-	entries := []mpv.PlaylistEntry{
-		{Filename: "same", Title: "first title", Current: false},
-		{Filename: "same", Title: "second title", Current: true, Playing: true},
-	}
-	got, _ := m.update(queueRefreshMsg{entries: entries, pos: 1})
-	m = got.(Model)
-	if len(m.queue.entries) != 2 || m.queue.entries[0].Title != "first title" || m.queue.entries[1].Title != "second title" {
-		t.Fatalf("refreshed entries = %+v, want distinct titles", m.queue.entries)
-	}
-	if title := displayTitle(m.queue.entries[1], youtube.Track{}); title != "second title" {
-		t.Errorf("display title = %q, want second title", title)
-	}
-	if m.queue.pos != 1 || !m.queue.entries[1].Playing {
-		t.Errorf("position = %d, playing = %v, want second entry playing", m.queue.pos, m.queue.entries[1].Playing)
-	}
-}
-
-func TestFailedQueueActionReleasesNextWrite(t *testing.T) {
-	q := newQueueSync(nil)
-	first := q.reserve()
-	second := q.reserve()
-	want := errors.New("first append failed")
-	order := make(chan string, 2)
-	secondDone := make(chan tea.Msg, 1)
-	go func() {
-		secondDone <- queueAction(second, 2, "second queued", func(context.Context) error {
-			order <- "second"
-			return nil
-		})()
-	}()
-	firstMsg := queueAction(first, 1, "first queued", func(context.Context) error {
-		order <- "first"
-		return want
-	})().(queueActionDoneMsg)
-	if !errors.Is(firstMsg.err, want) {
-		t.Fatalf("first error = %v, want %v", firstMsg.err, want)
-	}
-	select {
-	case msg := <-secondDone:
-		if err := msg.(queueActionDoneMsg).err; err != nil {
-			t.Fatalf("second error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("second action remained blocked after first failed")
-	}
-	for _, want := range []string{"first", "second"} {
-		if got := <-order; got != want {
-			t.Fatalf("write order = %q, want %q", got, want)
-		}
-	}
-}
-
-func shuffleModel(player Player, pos int, names ...string) Model {
+func shuffleModel(player service.Player, pos int, names ...string) Model {
 	m := New(Deps{Player: player})
 	m.focus = focusQueue
 	m.rng = rand.New(rand.NewPCG(1, 2))
 	for _, n := range names {
-		m.queue.entries = append(m.queue.entries, mpv.PlaylistEntry{Filename: n})
+		m.core.Queue.Entries = append(m.core.Queue.Entries, domain.PlaylistEntry{Filename: n})
 	}
-	m.queue.pos = pos
-	m.player.idle = pos < 0
+	m.core.Queue.Pos = pos
+	m.core.Playback.Idle = pos < 0
 	return m
 }
 
@@ -401,21 +188,21 @@ func TestShuffleKeepsCurrentAndPrefix(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("Z returned no command")
 	}
-	view := filenames(m.queue.entries)
+	view := filenames(m.core.Queue.Entries)
 	if view[0] != "A" || view[1] != "B" {
 		t.Fatalf("view = %v, want A, B in place", view)
 	}
 	if tail := slices.Sorted(slices.Values(view[2:])); !slices.Equal(tail, []string{"C", "D", "E"}) {
 		t.Fatalf("view tail = %v, want a permutation of C, D, E", view[2:])
 	}
-	if cur, _, ok := m.current(); !ok || cur.Filename != "B" || m.queue.pos != 1 {
-		t.Fatalf("current = %+v (pos %d), want B at 1", cur, m.queue.pos)
+	if cur, _, ok := m.core.Current(); !ok || cur.Filename != "B" || m.core.Queue.Pos != 1 {
+		t.Fatalf("current = %+v (pos %d), want B at 1", cur, m.core.Queue.Pos)
 	}
-	if m.queue.editsPending != 1 || m.queue.projection == nil {
+	if !m.core.Queue.Projected() {
 		t.Fatal("shuffle was not projected through the queue-sync write path")
 	}
-	msg := cmd().(queueActionDoneMsg)
-	if msg.err != nil || !msg.projected {
+	msg := cmd().(service.ActionDone)
+	if msg.Err != nil {
 		t.Fatalf("reorder msg = %+v", msg)
 	}
 	if !slices.Equal(player.calls, []string{"reorder"}) {
@@ -428,9 +215,9 @@ func TestShuffleKeepsCurrentAndPrefix(t *testing.T) {
 		}
 	}
 	// A playlist event from before the reorder must not undo the projected order.
-	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"A"},{"filename":"B"},{"filename":"C"},{"filename":"D"},{"filename":"E"}]`)})
-	if !slices.Equal(filenames(m.queue.entries), view) {
-		t.Fatalf("stale event replaced shuffled view: %v", filenames(m.queue.entries))
+	m.applyChange(service.QueueChanged{Entries: []domain.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}, {Filename: "D"}, {Filename: "E"}}})
+	if !slices.Equal(filenames(m.core.Queue.Entries), view) {
+		t.Fatalf("stale event replaced shuffled view: %v", filenames(m.core.Queue.Entries))
 	}
 }
 
@@ -447,7 +234,7 @@ func TestShuffleWithoutCurrentShufflesAll(t *testing.T) {
 		if cmd == nil {
 			t.Fatal("Z returned no command")
 		}
-		view := filenames(m.queue.entries)
+		view := filenames(m.core.Queue.Entries)
 		if !slices.Equal(slices.Sorted(slices.Values(view)), names) {
 			t.Fatalf("view = %v, want a permutation of %v", view, names)
 		}
@@ -468,7 +255,7 @@ func TestShuffleKeepsSelectionOnTrack(t *testing.T) {
 		m.queueCur = 3
 		got, _ := m.update(keyPress("Z"))
 		m = got.(Model)
-		if sel := m.queue.entries[m.queueCur].Filename; sel != "D" {
+		if sel := m.core.Queue.Entries[m.queueCur].Filename; sel != "D" {
 			t.Fatalf("seed %d: selection = %q at %d, want D", seed, sel, m.queueCur)
 		}
 	}
@@ -490,11 +277,11 @@ func TestShuffleNeedsTwoTracks(t *testing.T) {
 		m.status = ""
 		got, cmd := m.update(keyPress("Z"))
 		m = got.(Model)
-		if cmd != nil || len(player.calls) != 0 || m.queue.editsPending != 0 {
+		if cmd != nil || len(player.calls) != 0 || m.core.Queue.Projected() {
 			t.Fatalf("pos %d %v: shuffle issued a write", tt.pos, tt.names)
 		}
-		if !slices.Equal(filenames(m.queue.entries), filenames(shuffleModel(nil, tt.pos, tt.names...).queue.entries)) {
-			t.Fatalf("pos %d %v: queue changed to %v", tt.pos, tt.names, filenames(m.queue.entries))
+		if !slices.Equal(filenames(m.core.Queue.Entries), filenames(shuffleModel(nil, tt.pos, tt.names...).core.Queue.Entries)) {
+			t.Fatalf("pos %d %v: queue changed to %v", tt.pos, tt.names, filenames(m.core.Queue.Entries))
 		}
 		if m.status == "" {
 			t.Fatalf("pos %d %v: no status message", tt.pos, tt.names)
@@ -505,7 +292,7 @@ func TestShuffleNeedsTwoTracks(t *testing.T) {
 // queue-repeat-shuffle R5: a failed reorder reports the error and resyncs the queue from mpv.
 func TestShuffleErrorResyncsFromMPV(t *testing.T) {
 	want := errors.New("playlist-move failed")
-	original := []mpv.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}, {Filename: "D"}}
+	original := []domain.PlaylistEntry{{Filename: "A"}, {Filename: "B"}, {Filename: "C"}, {Filename: "D"}}
 	player := &spyPlayer{err: want, playlist: original}
 	m := shuffleModel(player, 1, "A", "B", "C", "D")
 	got, cmd := m.update(keyPress("Z"))
@@ -523,8 +310,8 @@ func TestShuffleErrorResyncsFromMPV(t *testing.T) {
 	}
 	got, _ = m.update(refresh())
 	m = got.(Model)
-	if !slices.Equal(filenames(m.queue.entries), filenames(original)) || m.queue.projection != nil {
-		t.Fatalf("queue after resync = %v, want mpv's %v", filenames(m.queue.entries), filenames(original))
+	if !slices.Equal(filenames(m.core.Queue.Entries), filenames(original)) || m.core.Queue.Projected() {
+		t.Fatalf("queue after resync = %v, want mpv's %v", filenames(m.core.Queue.Entries), filenames(original))
 	}
 }
 
@@ -534,22 +321,22 @@ func TestShuffleWaitsForPendingEdits(t *testing.T) {
 	player := &spyPlayer{}
 	m := shuffleModel(player, 0, "A", "B", "C", "D", "E")
 	m.queueCur = 0
-	got, _ := m.update(keyPress("J"))
+	got, move := m.update(keyPress("J"))
 	m = got.(Model)
-	moved := filenames(m.queue.entries)
+	moved := filenames(m.core.Queue.Entries)
 
 	got, cmd := m.update(keyPress("Z"))
 	m = got.(Model)
-	if cmd != nil || len(player.orders) != 0 || !slices.Equal(filenames(m.queue.entries), moved) {
-		t.Fatalf("Z during a pending move issued a reorder: cmd %v, orders %v, view %v", cmd != nil, player.orders, filenames(m.queue.entries))
+	if cmd != nil || len(player.orders) != 0 || !slices.Equal(filenames(m.core.Queue.Entries), moved) {
+		t.Fatalf("Z during a pending move issued a reorder: cmd %v, orders %v, view %v", cmd != nil, player.orders, filenames(m.core.Queue.Entries))
 	}
 
-	got, _ = m.update(queueActionDoneMsg{projected: true})
+	got, _ = m.update(move())
 	m = got.(Model)
 	got, cmd = m.update(keyPress("Z"))
 	m = got.(Model)
-	if cmd != nil || len(player.orders) != 0 || !slices.Equal(filenames(m.queue.entries), moved) {
-		t.Fatalf("Z before the move was read back issued a reorder: cmd %v, orders %v, view %v", cmd != nil, player.orders, filenames(m.queue.entries))
+	if cmd != nil || len(player.orders) != 0 || !slices.Equal(filenames(m.core.Queue.Entries), moved) {
+		t.Fatalf("Z before the move was read back issued a reorder: cmd %v, orders %v, view %v", cmd != nil, player.orders, filenames(m.core.Queue.Entries))
 	}
 }
 
@@ -560,7 +347,7 @@ func TestShuffleKeyOnlyInQueuePane(t *testing.T) {
 		m.focus = f
 		got, cmd := m.update(keyPress("Z"))
 		m = got.(Model)
-		if cmd != nil || len(player.calls) != 0 || !slices.Equal(filenames(m.queue.entries), []string{"A", "B", "C", "D"}) {
+		if cmd != nil || len(player.calls) != 0 || !slices.Equal(filenames(m.core.Queue.Entries), []string{"A", "B", "C", "D"}) {
 			t.Fatalf("focus %d: Z acted outside the Queue pane", f)
 		}
 	}

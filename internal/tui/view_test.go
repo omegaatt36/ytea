@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"image"
 	"regexp"
@@ -13,8 +12,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/service"
 )
 
 func TestFormatDuration(t *testing.T) {
@@ -30,18 +29,18 @@ func TestFormatDuration(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := formatDuration(tt.in); got != tt.want {
-				t.Errorf("formatDuration(%v) = %q, want %q", tt.in, got, tt.want)
+			if got := service.FormatDuration(tt.in); got != tt.want {
+				t.Errorf("service.FormatDuration(%v) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
 }
 
 func TestRestoredMetadataTitlesUnplayedQueueEntries(t *testing.T) {
-	m := New(Deps{InitialTracks: map[string]youtube.Track{
+	m := New(Deps{InitialTracks: map[string]domain.Track{
 		watchURL: {URL: watchURL, ID: "abc", Title: "Saved song", Channel: "Artist"},
 	}})
-	m.applyProperty(mpv.Event{Prop: mpv.PropPlaylist, Data: json.RawMessage(`[{"filename":"` + watchURL + `"}]`)})
+	m.applyChange(service.QueueChanged{Entries: []domain.PlaylistEntry{{Filename: watchURL}}})
 	for _, detailed := range []bool{false, true} {
 		if got := m.queueLine(0, m.queueTracks()[0], 60, 5, detailed, false); !strings.Contains(got, "Saved song") || strings.Contains(got, watchURL) {
 			t.Errorf("restored queue line (detailed=%v) = %q, want saved title", detailed, got)
@@ -53,7 +52,7 @@ func TestQueueTabShowsDetailedQueueFullWidth(t *testing.T) {
 	m := mouseModel()
 	m.help.SetWidth(m.width)
 	m.input.Blur()
-	m.tracks["u1"] = youtube.Track{Title: "queued 1", Channel: "Some Channel", Duration: 256 * time.Second}
+	m.core.Tracks["u1"] = domain.Track{Title: "queued 1", Channel: "Some Channel", Duration: 256 * time.Second}
 
 	m.focus = focusResults
 	split := rendered(m)
@@ -117,7 +116,7 @@ func TestResultsSplitFollowsAvailableContent(t *testing.T) {
 	if emptyResults >= emptyQueue {
 		t.Errorf("empty Results/Queue widths = %d/%d, want the queue wider", emptyResults, emptyQueue)
 	}
-	m.results.tracks = []youtube.Track{{Title: "found song"}}
+	m.core.Search.Tracks = []domain.Track{{Title: "found song"}}
 	loadedResults := m.paneRect(paneResults).Dx()
 	loadedQueue := m.paneRect(paneQueue).Dx()
 	if loadedResults <= loadedQueue {
@@ -151,7 +150,7 @@ func TestRenderFillsWindow(t *testing.T) {
 			for _, viz := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%dx%d/%s/viz=%v", size.X, size.Y, sc.name, viz), func(t *testing.T) {
 					m := overlayModel(t, sc.focus)
-					m.results.tracks = []youtube.Track{{Title: "Result", Channel: "Channel", Duration: time.Minute}}
+					m.core.Search.Tracks = []domain.Track{{Title: "Result", Channel: "Channel", Duration: time.Minute}}
 					got, _ := m.update(tea.WindowSizeMsg{Width: size.X, Height: size.Y})
 					m = got.(Model)
 					m.overlay, m.fullHelp = sc.overlay, sc.help
@@ -176,7 +175,7 @@ func TestHourLongLengthKeepsColumnsAligned(t *testing.T) {
 	m.width, m.height = 120, 30
 	m.input.Blur()
 	m.focus = focusResults
-	m.results.tracks = []youtube.Track{
+	m.core.Search.Tracks = []domain.Track{
 		{Title: "short", Channel: "Chan A", Duration: 3 * time.Minute},
 		{Title: "long mix", Channel: "Chan B", Duration: 6*time.Hour + 10*time.Minute},
 		{Title: "stream", Channel: "Chan C", Live: true},
@@ -196,7 +195,7 @@ func TestUIColorsComeFromTerminalPalette(t *testing.T) {
 	fixed := regexp.MustCompile(`\x1b\[[0-9;]*[34]8;[25];`)
 	m := overlayModel(t, focusResults)
 	m.showViz, m.levels = true, []float64{0.2, 0.9}
-	m.results.tracks = []youtube.Track{{Title: "lofi beats", Channel: "Lofi Girl"}, {Title: "rock"}}
+	m.core.Search.Tracks = []domain.Track{{Title: "lofi beats", Channel: "Lofi Girl"}, {Title: "rock"}}
 	m.results.filter.SetValue("lofi")
 	m.setError("search failed")
 	for name, mm := range map[string]Model{
@@ -231,8 +230,8 @@ func TestStatusRidesPlayerBottomEdge(t *testing.T) {
 func TestResultsRenderWithEscapeInChannel(t *testing.T) {
 	m, _ := filterModel()
 	m = resize(m, 100)
-	m.results.tracks[0].Channel = "chanchanchanchanchan1\x1b[0m"
-	m.results.tracks[1].Title = "abc\x1b[31mred\x1b[0m tail"
+	m.core.Search.Tracks[0].Channel = "chanchanchanchanchan1\x1b[0m"
+	m.core.Search.Tracks[1].Title = "abc\x1b[31mred\x1b[0m tail"
 	pane := m.renderPanes(20)
 	for i, line := range strings.Split(pane, "\n") {
 		if w := lipgloss.Width(line); w != m.width {

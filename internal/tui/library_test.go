@@ -7,9 +7,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/omegaatt36/ytea/domain"
 	"github.com/omegaatt36/ytea/internal/library"
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/service"
 )
 
 func TestLocalPlaylistFlow(t *testing.T) {
@@ -17,11 +17,11 @@ func TestLocalPlaylistFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := youtube.Track{ID: "one", Title: "First", URL: "https://www.youtube.com/watch?v=one"}
-	second := youtube.Track{ID: "two", Title: "Second", URL: "https://www.youtube.com/watch?v=two"}
+	first := domain.Track{ID: "one", Title: "First", URL: "https://www.youtube.com/watch?v=one"}
+	second := domain.Track{ID: "two", Title: "Second", URL: "https://www.youtube.com/watch?v=two"}
 	m := New(Deps{Library: store})
 	m.focus = focusResults
-	m.results.tracks = []youtube.Track{first, second}
+	m.core.Search.Tracks = []domain.Track{first, second}
 	got, _ := m.update(keyPress("s"))
 	m = got.(Model)
 	if m.overlay != overlayName {
@@ -68,19 +68,19 @@ func TestPlaylistTrackKeyRunsPlayerCommand(t *testing.T) {
 		key        rune
 		wantCall   string
 		wantStatus string
-		projected  bool
+		action     service.Action
 		err        error
 	}{
-		{name: "play", key: tea.KeyEnter, wantCall: "play second", wantStatus: "playing", projected: true},
-		{name: "append", key: 'a', wantCall: "append second", wantStatus: "queued"},
-		{name: "append failure", key: 'a', wantCall: "append second", err: errors.New("mpv rejected append")},
+		{name: "play", key: tea.KeyEnter, wantCall: "play second", wantStatus: "playing", action: service.ActionPlayNow},
+		{name: "append", key: 'a', wantCall: "append second", wantStatus: "queued", action: service.ActionEnqueue},
+		{name: "append failure", key: 'a', wantCall: "append second", action: service.ActionEnqueue, err: errors.New("mpv rejected append")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			store, err := library.Open(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}
-			tracks := []youtube.Track{{URL: "first", Title: "First"}, {URL: "second", Title: "Second"}}
+			tracks := []domain.Track{{URL: "first", Title: "First"}, {URL: "second", Title: "Second"}}
 			if _, err := store.CreateWithTracks("Favorites", tracks); err != nil {
 				t.Fatal(err)
 			}
@@ -97,20 +97,20 @@ func TestPlaylistTrackKeyRunsPlayerCommand(t *testing.T) {
 			if len(player.calls) != 0 {
 				t.Fatalf("player was called before the command ran: %v", player.calls)
 			}
-			if m.tracks["second"].Title != "Second" {
-				t.Fatalf("selected track metadata was lost: %+v", m.tracks["second"])
+			if m.core.Tracks["second"].Title != "Second" {
+				t.Fatalf("selected track metadata was lost: %+v", m.core.Tracks["second"])
 			}
 
 			result := cmd()
-			done, ok := result.(queueActionDoneMsg)
+			done, ok := result.(service.ActionDone)
 			if !ok {
-				t.Fatalf("command result has type %T, want queueActionDoneMsg", result)
+				t.Fatalf("command result has type %T, want service.ActionDone", result)
 			}
 			if len(player.calls) != 1 || player.calls[0] != tt.wantCall {
 				t.Fatalf("player calls = %v, want [%s]", player.calls, tt.wantCall)
 			}
-			if done.projected != tt.projected || !errors.Is(done.err, tt.err) {
-				t.Fatalf("command result = %+v, want projected=%v error=%v", done, tt.projected, tt.err)
+			if done.Action != tt.action || !errors.Is(done.Err, tt.err) {
+				t.Fatalf("command result = %+v, want action=%v error=%v", done, tt.action, tt.err)
 			}
 			got, _ = m.update(done)
 			m = got.(Model)
@@ -134,7 +134,7 @@ func TestSaveQueueAsPlaylist(t *testing.T) {
 	m.focus = focusQueue
 	firstURL := "https://www.youtube.com/watch?v=one"
 	secondURL := "https://www.youtube.com/watch?v=two"
-	m.queue.entries = []mpv.PlaylistEntry{
+	m.core.Queue.Entries = []domain.PlaylistEntry{
 		{Filename: firstURL, Title: "First"},
 		{Filename: secondURL, Title: "Second"},
 		{Filename: firstURL, Title: "First"},
@@ -179,7 +179,7 @@ func TestLibrary_MemorySpy(t *testing.T) {
 	spy := &spyLibrary{}
 	m := New(Deps{Library: spy})
 	m.focus = focusResults
-	m.results.tracks = []youtube.Track{{Title: "Song A", URL: "url-a"}}
+	m.core.Search.Tracks = []domain.Track{{Title: "Song A", URL: "url-a"}}
 
 	got, _ := m.update(keyPress("s"))
 	m = got.(Model)

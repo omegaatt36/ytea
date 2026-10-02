@@ -256,7 +256,7 @@ func (m Model) contextKeys() (string, help.KeyMap) {
 	}
 	results := m.keys.results
 	results.ClearFilter.SetEnabled(m.results.filter.Value() != "")
-	results.More.SetEnabled(m.results.canLoadMore())
+	results.More.SetEnabled(m.core.Search.CanLoadMore())
 	return "Results", results
 }
 

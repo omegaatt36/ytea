@@ -19,15 +19,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/urfave/cli/v3"
 
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/engine"
 	"github.com/omegaatt36/ytea/internal/audiotee"
-	"github.com/omegaatt36/ytea/internal/history"
-	"github.com/omegaatt36/ytea/internal/library"
 	"github.com/omegaatt36/ytea/internal/mpris"
-	"github.com/omegaatt36/ytea/internal/mpv"
 	"github.com/omegaatt36/ytea/internal/pipewire"
-	"github.com/omegaatt36/ytea/internal/session"
 	"github.com/omegaatt36/ytea/internal/tui"
-	"github.com/omegaatt36/ytea/internal/youtube"
 )
 
 const appName = "ytea"
@@ -181,68 +178,43 @@ func run(ctx context.Context, opts options) error {
 	// graph; the pid keeps two running instances from tapping each other.
 	streamName := fmt.Sprintf("%s-%d", appName, os.Getpid())
 
-	player, err := mpv.Start(ctx, mpv.Config{
-		Bin:         opts.mpvBin,
+	eng, err := engine.New(ctx, engine.Config{
+		MPVBin:      opts.mpvBin,
+		YtDlpBin:    opts.ytdlpBin,
+		StateDir:    stateDir,
 		ClientName:  streamName,
 		AudioDevice: opts.device,
 		Volume:      opts.volume,
 		Normalize:   opts.normalize,
-		LogFile:     filepath.Join(stateDir, "mpv.log"),
 		// Search stays anonymous; only playback needs the account.
 		Cookies:            opts.cookies,
 		CookiesFromBrowser: opts.cookiesFromBrowser,
+		Account:            accountSource,
 	})
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if err := player.Quit(); err != nil {
+		if err := eng.Close(); err != nil {
 			slog.Error("stop mpv", "error", err)
 		}
 	}()
-	sessionHealthy := true
-	saved, err := session.Load(stateDir)
-	if err != nil {
-		slog.Warn("load previous session", "error", err)
-	} else if saved.Version != 0 {
-		restoreCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := player.Restore(restoreCtx, playbackFromSession(saved))
-		cancel()
-		if err != nil {
-			slog.Warn("restore previous session", "error", err)
-			sessionHealthy = false
-			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if stopErr := player.Stop(stopCtx); stopErr != nil {
-				slog.Warn("stop partially restored session", "error", stopErr)
-			}
-			stopCancel()
-		}
-	}
-	libraryStore, err := library.Open(stateDir)
-	if err != nil {
-		return fmt.Errorf("load local playlists: %w", err)
-	}
-	var played tui.History
-	if historyStore, err := history.Open(stateDir); err != nil {
-		slog.Warn("history disabled", "error", err)
-	} else {
-		played = historyStore
-	}
 
+	core := eng.Deps()
 	deps := tui.Deps{
-		AccountPlaylists: accountSource,
-		Searcher:         youtube.NewSearcher(opts.ytdlpBin),
-		Player:           player,
+		AccountPlaylists: core.Account,
+		Searcher:         core.Searcher,
+		Player:           core.Player,
 		Thumbnails:       opts.thumbnails,
 		HTTP:             &http.Client{Timeout: 10 * time.Second},
-		Normalize:        opts.normalize,
-		InitialTracks:    tracksFromSession(saved),
-		Library:          libraryStore,
-		History:          played,
+		Normalize:        core.Normalize,
+		InitialTracks:    core.InitialTracks,
+		Library:          core.Library,
+		History:          core.History,
 	}
 
 	if opts.visualizer {
-		tap := newSpectrumTap(streamName, player.PID())
+		tap := newSpectrumTap(streamName, eng.PlayerPID())
 		if deviceTap, ok := tap.(interface{ SetAudioDevice(string) error }); ok {
 			_ = deviceTap.SetAudioDevice(opts.device)
 		}
@@ -252,7 +224,7 @@ func run(ctx context.Context, opts options) error {
 
 	if opts.mpris {
 		// Media keys are a nicety; a missing session bus must not block playback.
-		server, err := mpris.Start(appName, player)
+		server, err := mpris.Start(appName, core.Player)
 		if err != nil {
 			slog.Warn("mpris disabled", "error", err)
 		} else {
@@ -263,58 +235,19 @@ func run(ctx context.Context, opts options) error {
 
 	program := tea.NewProgram(tui.New(deps), tea.WithContext(ctx))
 	final, runErr := program.Run()
-	if sessionHealthy {
-		snapshotCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if snapshot, err := player.Snapshot(snapshotCtx); err != nil {
-			slog.Warn("snapshot playback", "error", err)
-		} else {
-			model, ok := final.(tui.Model)
-			if !ok {
-				model = tui.New(deps)
-			}
-			if err := session.Save(stateDir, sessionFromSnapshot(snapshot, model)); err != nil {
-				slog.Warn("save session", "error", err)
-			}
-		}
-		cancel()
+	known := func(url string) domain.Track { return core.InitialTracks[url] }
+	if model, ok := final.(tui.Model); ok {
+		known = model.KnownTrack
 	}
+	saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := eng.SaveSession(saveCtx, known); err != nil {
+		slog.Warn("save session", "error", err)
+	}
+	cancel()
 	if runErr != nil && !errors.Is(runErr, tea.ErrProgramKilled) {
 		return fmt.Errorf("run ui: %w", runErr)
 	}
 	return nil
-}
-
-func tracksFromSession(saved session.State) map[string]youtube.Track {
-	tracks := make(map[string]youtube.Track, len(saved.Metadata))
-	for url, info := range saved.Metadata {
-		tracks[url] = youtube.Track{URL: url, ID: info.ID, Title: info.Title, Channel: info.Channel, Duration: info.Duration, Live: info.Live}
-	}
-	return tracks
-}
-
-func playbackFromSession(saved session.State) mpv.PlaybackState {
-	return mpv.PlaybackState{URLs: saved.URLs, Index: saved.Index, Volume: saved.Volume, Repeat: mpv.ParseRepeat(saved.Repeat)}
-}
-
-func sessionFromSnapshot(snapshot mpv.PlaybackState, model tui.Model) session.State {
-	state := session.State{URLs: snapshot.URLs, Index: snapshot.Index, Volume: snapshot.Volume}
-	if snapshot.Repeat != mpv.RepeatOff {
-		state.Repeat = snapshot.Repeat.String()
-	}
-	for i, url := range snapshot.URLs {
-		track := model.KnownTrack(url)
-		info := session.Metadata{ID: track.ID, Title: track.Title, Channel: track.Channel, Duration: track.Duration, Live: track.Live}
-		if info.Title == "" && i < len(snapshot.Entries) {
-			info.Title = snapshot.Entries[i].Title
-		}
-		if info != (session.Metadata{}) {
-			if state.Metadata == nil {
-				state.Metadata = make(map[string]session.Metadata)
-			}
-			state.Metadata[url] = info
-		}
-	}
-	return state
 }
 
 type spectrumTap interface {

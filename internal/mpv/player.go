@@ -8,8 +8,12 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
 	"time"
+
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/service"
 )
 
 // Observed properties. mpv pushes a property-change event whenever one changes.
@@ -71,6 +75,10 @@ type Player struct {
 	cmd    *exec.Cmd
 	client *Client
 	exited chan struct{}
+
+	eventsOnce sync.Once
+	events     chan service.PlayerEvent
+	eventsDone chan struct{}
 }
 
 // ipcFD is where mpv finds its end of the IPC socketpair: the first of cmd.ExtraFiles.
@@ -176,11 +184,6 @@ func socketpair() (ours, theirs *os.File, err error) {
 	return os.NewFile(uintptr(fds[0]), "mpv-ipc"), os.NewFile(uintptr(fds[1]), "mpv-ipc-child"), nil
 }
 
-// Events delivers mpv events; it is closed when mpv goes away.
-func (p *Player) Events() <-chan Event {
-	return p.client.Events()
-}
-
 // Append adds url to the end of the playlist, starting playback if idle.
 func (p *Player) Append(ctx context.Context, url string) error {
 	_, err := p.client.Command(ctx, "loadfile", url, "append-play")
@@ -255,12 +258,12 @@ func (p *Player) Move(ctx context.Context, from, to int) error {
 }
 
 // Playlist reads the current entries and selected position from mpv.
-func (p *Player) Playlist(ctx context.Context) ([]PlaylistEntry, int, error) {
+func (p *Player) Playlist(ctx context.Context) ([]domain.PlaylistEntry, int, error) {
 	data, err := p.client.Command(ctx, "get_property", PropPlaylist)
 	if err != nil {
 		return nil, -1, fmt.Errorf("read playlist: %w", err)
 	}
-	entries := Decode[[]PlaylistEntry](data)
+	entries := decodePlaylist(data)
 
 	data, err = p.client.Command(ctx, "get_property", PropPlaylistPos)
 	if err != nil {
@@ -336,48 +339,20 @@ func (p *Player) SetVolume(ctx context.Context, volume float64) error {
 	return err
 }
 
-// AudioDevice is one entry of mpv's audio-device-list property.
-type AudioDevice struct {
-	Name        string `json:"name"` // e.g. "auto", "pipewire/<sink>", "coreaudio/<id>"
-	Description string `json:"description"`
-}
-
-// Label is a human-readable device name.
-func (d AudioDevice) Label() string {
-	if d.Description != "" {
-		return d.Description
-	}
-	return d.Name
-}
-
 // AudioDevices lists what mpv can output to, following whichever audio output
 // driver it picked (pipewire, coreaudio, …).
-func (p *Player) AudioDevices(ctx context.Context) ([]AudioDevice, error) {
+func (p *Player) AudioDevices(ctx context.Context) ([]domain.AudioDevice, error) {
 	data, err := p.client.Command(ctx, "get_property", PropAudioDeviceList)
 	if err != nil {
 		return nil, err
 	}
-	return Decode[[]AudioDevice](data), nil
-}
-
-// StreamInfo describes the file mpv is playing. Like the device list it is
-// only read on demand, when the info panel opens.
-type StreamInfo struct {
-	// Path is the playlist entry, such as a watch URL.
-	Path string
-	// Opened is what mpv opened once yt-dlp resolved Path, often an edl://
-	// wrapper around the media URL.
-	Opened string
-	// Codec is the decoder's long name, e.g. "Opus (Opus Interactive Audio Codec)".
-	Codec string
-	// Bitrate is the decoder's running estimate in bits per second.
-	Bitrate int
+	return decodeDevices(data), nil
 }
 
 // StreamInfo reads what mpv knows about the current file. Properties that are
 // unavailable, as while the file is still loading, are left zero.
-func (p *Player) StreamInfo(ctx context.Context) (StreamInfo, error) {
-	var info StreamInfo
+func (p *Player) StreamInfo(ctx context.Context) (domain.StreamInfo, error) {
+	var info domain.StreamInfo
 	for prop, set := range map[string]func(json.RawMessage){
 		"path":                 func(d json.RawMessage) { info.Path = Decode[string](d) },
 		"stream-open-filename": func(d json.RawMessage) { info.Opened = Decode[string](d) },
@@ -386,7 +361,7 @@ func (p *Player) StreamInfo(ctx context.Context) (StreamInfo, error) {
 	} {
 		data, err := p.client.Command(ctx, "get_property", prop)
 		if _, unavailable := errors.AsType[*CommandError](err); err != nil && !unavailable {
-			return StreamInfo{}, fmt.Errorf("read %s: %w", prop, err)
+			return domain.StreamInfo{}, fmt.Errorf("read %s: %w", prop, err)
 		}
 		set(data)
 	}
@@ -418,6 +393,8 @@ func (p *Player) PID() int {
 // makes mpv quit.
 func (p *Player) Quit() error {
 	_ = p.client.Close()
+	p.Events() // Initialize even when Quit races with the first subscriber.
+	<-p.eventsDone
 	select {
 	case <-p.exited:
 	case <-time.After(2 * time.Second):
@@ -429,25 +406,10 @@ func (p *Player) Quit() error {
 	return nil
 }
 
-// PlaylistEntry is one element of mpv's playlist property.
-type PlaylistEntry struct {
-	Filename string `json:"filename"`
-	Title    string `json:"title"`
-	Current  bool   `json:"current"`
-	Playing  bool   `json:"playing"`
-}
-
 // Filter is one element of mpv's af property.
 type Filter struct {
 	Label string `json:"label"`
 	Name  string `json:"name"`
-}
-
-// AudioParams is mpv's audio-params property.
-type AudioParams struct {
-	Format     string `json:"format"`
-	SampleRate int    `json:"samplerate"`
-	Channels   string `json:"channels"`
 }
 
 // Decode unmarshals a property value; a JSON null (property unavailable) yields the zero value.

@@ -11,14 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-)
 
-// AccountPlaylist is a playlist owned by the authenticated channel, or its liked videos.
-type AccountPlaylist struct {
-	ID    string
-	Title string
-	URL   string
-}
+	"github.com/omegaatt36/ytea/domain"
+)
 
 // AccountClient reads account playlists through the YouTube Data API.
 // Its HTTP client supplies the OAuth transport.
@@ -55,17 +50,17 @@ type accountPlaylistPage struct {
 }
 
 // ListPlaylists returns owned playlists and the channel's Liked videos playlist.
-func (c *AccountClient) ListPlaylists(ctx context.Context) ([]AccountPlaylist, error) {
+func (c *AccountClient) ListPlaylists(ctx context.Context) ([]domain.AccountPlaylist, error) {
 	var channels accountChannelPage
 	if err := c.get(ctx, "channels", url.Values{"part": {"contentDetails"}, "mine": {"true"}}, &channels); err != nil {
 		return nil, fmt.Errorf("list account channels: %w", err)
 	}
 	if len(channels.Items) == 0 {
-		return []AccountPlaylist{}, nil
+		return []domain.AccountPlaylist{}, nil
 	}
 	owner := channels.Items[0].ID
 	likes := channels.Items[0].ContentDetails.RelatedPlaylists.Likes
-	playlists := make([]AccountPlaylist, 0)
+	playlists := make([]domain.AccountPlaylist, 0)
 	seen := make(map[string]bool)
 	pageToken := ""
 	for {
@@ -82,7 +77,7 @@ func (c *AccountClient) ListPlaylists(ctx context.Context) ([]AccountPlaylist, e
 				continue
 			}
 			seen[item.ID] = true
-			playlists = append(playlists, AccountPlaylist{ID: item.ID, Title: item.Snippet.Title, URL: playlistURL(item.ID)})
+			playlists = append(playlists, domain.AccountPlaylist{ID: item.ID, Title: item.Snippet.Title, URL: playlistURL(item.ID)})
 		}
 		if page.NextPageToken == "" {
 			break
@@ -90,7 +85,7 @@ func (c *AccountClient) ListPlaylists(ctx context.Context) ([]AccountPlaylist, e
 		pageToken = page.NextPageToken
 	}
 	if likes != "" {
-		playlists = append(playlists, AccountPlaylist{ID: likes, Title: "Liked videos", URL: playlistURL(likes)})
+		playlists = append(playlists, domain.AccountPlaylist{ID: likes, Title: "Liked videos", URL: playlistURL(likes)})
 	}
 	return playlists, nil
 }
@@ -125,11 +120,11 @@ type accountVideosPage struct {
 }
 
 // ListTracks returns up to MaxPlaylistItems available videos in playlist order.
-func (c *AccountClient) ListTracks(ctx context.Context, playlistID string) ([]Track, error) {
-	tracks := make([]Track, 0)
+func (c *AccountClient) ListTracks(ctx context.Context, playlistID string) ([]domain.Track, error) {
+	tracks := make([]domain.Track, 0)
 	pageToken := ""
 	seenItems := 0
-	for seenItems < MaxPlaylistItems {
+	for seenItems < domain.MaxPlaylistItems {
 		query := url.Values{"part": {"snippet,contentDetails,status"}, "playlistId": {playlistID}, "maxResults": {"50"}}
 		if pageToken != "" {
 			query.Set("pageToken", pageToken)
@@ -139,7 +134,7 @@ func (c *AccountClient) ListTracks(ctx context.Context, playlistID string) ([]Tr
 			return nil, fmt.Errorf("list playlist %q items: %w", playlistID, err)
 		}
 		for _, item := range page.Items {
-			if seenItems == MaxPlaylistItems {
+			if seenItems == domain.MaxPlaylistItems {
 				break
 			}
 			seenItems++
@@ -148,7 +143,7 @@ func (c *AccountClient) ListTracks(ctx context.Context, playlistID string) ([]Tr
 			if id == "" || item.Status.PrivacyStatus == "private" || title == "Deleted video" || title == "Private video" {
 				continue
 			}
-			tracks = append(tracks, Track{ID: id, Title: title, Channel: item.Snippet.VideoOwnerChannelTitle, URL: "https://www.youtube.com/watch?v=" + url.QueryEscape(id)})
+			tracks = append(tracks, domain.Track{ID: id, Title: title, Channel: item.Snippet.VideoOwnerChannelTitle, URL: "https://www.youtube.com/watch?v=" + url.QueryEscape(id)})
 		}
 		if page.NextPageToken == "" {
 			break
@@ -176,7 +171,7 @@ func (c *AccountClient) ListTracks(ctx context.Context, playlistID string) ([]Tr
 			available[video.ID] = duration
 		}
 	}
-	result := make([]Track, 0, len(tracks))
+	result := make([]domain.Track, 0, len(tracks))
 	for _, track := range tracks {
 		duration, ok := available[track.ID]
 		if !ok {

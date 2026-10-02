@@ -2,9 +2,6 @@
 package tui
 
 import (
-	"context"
-	"errors"
-	"maps"
 	"math/rand/v2"
 	"net/http"
 	"slices"
@@ -17,11 +14,9 @@ import (
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 
-	"github.com/omegaatt36/ytea/internal/history"
-	"github.com/omegaatt36/ytea/internal/library"
+	"github.com/omegaatt36/ytea/domain"
 	"github.com/omegaatt36/ytea/internal/mpris"
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/service"
 )
 
 const (
@@ -33,61 +28,10 @@ const (
 	statusTimeout = 4 * time.Second
 )
 
-type Searcher interface {
-	// Search skips the first offset results, so later pages extend earlier ones.
-	Search(ctx context.Context, query string, offset, limit int) ([]youtube.Track, error)
-	// Lookup resolves the tracks behind a YouTube URL; a positive limit caps the listing.
-	Lookup(ctx context.Context, url string, limit int) ([]youtube.Track, error)
-}
-
 // Spectrum delivers visualizer band levels. It is satisfied by pipewire.Tap
 // on Linux and audiotee.Tap on macOS.
 type Spectrum interface {
 	Levels() <-chan []float64
-}
-
-type Player interface {
-	Events() <-chan mpv.Event
-	AudioDevices(context.Context) ([]mpv.AudioDevice, error)
-	SetAudioDevice(context.Context, string) error
-	StreamInfo(context.Context) (mpv.StreamInfo, error)
-	TogglePause(context.Context) error
-	Seek(context.Context, time.Duration) error
-	SeekTo(context.Context, time.Duration) error
-	SeekPercent(context.Context, float64) error
-	Next(context.Context) error
-	Prev(context.Context) error
-	AddVolume(context.Context, int) error
-	SetNormalize(context.Context, bool) error
-	PlayNow(context.Context, string) error
-	Append(context.Context, string) error
-	AppendAll(context.Context, []string) error
-	PlayAll(ctx context.Context, urls []string, start int) error
-	PlayIndex(context.Context, int) error
-	Remove(context.Context, int) error
-	Move(context.Context, int, int) error
-	Reorder(ctx context.Context, pos int, current string, order []int) error
-	SetRepeat(context.Context, mpv.Repeat) error
-	Stop(context.Context) error
-	Playlist(context.Context) ([]mpv.PlaylistEntry, int, error)
-}
-
-type Library interface {
-	Playlists() []library.Playlist
-	CreateWithTracks(name string, tracks []youtube.Track) (int, error)
-	Add(index int, track youtube.Track) error
-	Rename(index int, name string) error
-	Move(from, to int) error
-	MoveTrack(playlistIndex, from, to int) error
-	RemoveTrack(playlistIndex, trackIndex int) error
-	Delete(index int) error
-}
-
-// History remembers recently played tracks, newest first.
-type History interface {
-	Entries() []history.Entry
-	Record(track youtube.Track, at time.Time) error
-	Remove(index int) error
 }
 
 type MPRIS interface {
@@ -95,26 +39,20 @@ type MPRIS interface {
 	Seeked(time.Duration)
 }
 
-// AccountPlaylistSource supplies read-only account playlists.
-type AccountPlaylistSource interface {
-	ListPlaylists(context.Context) ([]youtube.AccountPlaylist, error)
-	ListTracks(context.Context, string) ([]youtube.Track, error)
-}
-
 // Deps are the collaborators the UI drives. AccountPlaylists, Tap, MPRIS and
 // History are optional.
 type Deps struct {
-	AccountPlaylists AccountPlaylistSource
-	Searcher         Searcher
-	Player           Player
+	AccountPlaylists service.AccountSource
+	Searcher         service.Searcher
+	Player           service.Player
 	Tap              Spectrum
 	MPRIS            MPRIS
 	Thumbnails       bool
 	HTTP             *http.Client
 	Normalize        bool
-	InitialTracks    map[string]youtube.Track
-	Library          Library
-	History          History
+	InitialTracks    map[string]domain.Track
+	Library          service.PlaylistStore
+	History          service.HistoryStore
 	OpenURL          func(string) error
 }
 
@@ -130,10 +68,9 @@ const (
 )
 
 type Model struct {
-	deps    Deps
-	account accountPlaylistState
-	keys    keyMap
-	help    help.Model
+	deps Deps
+	keys keyMap
+	help help.Model
 
 	width, height int
 
@@ -142,36 +79,22 @@ type Model struct {
 	spinner               spinner.Model
 	focus                 focus
 	overlay               overlay
-	saveTrack             youtube.Track
-	nameTracks            []youtube.Track
+	saveTrack             domain.Track
+	nameTracks            []domain.Track
 	nameMode              nameMode
-	playlists             []library.Playlist
 	playlistCur           int
 	playlistTrackCur      int
 	deletePlaylistPending int
 	drag                  listPane
 
-	searching      bool
-	requestID      uint64
-	activeRequest  uint64
-	searchRequest  uint64
-	spinnerRequest uint64
-	imports        importQueue
+	// core is everything that outlives a front end; the rest of the model is
+	// what only this one needs: cursors, focus, overlays, inputs and text.
+	core service.Core
 
-	results resultsPane
-
-	queue    queueSync
+	results  resultsPane
 	queueCur int
-	// tracks remembers search metadata by URL, since mpv only knows filenames
-	// until yt-dlp resolves each entry.
-	tracks map[string]youtube.Track
 
-	player playerState
-
-	history    []history.Entry
 	historyCur int
-	// historyLast is the queue entry last recorded, so one play is recorded once.
-	historyLast string
 
 	levels              []float64
 	vu                  [2]float64
@@ -183,10 +106,7 @@ type Model struct {
 	spectrumFailure     string
 	fullHelp            bool
 
-	devices   []mpv.AudioDevice
 	deviceCur int
-
-	stream mpv.StreamInfo
 
 	status              string
 	statusErr           bool
@@ -240,16 +160,6 @@ func New(deps Deps) Model {
 	filterInput.KeyMap.Paste = keys.global.Paste
 	filterInput.SetVirtualCursor(false)
 
-	tracks := make(map[string]youtube.Track, len(deps.InitialTracks))
-	maps.Copy(tracks, deps.InitialTracks)
-	var playlists []library.Playlist
-	if deps.Library != nil {
-		playlists = deps.Library.Playlists()
-	}
-	var played []history.Entry
-	if deps.History != nil {
-		played = deps.History.Entries()
-	}
 	return Model{
 		deps:                  deps,
 		keys:                  keys,
@@ -259,25 +169,29 @@ func New(deps Deps) Model {
 		results:               resultsPane{filter: filterInput},
 		spinner:               sp,
 		focus:                 focusSearch,
-		tracks:                tracks,
-		playlists:             playlists,
-		history:               played,
 		deletePlaylistPending: -1,
-		queue:                 newQueueSync(deps.Player),
-		thumb:                 newThumbImage(deps.Thumbnails, deps.HTTP),
-		player:                playerState{idle: true, volume: 100, normalize: deps.Normalize},
-		showViz:               deps.Tap != nil,
-		levelsWaiting:         deps.Tap != nil,
-		rng:                   rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
+		core: service.New(service.Deps{
+			Searcher:      deps.Searcher,
+			Player:        deps.Player,
+			Library:       deps.Library,
+			History:       deps.History,
+			Account:       deps.AccountPlaylists,
+			InitialTracks: deps.InitialTracks,
+			Normalize:     deps.Normalize,
+		}),
+		thumb:         newThumbImage(deps.Thumbnails, deps.HTTP),
+		showViz:       deps.Tap != nil,
+		levelsWaiting: deps.Tap != nil,
+		rng:           rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
 	}
 }
 
-func (m Model) KnownTrack(url string) youtube.Track { return m.tracks[url] }
+func (m Model) KnownTrack(url string) domain.Track { return m.core.Tracks[url] }
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
-		waitMPV(m.deps.Player.Events(), m.player.timePos),
-		loadDevices(m.deps.Player, false),
+		waitPlayer(m.core.Events(), m.core.Playback.TimePos),
+		loadDevices(m.core, false),
 	}
 	if m.deps.Tap != nil {
 		cmds = append(cmds, waitLevels(m.deps.Tap.Levels()))
@@ -290,27 +204,25 @@ func (m Model) Init() tea.Cmd {
 }
 
 type (
-	mpvEventMsg      mpv.Event
-	mpvClosedMsg     struct{}
+	playerEventMsg   struct{ ev service.PlayerEvent }
+	playerClosedMsg  struct{}
 	levelsMsg        []float64
 	vuMsg            [2]float64
 	spectrumErrorMsg struct{ err error }
 	devicesMsg       struct {
-		devices []mpv.AudioDevice
-		open    bool
-		err     error
+		service.DevicesLoaded
+		open bool
 	}
 	streamMsg struct {
-		info mpv.StreamInfo
+		service.StreamLoaded
 		open bool
-		err  error
 	}
 	errMsg           struct{ err error }
 	statusTimeoutMsg struct{ version uint64 }
 )
 
 func (m *Model) syncPlacement() tea.Cmd {
-	if _, _, ok := m.current(); !ok {
+	if _, _, ok := m.core.Current(); !ok {
 		return nil
 	}
 	return m.thumb.syncPlacement(m.thumbOrigin)
@@ -336,36 +248,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case accountPlaylistsMsg:
-		if msg.generation != m.account.generation {
-			return m, nil
-		}
-		m.account.loading = false
-		m.account.err = msg.err
-		if msg.err == nil && len(msg.playlists) == 0 {
-			m.account.err = errors.New("no account data")
-		}
-		m.account.playlists = msg.playlists
-		m.playlistCur = min(m.playlistCur, max(0, m.playlistCount()-1))
-		return m, nil
-	case accountQueueFailedMsg:
-		// A successful browse supersedes an earlier queue lookup for the same playlist.
-		_, browsed := m.account.tracks[msg.id]
-		if msg.generation == m.account.generation && !browsed {
-			m.account.queueErrors[msg.id] = msg.err
-		}
-		return m, nil
-	case accountTracksMsg:
-		if msg.generation != m.account.generation {
-			return m, nil
-		}
-		m.account.trackLoading[msg.id] = false
-		m.account.trackErrors[msg.id] = msg.err
-		if msg.err == nil {
-			m.account.tracks[msg.id] = msg.tracks
-			delete(m.account.queueErrors, msg.id)
-		}
-		return m, nil
+	case service.AccountPlaylistsDone:
+		return m.updateAccount(msg)
+	case service.AccountTracksDone:
+		return m.updateAccount(msg)
+	case service.AccountQueueFailed:
+		return m.updateAccount(msg)
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.help.SetWidth(m.width)
@@ -401,55 +289,59 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, inputCmd)
 
 	case spinner.TickMsg:
-		if !m.searching {
+		if !m.core.Busy() {
 			return m, nil
 		}
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 
-	case searchDoneMsg:
+	case service.SearchDone:
 		m.searchDone(msg)
 		return m, nil
 
-	case lookupDoneMsg:
+	case service.LookupDone:
 		return m, m.resolveImport(msg)
 
-	case queueDoneMsg:
+	case service.AppendDone:
 		return m, m.queueDone(msg)
 
-	case queueActionDoneMsg:
-		_, cmd := m.updateQueue(msg)
-		if msg.requestID == m.activeRequest {
-			if msg.err != nil {
-				m.setError(msg.err.Error())
+	case service.ActionDone:
+		_, cmd := m.updateQueueMsg(msg)
+		if msg.RequestID == m.core.Active {
+			if msg.Err != nil {
+				m.setError(msg.Err.Error())
 			} else {
-				m.setStatus(msg.status)
+				m.setStatus(actionStatus(msg))
 			}
 		}
 		return m, cmd
 
-	case queueRefreshMsg:
-		synced, cmd := m.updateQueue(msg)
+	case service.Refreshed:
+		synced, cmd := m.updateQueueMsg(msg)
 		if synced {
 			m.syncMPRIS()
 		}
 		return m, cmd
 
-	case queueDebounceMsg:
-		_, cmd := m.updateQueue(msg)
+	case service.Debounced:
+		_, cmd := m.updateQueueMsg(msg)
 		return m, cmd
 
-	case mpvEventMsg:
-		cmd := m.applyEvent(mpv.Event(msg))
-		m.syncMPRIS()
-		return m, tea.Batch(cmd, m.recordPlay(), waitMPV(m.deps.Player.Events(), m.player.timePos))
+	case service.Failed:
+		m.setError(msg.Err.Error())
+		return m, nil
 
-	case historyChangedMsg:
+	case playerEventMsg:
+		cmd := m.applyEvent(msg.ev)
+		m.syncMPRIS()
+		return m, tea.Batch(cmd, waitPlayer(m.core.Events(), m.core.Playback.TimePos))
+
+	case service.HistoryRecorded:
 		m.reloadHistory()
 		return m, nil
 
-	case mpvClosedMsg:
+	case playerClosedMsg:
 		m.setError("mpv exited")
 		return m, tea.Quit
 
@@ -486,23 +378,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case devicesMsg:
-		if msg.err != nil {
-			m.setError("list outputs: " + msg.err.Error())
+		if msg.Err != nil {
+			m.setError("list outputs: " + msg.Err.Error())
 			return m, nil
 		}
-		m.devices = msg.devices
+		m.core.Update(msg.DevicesLoaded)
 		if msg.open {
 			m.overlay = overlayDevices
-			m.deviceCur = max(0, slices.IndexFunc(m.devices, m.isCurrentDevice))
+			m.deviceCur = max(0, slices.IndexFunc(m.core.Devices, m.core.IsCurrentDevice))
 		}
 		return m, nil
 
 	case streamMsg:
-		if msg.err != nil {
-			m.setError("read stream info: " + msg.err.Error())
+		if msg.Err != nil {
+			m.setError("read stream info: " + msg.Err.Error())
 			return m, nil
 		}
-		m.stream = msg.info
+		m.core.Update(msg.StreamLoaded)
 		if msg.open {
 			m.overlay = overlayInfo
 		}
@@ -531,14 +423,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) updateQueue(msg tea.Msg) (synced bool, cmd tea.Cmd) {
-	before := m.queue.synced
-	m.queue, cmd = m.queue.update(msg)
-	if m.queue.synced == before {
+func (m *Model) updateQueueMsg(msg service.Msg) (synced bool, cmd tea.Cmd) {
+	before := m.core.Queue.Synced
+	cmd = teaCmds(m.core.Update(msg).Cmds)
+	if m.core.Queue.Synced == before {
 		return false, cmd
 	}
-	m.queueCur = min(max(0, m.queueCur), max(0, len(m.queue.entries)-1))
+	m.queueCur = min(max(0, m.queueCur), max(0, len(m.core.Queue.Entries)-1))
 	return true, tea.Batch(cmd, m.refreshThumb())
+}
+
+func (m Model) updateAccount(msg service.Msg) (tea.Model, tea.Cmd) {
+	result := m.core.Update(msg)
+	m.playlistCur = min(m.playlistCur, max(0, m.playlistCount()-1))
+	return m, teaCmds(result.Cmds)
 }
 
 func (m *Model) updateResults(msg tea.Msg) tea.Cmd {
@@ -580,77 +478,8 @@ func (m *Model) clearError() {
 	}
 }
 
-func (m Model) current() (mpv.PlaylistEntry, youtube.Track, bool) {
-	pos := m.queue.pos
-	if m.player.idle || pos < 0 || pos >= len(m.queue.entries) {
-		return mpv.PlaylistEntry{}, youtube.Track{}, false
-	}
-	e := m.queue.entries[pos]
-	return e, m.tracks[e.Filename], true
-}
-
-// entryTrack is what is known about a queue entry, falling back to mpv's title.
-func (m Model) entryTrack(e mpv.PlaylistEntry) youtube.Track {
-	t := m.tracks[e.Filename]
-	t.URL = e.Filename
-	if t.Title == "" {
-		t.Title = e.Title
-	}
-	return t
-}
-
-func (m Model) isCurrentDevice(d mpv.AudioDevice) bool {
-	return d.Name == m.player.deviceName()
-}
-
-func (m Model) currentDevice() (mpv.AudioDevice, bool) {
-	name := m.player.deviceName()
-	i := slices.IndexFunc(m.devices, func(d mpv.AudioDevice) bool { return d.Name == name })
-	if i < 0 {
-		return mpv.AudioDevice{}, false
-	}
-	return m.devices[i], true
-}
-
 func (m Model) syncMPRIS() {
-	if m.deps.MPRIS == nil {
-		return
+	if m.deps.MPRIS != nil {
+		m.deps.MPRIS.Update(mpris.StateOf(m.core.NowPlaying()))
 	}
-	st := mpris.State{
-		Status:   mpris.Stopped,
-		Volume:   min(m.player.volume/100, 1),
-		Position: m.player.timePos,
-		CanPrev:  m.queue.pos > 0,
-		CanNext:  m.queue.pos >= 0 && m.queue.pos < len(m.queue.entries)-1,
-	}
-	if e, t, ok := m.current(); ok {
-		st.Status = mpris.Playing
-		if m.player.paused {
-			st.Status = mpris.Paused
-		}
-		st.TrackID = t.ID
-		if st.TrackID == "" {
-			st.TrackID = e.Filename
-		}
-		st.Title = displayTitle(e, t)
-		st.Artist = t.Channel
-		st.URL = e.Filename
-		// A live stream's duration is its DVR window, not a track length.
-		if !t.Live {
-			st.Length = m.player.duration
-		}
-		if t.ID != "" {
-			st.ArtURL = t.ThumbnailURL()
-		}
-	}
-	m.deps.MPRIS.Update(st)
-}
-
-func displayTitle(e mpv.PlaylistEntry, t youtube.Track) string {
-	for _, title := range []string{t.Title, e.Title} {
-		if title = sanitize(title); title != "" {
-			return title
-		}
-	}
-	return e.Filename
 }

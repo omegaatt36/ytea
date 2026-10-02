@@ -1,34 +1,28 @@
-package youtube
+package service
 
 import (
 	"net/url"
 	"strings"
+
+	"github.com/omegaatt36/ytea/domain"
 )
 
-// Link is search-box input recognized as a YouTube URL rather than keywords.
-type Link struct {
-	URL string
-	Mix bool
-}
-
-// RefOf recognizes a YouTube link in search-box input and returns it in the
-// form yt-dlp resolves.
-func RefOf(query string) (Link, bool) {
+func linkOf(query string) (domain.Link, bool) {
 	u, err := url.Parse(strings.TrimSpace(query))
 	if err != nil || !youTubeHost(strings.ToLower(u.Host)) {
-		return Link{}, false
+		return domain.Link{}, false
 	}
 	if list := u.Query().Get("list"); list != "" {
 		// Mixes resolve only next to their video; yt-dlp rejects playlist?list=RD.
 		if v := u.Query().Get("v"); v != "" && isMixList(list) {
-			return Link{URL: "https://www.youtube.com/watch?v=" + v + "&list=" + list, Mix: true}, true
+			return domain.Link{URL: "https://www.youtube.com/watch?v=" + v + "&list=" + list, Mix: true}, true
 		}
-		return Link{URL: "https://www.youtube.com/playlist?list=" + list, Mix: isMixList(list)}, true
+		return domain.Link{URL: "https://www.youtube.com/playlist?list=" + list, Mix: isMixList(list)}, true
 	}
 	if v := videoID(u); v != "" {
-		return Link{URL: "https://www.youtube.com/watch?v=" + v}, true
+		return domain.Link{URL: "https://www.youtube.com/watch?v=" + v}, true
 	}
-	return Link{}, false
+	return domain.Link{}, false
 }
 
 func videoID(u *url.URL) string {

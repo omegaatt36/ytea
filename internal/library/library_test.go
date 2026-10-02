@@ -4,10 +4,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/domain"
 )
 
 func TestStorePersistsPlaylistsAndTracks(t *testing.T) {
@@ -20,7 +23,7 @@ func TestStorePersistsPlaylistsAndTracks(t *testing.T) {
 	if err != nil || index != 0 {
 		t.Fatalf("Create() = %d, %v", index, err)
 	}
-	track := youtube.Track{ID: "abc", Title: "Song", Channel: "Artist", URL: "https://www.youtube.com/watch?v=abc"}
+	track := domain.Track{ID: "abc", Title: "Song", Channel: "Artist", URL: "https://www.youtube.com/watch?v=abc"}
 	if err := store.Add(index, track); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +70,7 @@ func TestStoreRenamesAndReorders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tracks := []youtube.Track{{Title: "a", URL: "ua"}, {Title: "b", URL: "ub"}, {Title: "c", URL: "uc"}}
+	tracks := []domain.Track{{Title: "a", URL: "ua"}, {Title: "b", URL: "ub"}, {Title: "c", URL: "uc"}}
 	for _, name := range []string{"One", "Two", "Three"} {
 		if _, err := store.CreateWithTracks(name, tracks); err != nil {
 			t.Fatal(err)
@@ -139,5 +142,33 @@ func TestOpenRejectsInvalidFile(t *testing.T) {
 	}
 	if _, err := Open(dir); !errors.Is(err, ErrDuplicate) {
 		t.Errorf("Open() = %v, want duplicate error", err)
+	}
+}
+
+func TestOpenReadsAndWritesDocumentedFormat(t *testing.T) {
+	dir := t.TempDir()
+	const doc = `{"version":1,"playlists":[{"name":"Evening","tracks":[{"ID":"abc","Title":"Song","Channel":"Artist","URL":"https://www.youtube.com/watch?v=abc","Duration":212000000000,"Live":false}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, filename), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []domain.Playlist{{Name: "Evening", Tracks: []domain.Track{{ID: "abc", Title: "Song", Channel: "Artist", URL: "https://www.youtube.com/watch?v=abc", Duration: 212 * time.Second}}}}
+	if got := store.Playlists(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Playlists() = %+v, want %+v", got, want)
+	}
+	if err := store.Rename(0, "Renamed"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, filename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"version"`, `"playlists"`, `"name"`, `"tracks"`, `"ID"`, `"Duration"`} {
+		if !strings.Contains(string(raw), key) {
+			t.Errorf("written file lacks key %s:\n%s", key, raw)
+		}
 	}
 }

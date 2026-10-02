@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/omegaatt36/ytea/domain"
 )
 
 // CookieAccountConfig identifies the signed-in yt-dlp session and its channel.
@@ -50,7 +52,7 @@ type cookiePlaylistEntry struct {
 }
 
 // ListPlaylists returns playlists owned by ChannelID and the account's Liked videos.
-func (c *CookieAccountClient) ListPlaylists(ctx context.Context) ([]AccountPlaylist, error) {
+func (c *CookieAccountClient) ListPlaylists(ctx context.Context) ([]domain.AccountPlaylist, error) {
 	if c.config.ChannelID == "" {
 		return nil, fmt.Errorf("list account playlists: youtube channel ID is required")
 	}
@@ -58,7 +60,7 @@ func (c *CookieAccountClient) ListPlaylists(ctx context.Context) ([]AccountPlayl
 	if err := c.dump(ctx, "https://www.youtube.com/feed/playlists", []string{"--flat-playlist"}, &feed); err != nil {
 		return nil, fmt.Errorf("list account playlists: %w", err)
 	}
-	playlists := make([]AccountPlaylist, 0, len(feed.Entries)+1)
+	playlists := make([]domain.AccountPlaylist, 0, len(feed.Entries)+1)
 	seen := make(map[string]bool, len(feed.Entries))
 	feedHasLikes := false
 	for _, entry := range feed.Entries {
@@ -81,7 +83,7 @@ func (c *CookieAccountClient) ListPlaylists(ctx context.Context) ([]AccountPlayl
 			continue
 		}
 		seen[entry.ID] = true
-		playlists = append(playlists, AccountPlaylist{ID: entry.ID, Title: entry.Title, URL: playlistURL(entry.ID)})
+		playlists = append(playlists, domain.AccountPlaylist{ID: entry.ID, Title: entry.Title, URL: playlistURL(entry.ID)})
 	}
 	var likes cookiePlaylistDump
 	if err := c.dump(ctx, "https://www.youtube.com/playlist?list=LL", []string{"--flat-playlist", "--playlist-items", "0"}, &likes); err != nil {
@@ -89,7 +91,7 @@ func (c *CookieAccountClient) ListPlaylists(ctx context.Context) ([]AccountPlayl
 	}
 	hasLikes := feedHasLikes || strings.HasPrefix(likes.ID, "LL")
 	if hasLikes {
-		playlists = append(playlists, AccountPlaylist{ID: "LL", Title: "Liked videos", URL: playlistURL("LL")})
+		playlists = append(playlists, domain.AccountPlaylist{ID: "LL", Title: "Liked videos", URL: playlistURL("LL")})
 	}
 	if len(feed.Entries) == 0 && !hasLikes {
 		return nil, fmt.Errorf("list account playlists: yt-dlp returned no account data; check cookies")
@@ -98,14 +100,14 @@ func (c *CookieAccountClient) ListPlaylists(ctx context.Context) ([]AccountPlayl
 }
 
 // ListTracks returns at most MaxPlaylistItems available videos in playlist order.
-func (c *CookieAccountClient) ListTracks(ctx context.Context, playlistID string) ([]Track, error) {
+func (c *CookieAccountClient) ListTracks(ctx context.Context, playlistID string) ([]domain.Track, error) {
 	var dump cookiePlaylistDump
-	if err := c.dump(ctx, playlistURL(playlistID), []string{"--flat-playlist", "--playlist-items", fmt.Sprintf("1:%d", MaxPlaylistItems)}, &dump); err != nil {
+	if err := c.dump(ctx, playlistURL(playlistID), []string{"--flat-playlist", "--playlist-items", fmt.Sprintf("1:%d", domain.MaxPlaylistItems)}, &dump); err != nil {
 		return nil, fmt.Errorf("list playlist %q tracks: %w", playlistID, err)
 	}
-	tracks := make([]Track, 0, min(len(dump.Entries), MaxPlaylistItems))
+	tracks := make([]domain.Track, 0, min(len(dump.Entries), domain.MaxPlaylistItems))
 	for i, entry := range dump.Entries {
-		if i == MaxPlaylistItems {
+		if i == domain.MaxPlaylistItems {
 			break
 		}
 		if entry.ID == "" || entry.Title == "Deleted video" || entry.Title == "Private video" || entry.Availability == "unavailable" || entry.Availability == "private" || entry.Availability == "needs_auth" || (entry.IEKey != "" && entry.IEKey != "Youtube") {
@@ -115,7 +117,7 @@ func (c *CookieAccountClient) ListTracks(ctx context.Context, playlistID string)
 		if channel == "" {
 			channel = entry.Uploader
 		}
-		tracks = append(tracks, Track{
+		tracks = append(tracks, domain.Track{
 			ID: entry.ID, Title: entry.Title, Channel: channel,
 			URL:      "https://www.youtube.com/watch?v=" + url.QueryEscape(entry.ID),
 			Duration: time.Duration(entry.Duration * float64(time.Second)),

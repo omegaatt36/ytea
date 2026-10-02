@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -9,7 +8,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/omegaatt36/ytea/internal/mpv"
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/service"
 )
 
 type deviceSpectrumStub struct{ devices []string }
@@ -27,7 +27,7 @@ func TestSpectrumFollowsOutputDevice(t *testing.T) {
 	tap := &deviceSpectrumStub{}
 	m := New(Deps{Tap: tap})
 	m.width, m.height = 100, 30
-	m.applyProperty(mpv.Event{Prop: mpv.PropAudioDevice, Data: json.RawMessage(`"coreaudio/other"`)})
+	m.applyChange(service.DeviceChanged{Device: "coreaudio/other"})
 	if got := m.vizWidth(100); got != 0 {
 		t.Errorf("vizWidth on explicit output = %d, want 0", got)
 	}
@@ -39,7 +39,7 @@ func TestSpectrumFollowsOutputDevice(t *testing.T) {
 	if !strings.Contains(ansi.Strip(m.renderPlayer()), "system default output") {
 		t.Error("output limitation disappeared after status timeout")
 	}
-	m.applyProperty(mpv.Event{Prop: mpv.PropAudioDevice, Data: json.RawMessage(`"auto"`)})
+	m.applyChange(service.DeviceChanged{Device: "auto"})
 	if got := m.vizWidth(100); got == 0 {
 		t.Error("visualizer did not return on default output")
 	}
@@ -106,8 +106,8 @@ func TestHyperlinkAnsi(t *testing.T) {
 func devicePickerModel(device string) Model {
 	m := New(Deps{})
 	m.width, m.height = 80, 30
-	m.applyProperty(mpv.Event{Prop: mpv.PropAudioDevice, Data: json.RawMessage(device)})
-	m.devices = []mpv.AudioDevice{
+	m.applyChange(service.DeviceChanged{Device: device})
+	m.core.Devices = []domain.AudioDevice{
 		{Name: "auto", Description: "Autoselect device"},
 		{Name: "pipewire/DX5", Description: "DX5 II Headphones"},
 	}
@@ -117,23 +117,23 @@ func devicePickerModel(device string) Model {
 func TestDevicePickerMarksCurrent(t *testing.T) {
 	tests := []struct {
 		name      string
-		device    string // mpv's audio-device property, JSON-encoded
+		device    string
 		wantIndex int
 	}{
-		{name: "explicit device", device: `"pipewire/DX5"`, wantIndex: 1},
-		{name: "mpv's auto", device: `"auto"`, wantIndex: 0},
-		{name: "before the first event", device: `null`, wantIndex: 0},
+		{name: "explicit device", device: "pipewire/DX5", wantIndex: 1},
+		{name: "auto", device: "auto", wantIndex: 0},
+		{name: "before the first event", device: "", wantIndex: 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := devicePickerModel(tt.device)
-			if !m.isCurrentDevice(m.devices[tt.wantIndex]) {
+			if !m.core.IsCurrentDevice(m.core.Devices[tt.wantIndex]) {
 				t.Errorf("device %d not marked as current for %s", tt.wantIndex, tt.device)
 			}
-			if got := m.player.deviceName(); got != m.devices[tt.wantIndex].Name {
-				t.Errorf("currentDeviceName() = %q, want %q", got, m.devices[tt.wantIndex].Name)
+			if got := m.core.Playback.DeviceName(); got != m.core.Devices[tt.wantIndex].Name {
+				t.Errorf("currentDeviceName() = %q, want %q", got, m.core.Devices[tt.wantIndex].Name)
 			}
-			if _, ok := m.currentDevice(); !ok {
+			if _, ok := m.core.CurrentDevice(); !ok {
 				t.Errorf("currentDevice() = not found for %s", tt.device)
 			}
 		})
@@ -141,7 +141,7 @@ func TestDevicePickerMarksCurrent(t *testing.T) {
 }
 
 func TestRenderDevices(t *testing.T) {
-	m := devicePickerModel(`"pipewire/DX5"`)
+	m := devicePickerModel("pipewire/DX5")
 	m.deviceCur = 1
 
 	got := ansi.Strip(m.renderDevices(80, 20))
@@ -151,7 +151,7 @@ func TestRenderDevices(t *testing.T) {
 		}
 	}
 
-	m.devices = nil
+	m.core.Devices = nil
 	if got := ansi.Strip(m.renderDevices(80, 20)); !strings.Contains(got, "no output devices") {
 		t.Errorf("renderDevices() = %q, want an empty-list hint", got)
 	}
@@ -159,7 +159,7 @@ func TestRenderDevices(t *testing.T) {
 
 func TestInfoPanel(t *testing.T) {
 	m := overlayModel(t, focusQueue)
-	m.deps.Player.(*spyPlayer).info = mpv.StreamInfo{
+	m.deps.Player.(*spyPlayer).info = domain.StreamInfo{
 		Path:   watchURL,
 		Opened: "edl://!no_clip;%99%https://rr1.googlevideo.com/videoplayback?itag=251&mime=audio%2Fwebm&clen=4000000&dur=200",
 		Codec:  "Opus (Opus Interactive Audio Codec)",
@@ -179,11 +179,11 @@ func TestInfoPanel(t *testing.T) {
 		}
 	}
 
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: "https://www.youtube.com/watch?v=next"}}
+	m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: "https://www.youtube.com/watch?v=next"}}
 	if body := strings.Join(m.infoLines(), "\n"); strings.Contains(body, "itag") {
 		t.Errorf("info shows the previous track's stream:\n%s", body)
 	}
-	if cmd := m.applyEvent(mpv.Event{Name: "file-loaded"}); cmd == nil {
+	if cmd := m.applyEvent(service.FileLoaded{}); cmd == nil {
 		t.Error("file-loaded did not refresh the open info panel")
 	}
 }
@@ -200,7 +200,7 @@ func TestOverlayCloseRestoresOriginPane(t *testing.T) {
 		}
 	}
 	openDevices := func(_ *testing.T, m Model) Model {
-		got, _ := m.update(devicesMsg{devices: m.devices, open: true})
+		got, _ := m.update(devicesMsg{service.DevicesLoaded{Devices: m.core.Devices}, true})
 		return got.(Model)
 	}
 	tests := []struct {

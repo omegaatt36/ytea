@@ -14,13 +14,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/omegaatt36/ytea/domain"
 	"github.com/omegaatt36/ytea/internal/library"
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/service"
 )
 
 type spyPlaylistPlayer struct {
-	*mpv.Player
+	service.Player
 	calls          []string
 	appendAllCalls [][]string
 	err            error
@@ -44,20 +44,20 @@ func (p *spyPlaylistPlayer) AppendAll(_ context.Context, urls []string) error {
 
 // spyAccountPlaylistSource returns fixed account data and records lazy fetches.
 type spyAccountPlaylistSource struct {
-	playlists []youtube.AccountPlaylist
-	tracks    map[string][]youtube.Track
+	playlists []domain.AccountPlaylist
+	tracks    map[string][]domain.Track
 	listErr   error
 	trackErr  error
 	trackErrs map[string]error
 	calls     []string
 }
 
-func (s *spyAccountPlaylistSource) ListPlaylists(context.Context) ([]youtube.AccountPlaylist, error) {
+func (s *spyAccountPlaylistSource) ListPlaylists(context.Context) ([]domain.AccountPlaylist, error) {
 	s.calls = append(s.calls, "playlists")
 	return s.playlists, s.listErr
 }
 
-func (s *spyAccountPlaylistSource) ListTracks(_ context.Context, id string) ([]youtube.Track, error) {
+func (s *spyAccountPlaylistSource) ListTracks(_ context.Context, id string) ([]domain.Track, error) {
 	s.calls = append(s.calls, "tracks "+id)
 	if err := s.trackErrs[id]; err != nil {
 		return nil, err
@@ -67,8 +67,8 @@ func (s *spyAccountPlaylistSource) ListTracks(_ context.Context, id string) ([]y
 
 func accountPlaylistFixture() *spyAccountPlaylistSource {
 	return &spyAccountPlaylistSource{
-		playlists: []youtube.AccountPlaylist{{ID: "mine", Title: "My uploads"}},
-		tracks: map[string][]youtube.Track{"mine": {
+		playlists: []domain.AccountPlaylist{{ID: "mine", Title: "My uploads"}},
+		tracks: map[string][]domain.Track{"mine": {
 			{ID: "one", Title: "First account song", URL: "https://www.youtube.com/watch?v=one"},
 			{ID: "two", Title: "Second account song", URL: "https://www.youtube.com/watch?v=two"},
 		}},
@@ -115,8 +115,8 @@ func TestSavePickerSelectsLocalPlaylistAfterAccountBrowsing(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := New(Deps{Library: store, AccountPlaylists: accountPlaylistFixture()})
-	m.playlistCur = len(m.playlists)
-	next, _ := m.openPlaylistPicker(youtube.Track{Title: "Song", URL: "song"})
+	m.playlistCur = len(m.core.Playlists.List)
+	next, _ := m.openPlaylistPicker(domain.Track{Title: "Song", URL: "song"})
 	m = next.(Model)
 	if m.overlay != overlayPicker || m.playlistCur != 0 {
 		t.Fatalf("picker opened with overlay %v and cursor %d, want local playlist 0", m.overlay, m.playlistCur)
@@ -128,7 +128,7 @@ func TestAccountPlaylistSectionHiddenWithoutSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateWithTracks("Local favorites", []youtube.Track{{Title: "Saved song", URL: "saved"}}); err != nil {
+	if _, err := store.CreateWithTracks("Local favorites", []domain.Track{{Title: "Saved song", URL: "saved"}}); err != nil {
 		t.Fatal(err)
 	}
 	m := New(Deps{Library: store})
@@ -275,7 +275,7 @@ func TestAccountPlaylistActionsLeaveLocalPlaylistFileUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateWithTracks("Local favorites", []youtube.Track{{Title: "Saved song", URL: "https://www.youtube.com/watch?v=saved"}}); err != nil {
+	if _, err := store.CreateWithTracks("Local favorites", []domain.Track{{Title: "Saved song", URL: "https://www.youtube.com/watch?v=saved"}}); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "playlists.json")
@@ -348,8 +348,8 @@ func TestAccountPlaylistMouseWheelOpensTracksLazily(t *testing.T) {
 
 func TestStaleAccountQueueFailureDoesNotReplaceNewPlaylistLoading(t *testing.T) {
 	source := &spyAccountPlaylistSource{
-		playlists: []youtube.AccountPlaylist{{ID: "A", Title: "Playlist A"}, {ID: "B", Title: "Playlist B"}},
-		tracks:    map[string][]youtube.Track{"B": {{ID: "b", Title: "B song", URL: "https://www.youtube.com/watch?v=b"}}},
+		playlists: []domain.AccountPlaylist{{ID: "A", Title: "Playlist A"}, {ID: "B", Title: "Playlist B"}},
+		tracks:    map[string][]domain.Track{"B": {{ID: "b", Title: "B song", URL: "https://www.youtube.com/watch?v=b"}}},
 		trackErrs: map[string]error{"A": errors.New("A fetch failed")},
 	}
 	player := &spyPlaylistPlayer{}

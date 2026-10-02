@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+
+	"github.com/omegaatt36/ytea/service"
 )
 
 func TestTrackPathIsValidObjectPath(t *testing.T) {
@@ -50,5 +52,16 @@ func TestMetadataLengthInMicroseconds(t *testing.T) {
 	got := metadata(State{TrackID: "abc", Length: 2 * time.Second})
 	if v, _ := got["mpris:length"].Value().(int64); v != 2_000_000 {
 		t.Errorf("mpris:length = %d, want 2000000", v)
+	}
+}
+
+func TestStateOfMapsNowPlaying(t *testing.T) {
+	np := service.NowPlaying{State: service.Paused, TrackID: "id", Title: "Song", Length: time.Minute, Volume: 0.5, CanNext: true}
+	got := StateOf(np)
+	if got.Status != Paused || got.TrackID != "id" || got.Title != "Song" || got.Length != time.Minute || got.Volume != 0.5 || !got.CanNext || got.CanPrev {
+		t.Errorf("StateOf(%+v) = %+v", np, got)
+	}
+	if got := StateOf(service.NowPlaying{}).Status; got != Stopped {
+		t.Errorf("idle status = %q, want %q", got, Stopped)
 	}
 }

@@ -4,83 +4,13 @@ import (
 	"fmt"
 	"image"
 	"math"
-	"slices"
 	"strings"
-	"time"
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/omegaatt36/ytea/internal/mpv"
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/service"
 )
-
-// playerState mirrors mpv's playback properties.
-type playerState struct {
-	timePos, duration time.Duration
-	paused, idle      bool
-	volume            float64
-	codec             string
-	params            mpv.AudioParams
-	device            string
-	normalize         bool
-	loopPlaylist      bool
-	loopFile          bool
-}
-
-// apply reports whether the change can switch the playing track.
-func (p *playerState) apply(ev mpv.Event) bool {
-	switch ev.Prop {
-	case mpv.PropTimePos:
-		p.timePos = seconds(mpv.Decode[float64](ev.Data))
-	case mpv.PropDuration:
-		p.duration = seconds(mpv.Decode[float64](ev.Data))
-	case mpv.PropPause:
-		p.paused = mpv.Decode[bool](ev.Data)
-	case mpv.PropIdle:
-		if mpv.Decode[bool](ev.Data) {
-			p.stop()
-		} else {
-			p.idle = false
-		}
-		return true
-	case mpv.PropVolume:
-		p.volume = mpv.Decode[float64](ev.Data)
-	case mpv.PropCodec:
-		p.codec = mpv.Decode[string](ev.Data)
-	case mpv.PropAudioParams:
-		p.params = mpv.Decode[mpv.AudioParams](ev.Data)
-	case mpv.PropAudioDevice:
-		p.device = mpv.Decode[string](ev.Data)
-	case mpv.PropAF:
-		p.normalize = slices.ContainsFunc(mpv.Decode[[]mpv.Filter](ev.Data), func(f mpv.Filter) bool {
-			return f.Label == mpv.NormalizeLabel
-		})
-	case mpv.PropLoopPlaylist:
-		p.loopPlaylist = mpv.LoopOn(ev.Data)
-	case mpv.PropLoopFile:
-		p.loopFile = mpv.LoopOn(ev.Data)
-	case mpv.PropPlaylistPos:
-		p.timePos = 0
-		return true
-	}
-	return false
-}
-
-func (p *playerState) stop() {
-	p.idle = true
-	p.timePos, p.duration = 0, 0
-}
-
-func (p playerState) repeat() mpv.Repeat {
-	return mpv.RepeatFrom(p.loopPlaylist, p.loopFile)
-}
-
-// deviceName is mpv's audio-device, which is "auto" until one is chosen.
-func (p playerState) deviceName() string {
-	if p.device == "" {
-		return "auto"
-	}
-	return p.device
-}
 
 const detailRows = thumbRows
 
@@ -103,7 +33,7 @@ func (m Model) playerRows() int { return m.playerContentRows() + 3 }
 // renderPlayer is the now-playing bar. The status rides its bottom edge, the
 // row the eye already returns to after every action.
 func (m Model) renderPlayer() string {
-	e, t, ok := m.current()
+	e, t, ok := m.core.Current()
 	art := m.playerArt()
 	_, textW := m.playerText()
 	contentRows := m.playerContentRows()
@@ -111,11 +41,11 @@ func (m Model) renderPlayer() string {
 	details := make([]string, 0, detailRows)
 	if ok {
 		icon := "▶"
-		if m.player.paused {
+		if m.core.Playback.Paused {
 			icon = "⏸"
 		}
-		details = append(details, nowTitleStyle.Render(icon+" "+displayTitle(e, t)))
-		if channel := sanitize(t.Channel); channel != "" {
+		details = append(details, nowTitleStyle.Render(icon+" "+service.DisplayTitle(e, t)))
+		if channel := service.Sanitize(t.Channel); channel != "" {
 			details = append(details, dimStyle.Render(channel))
 		}
 		details = append(details, dimStyle.Render(m.audioLine()))
@@ -169,7 +99,7 @@ func (m Model) renderPlayer() string {
 }
 
 func (m Model) playerArt() string {
-	if _, _, ok := m.current(); !ok {
+	if _, _, ok := m.core.Current(); !ok {
 		return ""
 	}
 	return m.thumb.view()
@@ -187,12 +117,12 @@ func (m Model) playerText() (x, w int) {
 // progressBar is where the progress bar's cells lie on screen; it is empty
 // when none is drawn.
 func (m Model) progressBar() image.Rectangle {
-	_, t, ok := m.current()
+	_, t, ok := m.core.Current()
 	if !ok || t.Live {
 		return image.Rectangle{}
 	}
 	x, textW := m.playerText()
-	elapsed, total := formatDuration(m.player.timePos), formatDuration(m.player.duration)
+	elapsed, total := service.FormatDuration(m.core.Playback.TimePos), service.FormatDuration(m.core.Playback.Duration)
 	barW := progressBarWidth(textW, elapsed, total)
 	if barW < minProgressBar {
 		return image.Rectangle{}
@@ -231,13 +161,13 @@ func (m Model) vizWidth(textW int) int {
 
 func (m Model) audioLine() string {
 	var parts []string
-	if m.player.codec != "" {
-		parts = append(parts, m.player.codec)
+	if m.core.Playback.Codec != "" {
+		parts = append(parts, m.core.Playback.Codec)
 	}
-	if m.player.params.SampleRate > 0 {
-		parts = append(parts, fmt.Sprintf("%gkHz", float64(m.player.params.SampleRate)/1000))
+	if m.core.Playback.Params.SampleRate > 0 {
+		parts = append(parts, fmt.Sprintf("%gkHz", float64(m.core.Playback.Params.SampleRate)/1000))
 	}
-	if d, ok := m.currentDevice(); ok {
+	if d, ok := m.core.CurrentDevice(); ok {
 		parts = append(parts, "→ "+d.Label())
 	}
 	return strings.Join(parts, " · ")
@@ -245,11 +175,11 @@ func (m Model) audioLine() string {
 
 // modeLine shows the settings a key toggles, so each press has a visible echo.
 func (m Model) modeLine() string {
-	parts := []string{fmt.Sprintf("vol %d%%", int(m.player.volume))}
-	if m.player.normalize {
+	parts := []string{fmt.Sprintf("vol %d%%", int(m.core.Playback.Volume))}
+	if m.core.Playback.Normalize {
 		parts = append(parts, "leveling")
 	}
-	if r := m.player.repeat(); r != mpv.RepeatOff {
+	if r := m.core.Playback.Repeat(); r != domain.RepeatOff {
 		parts = append(parts, "repeat "+r.String())
 	}
 	return dimStyle.Render(strings.Join(parts, " · "))
@@ -259,14 +189,14 @@ func (m Model) progressLine(live bool, width int) string {
 	if live {
 		return errorStyle.Render("● LIVE")
 	}
-	elapsed, total := formatDuration(m.player.timePos), formatDuration(m.player.duration)
+	elapsed, total := service.FormatDuration(m.core.Playback.TimePos), service.FormatDuration(m.core.Playback.Duration)
 	barW := progressBarWidth(width, elapsed, total)
 	if barW < minProgressBar {
 		return elapsed + dimStyle.Render(" / "+total)
 	}
 	filled := 0
-	if m.player.duration > 0 {
-		filled = min(barW, int(float64(barW)*float64(m.player.timePos)/float64(m.player.duration)))
+	if m.core.Playback.Duration > 0 {
+		filled = min(barW, int(float64(barW)*float64(m.core.Playback.TimePos)/float64(m.core.Playback.Duration)))
 	}
 	bar := playingStyle.Render(strings.Repeat("━", filled)) + dimStyle.Render(strings.Repeat("─", barW-filled))
 	return elapsed + " " + bar + " " + dimStyle.Render(total)

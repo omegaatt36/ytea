@@ -1,17 +1,17 @@
 package tui
 
 import (
-	"fmt"
 	"image"
 	"slices"
 	"strings"
-	"time"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/omegaatt36/ytea/service"
 )
 
 // Colors are ANSI palette indexes, so the terminal's theme decides the actual
@@ -56,16 +56,16 @@ func (m Model) View() tea.View {
 	}
 	v.Cursor = m.cursor()
 	v.WindowTitle = "ytea"
-	if e, t, ok := m.current(); ok {
-		v.WindowTitle = "ytea — " + displayTitle(e, t)
+	if e, t, ok := m.core.Current(); ok {
+		v.WindowTitle = "ytea — " + service.DisplayTitle(e, t)
 		// Ghostty draws OSC 9;4 progress in the tab/titlebar, so playback progress
 		// stays visible while the terminal is in the background.
-		if m.player.duration > 0 && !t.Live {
+		if m.core.Playback.Duration > 0 && !t.Live {
 			state := tea.ProgressBarDefault
-			if m.player.paused {
+			if m.core.Playback.Paused {
 				state = tea.ProgressBarWarning
 			}
-			v.ProgressBar = tea.NewProgressBar(state, int(100*m.player.timePos/m.player.duration))
+			v.ProgressBar = tea.NewProgressBar(state, int(100*m.core.Playback.TimePos/m.core.Playback.Duration))
 		}
 	}
 	return v
@@ -168,7 +168,7 @@ func brand() string {
 
 func (m Model) renderHeader() string {
 	left := brand() + " " + m.input.View()
-	if m.searching {
+	if m.core.Busy() {
 		left += " " + m.spinner.View()
 	}
 	tabs := m.renderTabs()
@@ -329,15 +329,4 @@ func (m Model) renderFullHelp(height int) string {
 		}
 	}
 	return box("Keys", "", padRows(lines), true, m.width, height)
-}
-
-func formatDuration(d time.Duration) string {
-	if d <= 0 {
-		return "--:--"
-	}
-	s := int(d.Round(time.Second).Seconds())
-	if s >= 3600 {
-		return fmt.Sprintf("%d:%02d:%02d", s/3600, s/60%60, s%60)
-	}
-	return fmt.Sprintf("%d:%02d", s/60, s%60)
 }

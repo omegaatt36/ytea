@@ -9,39 +9,14 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/domain"
 )
-
-func TestParseSeekTarget(t *testing.T) {
-	total := 5 * time.Minute
-	for _, tt := range []struct {
-		in   string
-		want time.Duration
-	}{
-		{"50%", 150 * time.Second},
-		{" 0% ", 0},
-		{"90", 90 * time.Second},
-		{"1:23", 83 * time.Second},
-		{"0:01:05", 65 * time.Second},
-		{"4:59.5", 299500 * time.Millisecond},
-	} {
-		got, err := parseSeekTarget(tt.in, total)
-		if err != nil || got != tt.want {
-			t.Errorf("parseSeekTarget(%q) = %v, %v; want %v", tt.in, got, err, tt.want)
-		}
-	}
-	for _, in := range []string{"", "abc", "1:75", "-5", "101%", "1:2:3:4", "6:00"} {
-		if got, err := parseSeekTarget(in, total); err == nil {
-			t.Errorf("parseSeekTarget(%q) = %v, want an error", in, got)
-		}
-	}
-}
 
 func seekModel(t *testing.T) (Model, *spyPlayer) {
 	t.Helper()
 	m := overlayModel(t, focusQueue)
 	player := m.deps.Player.(*spyPlayer)
-	m.player.duration, m.player.timePos = 4*time.Minute, 30*time.Second
+	m.core.Playback.Duration, m.core.Playback.TimePos = 4*time.Minute, 30*time.Second
 	return m, player
 }
 
@@ -53,7 +28,7 @@ func TestDigitsSeekToPercent(t *testing.T) {
 		t.Errorf("7: calls %q, want seek 70%%", player.calls)
 	}
 
-	m.tracks[watchURL] = youtube.Track{Title: "Song", URL: watchURL, Live: true}
+	m.core.Tracks[watchURL] = domain.Track{Title: "Song", URL: watchURL, Live: true}
 	if _, cmd := m.update(keyPress("5")); cmd != nil {
 		t.Error("a digit sought within a live stream")
 	}
@@ -113,7 +88,7 @@ func TestClickingTheProgressBarSeeks(t *testing.T) {
 	if len(player.calls) != 0 {
 		t.Errorf("click beside the bar sought: %q", player.calls)
 	}
-	m.queue.entries = nil
+	m.core.Queue.Entries = nil
 	if !m.progressBar().Empty() {
 		t.Error("progress bar laid out with nothing playing")
 	}

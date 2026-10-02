@@ -7,8 +7,9 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/omegaatt36/ytea/internal/mpv"
+	"github.com/omegaatt36/ytea/domain"
 	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/service"
 )
 
 const (
@@ -23,7 +24,7 @@ func (m Model) dialog(body image.Rectangle) (paneBox, bool) {
 	p, w, rows := paneNone, 0, 0
 	switch m.overlay {
 	case overlayDevices:
-		p, w, rows = paneDevices, deviceDialogWidth, max(1, len(m.devices))
+		p, w, rows = paneDevices, deviceDialogWidth, max(1, len(m.core.Devices))
 	case overlayInfo:
 		w, rows = infoDialogWidth, len(m.infoLines())
 	case overlayName:
@@ -59,11 +60,11 @@ func (m Model) renderDevices(width, height int) string {
 }
 
 func (m Model) infoLines() []string {
-	e, t, ok := m.current()
+	e, t, ok := m.core.Current()
 	if !ok {
 		return []string{dimStyle.Render("nothing playing")}
 	}
-	length := formatDuration(m.player.duration)
+	length := service.FormatDuration(m.core.Playback.Duration)
 	if t.Live {
 		length = "LIVE"
 	}
@@ -72,21 +73,21 @@ func (m Model) infoLines() []string {
 		url = ansi.SetHyperlink(url) + url + ansi.ResetHyperlink()
 	}
 	rows := [][2]string{
-		{"Title", displayTitle(e, t)},
-		{"Channel", sanitize(t.Channel)},
+		{"Title", service.DisplayTitle(e, t)},
+		{"Channel", service.Sanitize(t.Channel)},
 		{"URL", url},
 		{"Video ID", t.ID},
 		{"Length", length},
 	}
 
 	// A stream read before a track change describes the previous file.
-	stream := m.stream
+	stream := m.core.Stream
 	if stream.Path != e.Filename {
-		stream = mpv.StreamInfo{}
+		stream = domain.StreamInfo{}
 	}
 	codec := stream.Codec
 	if codec == "" {
-		codec = m.player.codec
+		codec = m.core.Playback.Codec
 	}
 	rows = append(rows, [2]string{"Codec", codec})
 	if yt, ok := youtube.StreamOf(stream.Opened); ok {
@@ -104,14 +105,14 @@ func (m Model) infoLines() []string {
 	} else if stream.Bitrate > 0 {
 		rows = append(rows, [2]string{"Bitrate", fmt.Sprintf("%d kbps", stream.Bitrate/1000)})
 	}
-	if m.player.params.SampleRate > 0 {
-		rows = append(rows, [2]string{"Decoded", fmt.Sprintf("%gkHz · %s · %s", float64(m.player.params.SampleRate)/1000, m.player.params.Channels, m.player.params.Format)})
+	if m.core.Playback.Params.SampleRate > 0 {
+		rows = append(rows, [2]string{"Decoded", fmt.Sprintf("%gkHz · %s · %s", float64(m.core.Playback.Params.SampleRate)/1000, m.core.Playback.Params.Channels, m.core.Playback.Params.Format)})
 	}
-	if d, ok := m.currentDevice(); ok {
+	if d, ok := m.core.CurrentDevice(); ok {
 		rows = append(rows, [2]string{"Output", d.Label()})
 	}
 	norm := "off"
-	if m.player.normalize {
+	if m.core.Playback.Normalize {
 		norm = "on"
 	}
 	rows = append(rows, [2]string{"Normalize", norm})

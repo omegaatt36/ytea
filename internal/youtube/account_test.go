@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/omegaatt36/ytea/domain"
 )
 
 // The server returns documented YouTube Data API v3 resource shapes. The client
@@ -78,7 +80,7 @@ func TestAccountClientListPlaylistsOwnsAndLikes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPlaylists() error = %v", err)
 	}
-	want := []AccountPlaylist{
+	want := []domain.AccountPlaylist{
 		{ID: "PLown1", Title: "Owned one", URL: "https://www.youtube.com/playlist?list=PLown1"},
 		{ID: "PLown2", Title: "Owned two", URL: "https://www.youtube.com/playlist?list=PLown2"},
 		{ID: "LLowner", Title: "Liked videos", URL: "https://www.youtube.com/playlist?list=LLowner"},
@@ -131,7 +133,7 @@ func TestAccountClientListTracksSkipsUnavailableAndFillsFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTracks() error = %v", err)
 	}
-	want := []Track{
+	want := []domain.Track{
 		{ID: "video-a", Title: "First song", Channel: "Artist A", URL: "https://www.youtube.com/watch?v=video-a", Duration: 3*time.Minute + 12*time.Second},
 		{ID: "video-b", Title: "Second song", Channel: "Artist B", URL: "https://www.youtube.com/watch?v=video-b", Duration: time.Hour + 2*time.Minute + 3*time.Second},
 	}
@@ -197,8 +199,8 @@ func TestAccountClientListTracksPaginatesAndCapsAt200(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTracks() error = %v", err)
 	}
-	if len(got) != MaxPlaylistItems {
-		t.Fatalf("ListTracks() returned %d tracks, want %d", len(got), MaxPlaylistItems)
+	if len(got) != domain.MaxPlaylistItems {
+		t.Fatalf("ListTracks() returned %d tracks, want %d", len(got), domain.MaxPlaylistItems)
 	}
 	if itemPages != 4 {
 		t.Errorf("playlistItems.list pages = %d, want 4", itemPages)
@@ -206,8 +208,8 @@ func TestAccountClientListTracksPaginatesAndCapsAt200(t *testing.T) {
 	if videoCalls != 4 {
 		t.Errorf("videos.list calls = %d, want 4 batches of 50", videoCalls)
 	}
-	if len(requestedVideos) != MaxPlaylistItems {
-		t.Errorf("videos.list requested %d IDs, want %d", len(requestedVideos), MaxPlaylistItems)
+	if len(requestedVideos) != domain.MaxPlaylistItems {
+		t.Errorf("videos.list requested %d IDs, want %d", len(requestedVideos), domain.MaxPlaylistItems)
 	}
 	if got[0].ID != "video-000" || got[199].ID != "video-199" || got[199].Duration != time.Minute {
 		t.Errorf("first/last tracks = %+v / %+v, want IDs video-000 / video-199 and one-minute duration", got[0], got[199])

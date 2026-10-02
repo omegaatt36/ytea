@@ -8,14 +8,12 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/omegaatt36/ytea/internal/library"
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/domain"
 )
 
 func playlistEditModel(focus focus) (Model, *spyLibrary, *spyPlayer) {
-	lib := &spyLibrary{playlists: []library.Playlist{
-		{Name: "One", Tracks: []youtube.Track{{Title: "alpha", URL: "ua"}, {Title: "bravo", URL: "ub"}, {Title: "charlie", URL: "uc"}}},
+	lib := &spyLibrary{playlists: []domain.Playlist{
+		{Name: "One", Tracks: []domain.Track{{Title: "alpha", URL: "ua"}, {Title: "bravo", URL: "ub"}, {Title: "charlie", URL: "uc"}}},
 		{Name: "Two"},
 	}}
 	player := &spyPlayer{}
@@ -26,7 +24,7 @@ func playlistEditModel(focus focus) (Model, *spyLibrary, *spyPlayer) {
 	return m, lib, player
 }
 
-func playlistNames(ps []library.Playlist) []string {
+func playlistNames(ps []domain.Playlist) []string {
 	names := make([]string, len(ps))
 	for i, p := range ps {
 		names[i] = p.Name
@@ -45,8 +43,8 @@ func TestRenamePlaylistPrefillsTheCurrentName(t *testing.T) {
 	}
 	m.nameInput.SetValue("Evening")
 	m = press(t, m, keyPress("enter"))
-	if m.overlay != overlayNone || lib.playlists[0].Name != "Evening" || m.playlists[0].Name != "Evening" {
-		t.Errorf("after rename: overlay=%v store=%q view=%q", m.overlay, lib.playlists[0].Name, m.playlists[0].Name)
+	if m.overlay != overlayNone || lib.playlists[0].Name != "Evening" || m.core.Playlists.List[0].Name != "Evening" {
+		t.Errorf("after rename: overlay=%v store=%q view=%q", m.overlay, lib.playlists[0].Name, m.core.Playlists.List[0].Name)
 	}
 	if m.focus != focusPlaylists {
 		t.Errorf("rename moved focus to %v", m.focus)
@@ -74,11 +72,11 @@ func TestMovePlaylistsAndTracksWithKJ(t *testing.T) {
 
 func TestPlayAllReplacesTheQueue(t *testing.T) {
 	m, _, player := playlistEditModel(focusPlaylists)
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: "old"}}
+	m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: "old"}}
 	got, cmd := m.update(keyPress("P"))
 	m = got.(Model)
-	if got := filenames(m.queue.entries); !slices.Equal(got, []string{"ua", "ub", "uc"}) || !m.queue.insertPending {
-		t.Fatalf("projected queue %q insertPending=%v", got, m.queue.insertPending)
+	if got := filenames(m.core.Queue.Entries); !slices.Equal(got, []string{"ua", "ub", "uc"}) || !m.core.Queue.InsertPending {
+		t.Fatalf("projected queue %q insertPending=%v", got, m.core.Queue.InsertPending)
 	}
 	runCmd(cmd)
 	if !slices.Contains(player.calls, "play all ua,ub,uc from 0") {
@@ -138,9 +136,9 @@ func TestDragReordersTheQueue(t *testing.T) {
 	m.width, m.height = 100, 30
 	m.input.Blur()
 	m.focus = focusQueue
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: "A", Title: "first"}, {Filename: "B", Title: "second"}, {Filename: "C", Title: "third"}}
+	m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: "A", Title: "first"}, {Filename: "B", Title: "second"}, {Filename: "C", Title: "third"}}
 	m, cmd := drag(m, cellAt(t, m, "third"), cellAt(t, m, "first"))
-	if got := filenames(m.queue.entries); !slices.Equal(got, []string{"C", "A", "B"}) || m.queueCur != 0 {
+	if got := filenames(m.core.Queue.Entries); !slices.Equal(got, []string{"C", "A", "B"}) || m.queueCur != 0 {
 		t.Fatalf("drag third to the top: queue %q cursor %d", got, m.queueCur)
 	}
 	if cmd == nil {

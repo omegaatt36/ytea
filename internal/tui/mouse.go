@@ -51,11 +51,11 @@ func (m Model) click(x, y int) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if !m.dialogOpen() && image.Pt(x, y).In(m.progressBar()) && m.seekable() {
+	if !m.dialogOpen() && image.Pt(x, y).In(m.progressBar()) && m.core.Seekable() {
 		bar := m.progressBar()
 		// The cell's middle, so the first and last cells reach neither end exactly.
 		frac := (float64(x-bar.Min.X) + 0.5) / float64(bar.Dx())
-		return m, m.seekTo(time.Duration(frac * float64(m.player.duration)))
+		return m, m.seekTo(time.Duration(frac * float64(m.core.Playback.Duration)))
 	}
 	p, i := m.paneAt(x, y)
 	if p == panePlaylistTracks && m.focus == focusPlaylists && m.accountSelected() {
@@ -77,9 +77,9 @@ func (m Model) draggable(p listPane, i int) bool {
 	}
 	switch p {
 	case paneQueue:
-		return !m.queue.insertPending
+		return !m.core.Queue.InsertPending
 	case panePlaylists:
-		return i < len(m.playlists)
+		return i < len(m.core.Playlists.List)
 	case panePlaylistTracks:
 		return !m.accountSelected()
 	case paneNone, paneResults, paneHistory, paneDevices:

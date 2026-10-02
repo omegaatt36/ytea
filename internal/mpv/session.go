@@ -5,15 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/omegaatt36/ytea/domain"
 )
 
 // PlaybackState contains a playlist snapshot and the settings restored on startup.
 type PlaybackState struct {
 	URLs    []string
-	Entries []PlaylistEntry
+	Entries []domain.PlaylistEntry
 	Index   int
 	Volume  float64
-	Repeat  Repeat
+	Repeat  domain.Repeat
 }
 
 // Snapshot reads the authoritative playlist and playback settings from mpv.
@@ -41,7 +43,7 @@ func (p *Player) Snapshot(ctx context.Context) (PlaybackState, error) {
 	if err != nil {
 		return PlaybackState{}, fmt.Errorf("read loop-file: %w", err)
 	}
-	state.Repeat = RepeatFrom(LoopOn(loopPlaylist), LoopOn(loopFile))
+	state.Repeat = domain.RepeatFrom(LoopOn(loopPlaylist), LoopOn(loopFile))
 	return state, nil
 }
 
@@ -62,7 +64,7 @@ func (p *Player) Restore(ctx context.Context, state PlaybackState) (retErr error
 			select {
 			case <-stopDrain:
 				return
-			case _, ok := <-p.client.Events():
+			case _, ok := <-p.Events():
 				if !ok {
 					return
 				}

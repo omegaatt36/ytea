@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/omegaatt36/ytea/domain"
 	"github.com/omegaatt36/ytea/internal/googleauth"
 )
 
@@ -98,15 +99,12 @@ func TestAudioDevices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AudioDevices() error = %v", err)
 	}
-	want := []AudioDevice{
+	want := []domain.AudioDevice{
 		{Name: "auto", Description: "Autoselect device"},
 		{Name: "coreaudio/0x44d9", Description: "External Headphones"},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("AudioDevices() = %+v, want %+v", got, want)
-	}
-	if got[1].Label() != "External Headphones" {
-		t.Errorf("Label() = %q, want the description", got[1].Label())
 	}
 }
 

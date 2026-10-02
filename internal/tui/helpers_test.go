@@ -15,10 +15,10 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/omegaatt36/ytea/domain"
 	"github.com/omegaatt36/ytea/internal/library"
 	"github.com/omegaatt36/ytea/internal/mpris"
-	"github.com/omegaatt36/ytea/internal/mpv"
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/service"
 )
 
 const watchURL = "https://www.youtube.com/watch?v=abc"
@@ -27,23 +27,27 @@ const watchURL = "https://www.youtube.com/watch?v=abc"
 
 // overlayModel is a 120x40 model with one playing track, one saved playlist
 // and one audio device, focused on origin with the search input blurred.
-func overlayModel(t *testing.T, origin focus) Model {
+func overlayModel(t *testing.T, origin focus, opts ...func(*Deps)) Model {
 	t.Helper()
 	store, err := library.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateWithTracks("Keep", []youtube.Track{{Title: "Kept", URL: watchURL}}); err != nil {
+	if _, err := store.CreateWithTracks("Keep", []domain.Track{{Title: "Kept", URL: watchURL}}); err != nil {
 		t.Fatal(err)
 	}
-	m := New(Deps{Library: store, Player: &spyPlayer{info: mpv.StreamInfo{Path: watchURL}}})
+	deps := Deps{Library: store, Player: &spyPlayer{info: domain.StreamInfo{Path: watchURL}}}
+	for _, opt := range opts {
+		opt(&deps)
+	}
+	m := New(deps)
 	m.width, m.height = 120, 40
 	m.input.Blur()
 	m.focus = origin
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: watchURL, Title: "Song"}}
-	m.queue.pos, m.player.idle = 0, false
-	m.tracks[watchURL] = youtube.Track{ID: "abc", Title: "Song", URL: watchURL}
-	m.devices = []mpv.AudioDevice{{Name: "auto", Description: "Autoselect device"}}
+	m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: watchURL, Title: "Song"}}
+	m.core.Queue.Pos, m.core.Playback.Idle = 0, false
+	m.core.Tracks[watchURL] = domain.Track{ID: "abc", Title: "Song", URL: watchURL}
+	m.core.Devices = []domain.AudioDevice{{Name: "auto", Description: "Autoselect device"}}
 	return m
 }
 
@@ -51,9 +55,9 @@ func playingModel(g graphicsSupport) Model {
 	m := New(Deps{Thumbnails: true})
 	m.thumb.graphics = g
 	m.width, m.height = 100, 30
-	m.player.idle, m.queue.pos = false, 0
-	m.queue.entries = []mpv.PlaylistEntry{{Filename: watchURL}}
-	m.tracks[watchURL] = youtube.Track{ID: "abc", Title: "Song", URL: watchURL}
+	m.core.Playback.Idle, m.core.Queue.Pos = false, 0
+	m.core.Queue.Entries = []domain.PlaylistEntry{{Filename: watchURL}}
+	m.core.Tracks[watchURL] = domain.Track{ID: "abc", Title: "Song", URL: watchURL}
 	m.thumb.video = "abc"
 	return m
 }
@@ -62,10 +66,10 @@ func mouseModel() Model {
 	m := New(Deps{})
 	m.width, m.height = 100, 30
 	for i := range 40 {
-		m.results.tracks = append(m.results.tracks, youtube.Track{Title: fmt.Sprintf("song %02d", i)})
+		m.core.Search.Tracks = append(m.core.Search.Tracks, domain.Track{Title: fmt.Sprintf("song %02d", i)})
 	}
 	for i := range 3 {
-		m.queue.entries = append(m.queue.entries, mpv.PlaylistEntry{Filename: fmt.Sprintf("u%d", i), Title: fmt.Sprintf("queued %d", i)})
+		m.core.Queue.Entries = append(m.core.Queue.Entries, domain.PlaylistEntry{Filename: fmt.Sprintf("u%d", i), Title: fmt.Sprintf("queued %d", i)})
 	}
 	return m
 }
@@ -76,7 +80,7 @@ func filterModel() (Model, *spyPlayer) {
 	m.width, m.height = 100, 30
 	m.input.Blur()
 	m.focus = focusResults
-	m.results.tracks = []youtube.Track{
+	m.core.Search.Tracks = []domain.Track{
 		{Title: "lofi", URL: "a"},
 		{Title: "rock", URL: "b"},
 		{Title: "lofi beats", URL: "c"},
@@ -179,11 +183,11 @@ func helpEntry(b key.Binding) string {
 }
 
 func selectedTitle(m Model) string {
-	tr, _ := m.results.selected()
+	tr, _ := m.selectedResult()
 	return tr.Title
 }
 
-func filenames(entries []mpv.PlaylistEntry) []string {
+func filenames(entries []domain.PlaylistEntry) []string {
 	names := make([]string, len(entries))
 	for i, e := range entries {
 		names[i] = e.Filename
@@ -198,27 +202,26 @@ type spectrumStub struct{}
 func (spectrumStub) Levels() <-chan []float64 { return nil }
 
 type searchStub struct {
-	tracks []youtube.Track
+	tracks []domain.Track
 }
 
-func (s searchStub) Search(context.Context, string, int, int) ([]youtube.Track, error) {
+func (s searchStub) Search(context.Context, string, int, int) ([]domain.Track, error) {
 	return nil, errors.New("unexpected search")
 }
 
-func (s searchStub) Lookup(context.Context, string, int) ([]youtube.Track, error) {
+func (s searchStub) Lookup(context.Context, string, int) ([]domain.Track, error) {
 	return s.tracks, nil
 }
 
-// spyPlayer records the commands the UI sends to mpv. Every command returns
-// err; methods it does not override panic on the nil *mpv.Player.
+// Methods it does not override panic on the nil embedded service.Player.
 type spyPlayer struct {
-	*mpv.Player
+	service.Player
 	err      error
-	info     mpv.StreamInfo
-	playlist []mpv.PlaylistEntry
+	info     domain.StreamInfo
+	playlist []domain.PlaylistEntry
 
 	calls   []string
-	repeats []mpv.Repeat
+	repeats []domain.Repeat
 	orders  [][]int
 }
 
@@ -234,6 +237,7 @@ func (p *spyPlayer) AppendAll(_ context.Context, urls []string) error {
 	return p.record("append " + strings.Join(urls, ","))
 }
 func (p *spyPlayer) Stop(context.Context) error                { return p.record("stop") }
+func (p *spyPlayer) Move(context.Context, int, int) error      { return p.record("move") }
 func (p *spyPlayer) TogglePause(context.Context) error         { return p.record("toggle pause") }
 func (p *spyPlayer) Next(context.Context) error                { return p.record("next") }
 func (p *spyPlayer) PlayIndex(context.Context, int) error      { return p.record("play index") }
@@ -258,7 +262,7 @@ func (p *spyPlayer) AddVolume(_ context.Context, delta int) error {
 	return p.record("volume down")
 }
 
-func (p *spyPlayer) SetRepeat(_ context.Context, r mpv.Repeat) error {
+func (p *spyPlayer) SetRepeat(_ context.Context, r domain.Repeat) error {
 	p.repeats = append(p.repeats, r)
 	return p.record("set repeat")
 }
@@ -268,30 +272,17 @@ func (p *spyPlayer) Reorder(_ context.Context, _ int, _ string, order []int) err
 	return p.record("reorder")
 }
 
-func (p *spyPlayer) Playlist(context.Context) ([]mpv.PlaylistEntry, int, error) {
+func (p *spyPlayer) Playlist(context.Context) ([]domain.PlaylistEntry, int, error) {
 	p.calls = append(p.calls, "playlist")
 	return p.playlist, 1, nil
 }
 
-func (p *spyPlayer) StreamInfo(context.Context) (mpv.StreamInfo, error) { return p.info, nil }
+func (p *spyPlayer) StreamInfo(context.Context) (domain.StreamInfo, error) { return p.info, nil }
 
-// Events reports mpv as already gone, so waiting on it returns at once.
-func (p *spyPlayer) Events() <-chan mpv.Event {
-	ch := make(chan mpv.Event)
+func (p *spyPlayer) Events() <-chan service.PlayerEvent {
+	ch := make(chan service.PlayerEvent)
 	close(ch)
 	return ch
-}
-
-// appendRecorder reports AppendAll calls on a channel so tests can observe
-// the order of concurrent writes.
-type appendRecorder struct {
-	*mpv.Player
-	writes chan string
-}
-
-func (p appendRecorder) AppendAll(_ context.Context, urls []string) error {
-	p.writes <- urls[0]
-	return nil
 }
 
 type spyMPRIS struct {
@@ -308,23 +299,23 @@ func (s *spyMPRIS) Seeked(pos time.Duration) {
 }
 
 type spyLibrary struct {
-	playlists []library.Playlist
+	playlists []domain.Playlist
 	err       error
 }
 
-func (s *spyLibrary) Playlists() []library.Playlist {
+func (s *spyLibrary) Playlists() []domain.Playlist {
 	return s.playlists
 }
 
-func (s *spyLibrary) CreateWithTracks(name string, tracks []youtube.Track) (int, error) {
+func (s *spyLibrary) CreateWithTracks(name string, tracks []domain.Track) (int, error) {
 	if s.err != nil {
 		return -1, s.err
 	}
-	s.playlists = append(s.playlists, library.Playlist{Name: name, Tracks: tracks})
+	s.playlists = append(s.playlists, domain.Playlist{Name: name, Tracks: tracks})
 	return len(s.playlists) - 1, nil
 }
 
-func (s *spyLibrary) Add(index int, track youtube.Track) error {
+func (s *spyLibrary) Add(index int, track domain.Track) error {
 	if s.err != nil {
 		return s.err
 	}
@@ -385,4 +376,9 @@ func (s *spyLibrary) Delete(index int) error {
 	}
 	s.playlists = append(s.playlists[:index], s.playlists[index+1:]...)
 	return nil
+}
+
+func pendingSearch(m *Model, query string) uint64 {
+	m.core.Submit(query)
+	return m.core.Active
 }

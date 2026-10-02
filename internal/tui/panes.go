@@ -7,12 +7,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/service"
 )
 
 // boxInset is a box's border plus the one-cell margin inside it.
@@ -103,7 +103,7 @@ func (m Model) panes(r image.Rectangle) []paneBox {
 	case focusSearch, focusResults, focusPlaylistTracks:
 	}
 	if w := resultsWidth(r.Dx()); w < r.Dx() {
-		if len(m.results.tracks) == 0 {
+		if len(m.core.Search.Tracks) == 0 {
 			w = max(30, r.Dx()*2/5)
 		}
 		return split(paneResults, paneQueue, w)
@@ -170,17 +170,17 @@ func (m Model) paneAt(x, y int) (listPane, int) {
 func (m Model) listCursor(p listPane) (cursor, n int) {
 	switch p {
 	case paneResults:
-		return m.results.cur, len(m.results.rows())
+		return m.results.cur, len(m.resultRows())
 	case paneQueue:
-		return m.queueCur, len(m.queue.entries)
+		return m.queueCur, len(m.core.Queue.Entries)
 	case panePlaylists:
 		return m.playlistCur, m.playlistCount()
 	case panePlaylistTracks:
 		return m.playlistTrackCur, len(m.selectedPlaylistTracks())
 	case paneHistory:
-		return m.historyCur, len(m.history)
+		return m.historyCur, len(m.core.History.Entries)
 	case paneDevices:
-		return m.deviceCur, len(m.devices)
+		return m.deviceCur, len(m.core.Devices)
 	case paneNone:
 	}
 	return 0, 0
@@ -268,34 +268,34 @@ func (m Model) list(p listPane) list {
 	}
 	switch p {
 	case paneResults:
-		rows := m.results.rows()
+		rows := m.resultRows()
 		l.title, l.empty = resultsTitle, "press "+m.keys.global.Search.Help().Key+" to search"
-		if len(m.results.tracks) == 0 {
+		if len(m.core.Search.Tracks) == 0 {
 			l.emptyTitle = "Search music"
 		}
-		if len(m.results.tracks) > 0 {
+		if len(m.core.Search.Tracks) > 0 {
 			more := ""
-			if m.results.canLoadMore() {
+			if m.core.Search.CanLoadMore() {
 				more = "+"
 			}
-			l.title = fmt.Sprintf("%s (%d%s)", resultsTitle, len(m.results.tracks), more)
+			l.title = fmt.Sprintf("%s (%d%s)", resultsTitle, len(m.core.Search.Tracks), more)
 		}
 		if m.results.filterOpen() {
-			l.title = fmt.Sprintf("%s (%d/%d)", resultsTitle, len(rows), len(m.results.tracks))
+			l.title = fmt.Sprintf("%s (%d/%d)", resultsTitle, len(rows), len(m.core.Search.Tracks))
 			l.head = []string{" " + m.results.filter.View()}
-			if len(m.results.tracks) > 0 {
+			if len(m.core.Search.Tracks) > 0 {
 				l.empty = "no matches"
 			}
 		}
 		l.focused = m.focus == focusResults && !m.dialogOpen()
-		lenW := lengthWidth(m.results.tracks)
+		lenW := lengthWidth(m.core.Search.Tracks)
 		l.row = func(i, w int, selected bool) string {
 			text, dim := styles(selected)
-			return trackRow(m.results.tracks[rows[i].index], rows[i], w, lenW, text, dim)
+			return trackRow(m.core.Search.Tracks[rows[i].Index], rows[i], w, lenW, text, dim)
 		}
 	case paneQueue:
 		detailed := m.activeTab() == focusQueue
-		l.title = fmt.Sprintf("Queue (%d)", len(m.queue.entries))
+		l.title = fmt.Sprintf("Queue (%d)", len(m.core.Queue.Entries))
 		l.empty = "empty — press " + m.keys.results.Enqueue.Help().Key + " on a result"
 		l.focused = m.focus == focusQueue && !m.dialogOpen()
 		tracks := m.queueTracks()
@@ -312,63 +312,63 @@ func (m Model) list(p listPane) list {
 		l.focused = (m.overlay == overlayPicker || m.focus == focusPlaylists) && !m.dialogOpen()
 		l.row = func(i, w int, selected bool) string {
 			text, dim := styles(selected)
-			if i >= len(m.playlists) {
-				return text.Render(ansi.Truncate(sanitize(m.accountPlaylistNames()[i-len(m.playlists)]), w, "…"))
+			if i >= len(m.core.Playlists.List) {
+				return text.Render(ansi.Truncate(service.Sanitize(m.accountPlaylistNames()[i-len(m.core.Playlists.List)]), w, "…"))
 			}
-			pl := m.playlists[i]
+			pl := m.core.Playlists.List[i]
 			count := dim.Render(" " + strconv.Itoa(len(pl.Tracks)))
-			return pad(text.Render(ansi.Truncate(sanitize(pl.Name), w-lipgloss.Width(count), "…")), w-lipgloss.Width(count), text) + count
+			return pad(text.Render(ansi.Truncate(service.Sanitize(pl.Name), w-lipgloss.Width(count), "…")), w-lipgloss.Width(count), text) + count
 		}
 	case panePlaylistTracks:
 		tracks := m.selectedPlaylistTracks()
 		l.title, l.empty = "Tracks", "empty playlist"
-		if m.playlistCur < len(m.playlists) {
-			l.title = fmt.Sprintf("%s (%d)", m.playlists[m.playlistCur].Name, len(tracks))
+		if m.playlistCur < len(m.core.Playlists.List) {
+			l.title = fmt.Sprintf("%s (%d)", m.core.Playlists.List[m.playlistCur].Name, len(tracks))
 		}
-		if m.accountSelected() && m.account.err != nil {
-			l.title, l.empty = "YouTube", sanitize(m.account.err.Error())
+		if m.accountSelected() && m.core.Account.Err != nil {
+			l.title, l.empty = "YouTube", service.Sanitize(m.core.Account.Err.Error())
 		}
 		if pl, ok := m.selectedAccountPlaylist(); ok {
-			l.title = "YouTube — " + sanitize(pl.Title)
+			l.title = "YouTube — " + service.Sanitize(pl.Title)
 			switch {
-			case m.account.trackLoading[pl.ID]:
+			case m.core.Account.TrackLoading[pl.ID]:
 				l.empty = "loading…"
-			case m.account.trackErrors[pl.ID] != nil:
-				l.empty = sanitize(m.account.trackErrors[pl.ID].Error())
-			case m.account.queueErrors[pl.ID] != nil:
-				l.empty = sanitize(m.account.queueErrors[pl.ID].Error())
+			case m.core.Account.TrackErrors[pl.ID] != nil:
+				l.empty = service.Sanitize(m.core.Account.TrackErrors[pl.ID].Error())
+			case m.core.Account.QueueErrors[pl.ID] != nil:
+				l.empty = service.Sanitize(m.core.Account.QueueErrors[pl.ID].Error())
 			}
 		}
 		l.focused = m.focus == focusPlaylistTracks && m.overlay == overlayNone
 		lenW := lengthWidth(tracks)
 		l.row = func(i, w int, selected bool) string {
 			text, dim := styles(selected)
-			return trackRow(tracks[i], filterMatch{}, w, lenW, text, dim)
+			return trackRow(tracks[i], service.Match{}, w, lenW, text, dim)
 		}
 	case paneHistory:
-		l.title, l.empty = fmt.Sprintf("History (%d)", len(m.history)), "nothing played yet"
-		if m.deps.History == nil {
+		l.title, l.empty = fmt.Sprintf("History (%d)", len(m.core.History.Entries)), "nothing played yet"
+		if !m.core.History.Enabled() {
 			l.empty = "history is unavailable"
 		}
 		l.focused = m.focus == focusHistory && !m.dialogOpen()
-		tracks := make([]youtube.Track, len(m.history))
-		for i, e := range m.history {
+		tracks := make([]domain.Track, len(m.core.History.Entries))
+		for i, e := range m.core.History.Entries {
 			tracks[i] = e.Track
 		}
 		lenW := lengthWidth(tracks)
 		now := time.Now()
 		l.row = func(i, w int, selected bool) string {
 			text, dim := styles(selected)
-			ago := dim.Render(fmt.Sprintf("%-*s", agoWidth, playedAgo(m.history[i].PlayedAt, now)))
-			return ago + trackRow(tracks[i], filterMatch{}, w-agoWidth, lenW, text, dim)
+			ago := dim.Render(fmt.Sprintf("%-*s", agoWidth, playedAgo(m.core.History.Entries[i].PlayedAt, now)))
+			return ago + trackRow(tracks[i], service.Match{}, w-agoWidth, lenW, text, dim)
 		}
 	case paneDevices:
 		l.title, l.empty, l.focused = "Output device", "no output devices", true
 		l.row = func(i, w int, selected bool) string {
 			text, _ := styles(selected)
-			d := m.devices[i]
+			d := m.core.Devices[i]
 			mark := "  "
-			if m.isCurrentDevice(d) {
+			if m.core.IsCurrentDevice(d) {
 				text, mark = text.Foreground(playing), "● "
 			}
 			return text.Render(ansi.Truncate(mark+d.Label(), w, "…"))
@@ -385,26 +385,26 @@ const agoWidth = 7
 
 // trackRow sets a track out in columns: title, then channel when there is
 // room for it, then the length flush right in lenW cells.
-func trackRow(t youtube.Track, match filterMatch, w, lenW int, text, dim lipgloss.Style) string {
+func trackRow(t domain.Track, match service.Match, w, lenW int, text, dim lipgloss.Style) string {
 	right := dim.Render(fmt.Sprintf("  %*s", lenW, trackLength(t)))
 	if w >= 48 {
 		chanW := min(24, w/4)
-		right = text.Render("  ") + pad(highlight(t.Channel, match.channel, chanW, dim), chanW, dim) + right
+		right = text.Render("  ") + pad(highlight(t.Channel, match.Channel, chanW, dim), chanW, dim) + right
 	}
 	titleW := max(1, w-lipgloss.Width(right))
-	return pad(highlight(t.Title, match.title, titleW, text), titleW, text) + right
+	return pad(highlight(t.Title, match.Title, titleW, text), titleW, text) + right
 }
 
-func trackLength(t youtube.Track) string {
+func trackLength(t domain.Track) string {
 	if t.Live {
 		return "LIVE"
 	}
-	return formatDuration(t.Duration)
+	return service.FormatDuration(t.Duration)
 }
 
 // lengthWidth sizes a list's length column to its longest entry, so hour-long
 // uploads cannot push their row's columns out of line.
-func lengthWidth(tracks []youtube.Track) int {
+func lengthWidth(tracks []domain.Track) int {
 	w := 0
 	for _, t := range tracks {
 		w = max(w, len(trackLength(t)))
@@ -421,47 +421,47 @@ func pad(s string, w int, style lipgloss.Style) string {
 }
 
 // queueTracks is the queue as tracks, titled the way the queue shows them.
-func (m Model) queueTracks() []youtube.Track {
-	tracks := make([]youtube.Track, len(m.queue.entries))
-	for i, e := range m.queue.entries {
-		t := m.tracks[e.Filename]
-		t.Title = displayTitle(e, t)
+func (m Model) queueTracks() []domain.Track {
+	tracks := make([]domain.Track, len(m.core.Queue.Entries))
+	for i, e := range m.core.Queue.Entries {
+		t := m.core.Tracks[e.Filename]
+		t.Title = service.DisplayTitle(e, t)
 		tracks[i] = t
 	}
 	return tracks
 }
 
-func (m Model) queueLine(i int, t youtube.Track, w, lenW int, detailed, selected bool) string {
+func (m Model) queueLine(i int, t domain.Track, w, lenW int, detailed, selected bool) string {
 	text, dim, marker := lipgloss.NewStyle(), dimStyle, "  "
 	if selected {
 		text, dim = cursorStyle, cursorDim
 	}
-	if i == m.queue.pos {
+	if i == m.core.Queue.Pos {
 		text, marker = text.Foreground(playing), "▶ "
 	}
 	prefix := text.Render(marker)
 	if detailed {
-		prefix += dim.Render(fmt.Sprintf("%*d ", len(strconv.Itoa(len(m.queue.entries))), i+1))
+		prefix += dim.Render(fmt.Sprintf("%*d ", len(strconv.Itoa(len(m.core.Queue.Entries))), i+1))
 	}
-	return prefix + trackRow(t, filterMatch{}, w-lipgloss.Width(prefix), lenW, text, dim)
+	return prefix + trackRow(t, service.Match{}, w-lipgloss.Width(prefix), lenW, text, dim)
 }
 
 // highlight cuts s to width on a grapheme boundary of s itself, so the byte
 // spans stay valid, and styles each segment separately, sanitized.
-func highlight(s string, spans []span, width int, base lipgloss.Style) string {
+func highlight(s string, spans []service.Span, width int, base lipgloss.Style) string {
 	keep, tail := cutAt(s, width), ""
 	if keep < len(s) {
 		tail = "…"
 	}
 	var b strings.Builder
 	styled := func(style lipgloss.Style, text string) {
-		if text = sanitize(text); text != "" {
+		if text = service.Sanitize(text); text != "" {
 			b.WriteString(style.Render(text))
 		}
 	}
 	at := 0
 	for _, sp := range mergeSpans(spans) {
-		start, end := max(sp.start, at), min(sp.end, keep)
+		start, end := max(sp.Start, at), min(sp.End, keep)
 		if start >= end {
 			continue
 		}
@@ -476,13 +476,13 @@ func highlight(s string, spans []span, width int, base lipgloss.Style) string {
 // cutAt is the byte length of the longest prefix of s that fits width cells,
 // leaving a cell for "…" when s does not fit whole.
 func cutAt(s string, width int) int {
-	if ansi.StringWidth(sanitize(s)) <= width {
+	if ansi.StringWidth(service.Sanitize(s)) <= width {
 		return len(s)
 	}
 	cut, used := 0, 0
 	for cut < len(s) {
 		c, _ := ansi.FirstGraphemeCluster(s[cut:], ansi.GraphemeWidth)
-		w := ansi.StringWidth(sanitize(c))
+		w := ansi.StringWidth(service.Sanitize(c))
 		if used+w > width-1 {
 			break
 		}
@@ -491,24 +491,12 @@ func cutAt(s string, width int) int {
 	return cut
 }
 
-// sanitize drops what remote text must not put on a terminal: control bytes,
-// which move the cursor or restyle, and default-ignorable fillers such as
-// U+3164, which width tables count as wide but terminals draw as nothing.
-func sanitize(s string) string {
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) {
-			return -1
-		}
-		return r
-	}, s)
-}
-
-func mergeSpans(spans []span) []span {
-	sorted := slices.SortedFunc(slices.Values(spans), func(a, b span) int { return a.start - b.start })
-	var out []span
+func mergeSpans(spans []service.Span) []service.Span {
+	sorted := slices.SortedFunc(slices.Values(spans), func(a, b service.Span) int { return a.Start - b.Start })
+	var out []service.Span
 	for _, sp := range sorted {
-		if last := len(out) - 1; last >= 0 && sp.start <= out[last].end {
-			out[last].end = max(out[last].end, sp.end)
+		if last := len(out) - 1; last >= 0 && sp.Start <= out[last].End {
+			out[last].End = max(out[last].End, sp.End)
 			continue
 		}
 		out = append(out, sp)

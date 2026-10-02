@@ -4,26 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"slices"
 )
 
-// TailShuffle returns a random order for a playlist of n entries that keeps
-// entries 0..after in place; after -1 shuffles everything. order[i] is the
-// current index of the entry that should end up at i.
-func TailShuffle(n, after int, r *rand.Rand) []int {
-	order := make([]int, n)
-	for i := range order {
-		order[i] = i
-	}
-	tail := order[min(max(after+1, 0), n):]
-	r.Shuffle(len(tail), func(i, j int) { tail[i], tail[j] = tail[j], tail[i] })
-	return order
-}
-
 // Reorder rearranges the playlist into order with playlist-move. Each move
 // pulls an entry up to its final index from further down, so entries already
-// in place, such as the current one ahead of a TailShuffle, are never moved.
+// in place, such as the current one ahead of a tail shuffle, are never moved.
 // order was computed with current playing at pos (-1 and "" for nothing);
 // if mpv has advanced or the playlist changed since, nothing is moved.
 func (p *Player) Reorder(ctx context.Context, pos int, current string, order []int) error {

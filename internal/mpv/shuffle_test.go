@@ -7,6 +7,8 @@ import (
 	"math/rand/v2"
 	"slices"
 	"testing"
+
+	"github.com/omegaatt36/ytea/domain"
 )
 
 // newFakePlaylist serves playlist reads and applies playlist-move the way mpv
@@ -17,9 +19,9 @@ func newFakePlaylist(t *testing.T, list *[]string, pos *int, ops *[][]any) *Play
 	return &Player{client: newFakePair(t, func(req request) string {
 		switch {
 		case req.Command[0] == "get_property" && req.Command[1] == PropPlaylist:
-			entries := make([]PlaylistEntry, len(*list))
+			entries := make([]domain.PlaylistEntry, len(*list))
 			for i, f := range *list {
-				entries[i] = PlaylistEntry{Filename: f}
+				entries[i] = domain.PlaylistEntry{Filename: f}
 			}
 			data, _ := json.Marshal(entries)
 			return fmt.Sprintf(`{"request_id":%d,"error":"success","data":%s}`, req.RequestID, data)
@@ -49,6 +51,17 @@ func newFakePlaylist(t *testing.T, list *[]string, pos *int, ops *[][]any) *Play
 
 var queue = []string{"A", "B", "C", "D", "E"}
 
+func tailOrder(n, after int, r *rand.Rand) []int {
+	order := make([]int, n)
+	for i, j := range r.Perm(n - after - 1) {
+		order[after+1+i] = after + 1 + j
+	}
+	for i := 0; i <= after; i++ {
+		order[i] = i
+	}
+	return order
+}
+
 func shuffleWithSeed(t *testing.T, seed uint64, after int) (list []string, order []int, ops [][]any) {
 	t.Helper()
 	list = slices.Clone(queue)
@@ -57,7 +70,7 @@ func shuffleWithSeed(t *testing.T, seed uint64, after int) (list []string, order
 		current = list[after]
 	}
 	p := newFakePlaylist(t, &list, &pos, &ops)
-	order = TailShuffle(len(list), after, rand.New(rand.NewPCG(seed, seed)))
+	order = tailOrder(len(list), after, rand.New(rand.NewPCG(seed, seed)))
 	if err := p.Reorder(context.Background(), after, current, order); err != nil {
 		t.Fatalf("seed %d: Reorder(%v) error = %v", seed, order, err)
 	}
@@ -104,14 +117,6 @@ func TestShuffleWithoutCurrentTrackShufflesAll(t *testing.T) {
 	}
 	if !firstMoved {
 		t.Error("20 seeds never moved the first track; the whole queue is not shuffled")
-	}
-}
-
-func TestShuffleIsSeedable(t *testing.T) {
-	a := TailShuffle(10, 2, rand.New(rand.NewPCG(7, 7)))
-	b := TailShuffle(10, 2, rand.New(rand.NewPCG(7, 7)))
-	if len(a) != 10 || !slices.Equal(a, b) {
-		t.Errorf("same seed gave %v and %v, want equal orders of 10", a, b)
 	}
 }
 

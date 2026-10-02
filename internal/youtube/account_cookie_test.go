@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/omegaatt36/ytea/domain"
 )
 
 // stubCookieYtDlp returns canned yt-dlp JSON and records every invocation.
@@ -105,7 +107,7 @@ func TestCookieAccountListPlaylistsVerifiesOwnerAndKeepsLikedVideos(t *testing.T
 	if err != nil {
 		t.Fatalf("ListPlaylists() error = %v", err)
 	}
-	want := []AccountPlaylist{
+	want := []domain.AccountPlaylist{
 		{ID: "PLmine", Title: "My mix", URL: "https://www.youtube.com/playlist?list=PLmine"},
 		{ID: "PLneedsdetail", Title: "Needs detail", URL: "https://www.youtube.com/playlist?list=PLneedsdetail"},
 		{ID: "PLsame-title", Title: "Liked Music", URL: "https://www.youtube.com/playlist?list=PLsame-title"},
@@ -173,7 +175,7 @@ func TestCookieAccountListTracksFillsFieldsAndSkipsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Track{
+	want := []domain.Track{
 		{ID: "song-a", Title: "First song", Channel: "Artist A", URL: "https://www.youtube.com/watch?v=song-a", Duration: 192500 * time.Millisecond},
 		{ID: "song-b", Title: "Second song", Channel: "Artist B", URL: "https://www.youtube.com/watch?v=song-b", Duration: 75 * time.Second},
 	}
@@ -187,7 +189,7 @@ func TestCookieAccountListTracksFillsFieldsAndSkipsUnavailable(t *testing.T) {
 }
 
 func TestCookieAccountListTracksCapsAt200(t *testing.T) {
-	entries := make([]map[string]any, MaxPlaylistItems+5)
+	entries := make([]map[string]any, domain.MaxPlaylistItems+5)
 	for i := range entries {
 		entries[i] = map[string]any{"id": fmt.Sprintf("video-%03d", i), "title": fmt.Sprintf("Title %03d", i), "channel": "Artist", "duration": 60}
 	}
@@ -201,10 +203,10 @@ func TestCookieAccountListTracksCapsAt200(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != MaxPlaylistItems {
+	if len(got) != domain.MaxPlaylistItems {
 		t.Fatalf("ListTracks() count = %d, want 200", len(got))
 	}
-	if got[0].ID != "video-000" || got[MaxPlaylistItems-1].ID != "video-199" {
+	if got[0].ID != "video-000" || got[domain.MaxPlaylistItems-1].ID != "video-199" {
 		t.Errorf("ListTracks() edges = %s/%s, want video-000/video-199", got[0].ID, got[len(got)-1].ID)
 	}
 	calls := readCookieCalls(t, args)

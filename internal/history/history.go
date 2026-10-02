@@ -12,7 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/internal/trackfile"
 )
 
 const (
@@ -24,15 +25,14 @@ const (
 
 var ErrNotFound = errors.New("history entry not found")
 
-// Entry is one track and when it last started playing.
-type Entry struct {
-	Track    youtube.Track `json:"track"`
-	PlayedAt time.Time     `json:"played_at"`
+type file struct {
+	Version int         `json:"version"`
+	Entries []fileEntry `json:"entries"`
 }
 
-type state struct {
-	Version int     `json:"version"`
-	Entries []Entry `json:"entries"`
+type fileEntry struct {
+	Track    trackfile.Track `json:"track"`
+	PlayedAt time.Time       `json:"played_at"`
 }
 
 // Store owns the history file, newest play first. Mutations are persisted
@@ -40,7 +40,7 @@ type state struct {
 type Store struct {
 	mu      sync.Mutex
 	dir     string
-	entries []Entry
+	entries []domain.HistoryEntry
 }
 
 // Open loads the history. A missing file starts an empty history.
@@ -54,7 +54,7 @@ func Open(dir string) (*Store, error) {
 		return nil, fmt.Errorf("open history: %w", err)
 	}
 	defer f.Close()
-	var data state
+	var data file
 	dec := json.NewDecoder(io.LimitReader(f, maxBytes+1))
 	if err := dec.Decode(&data); err != nil {
 		return nil, fmt.Errorf("decode history: %w", err)
@@ -66,7 +66,11 @@ func Open(dir string) (*Store, error) {
 	if data.Version != version {
 		return nil, fmt.Errorf("unsupported history version %d", data.Version)
 	}
-	s.entries = slices.DeleteFunc(data.Entries, func(e Entry) bool { return e.Track.URL == "" })
+	for _, e := range data.Entries {
+		if e.Track.URL != "" {
+			s.entries = append(s.entries, domain.HistoryEntry{Track: e.Track.To(), PlayedAt: e.PlayedAt})
+		}
+	}
 	if len(s.entries) > MaxEntries {
 		s.entries = s.entries[:MaxEntries]
 	}
@@ -74,21 +78,21 @@ func Open(dir string) (*Store, error) {
 }
 
 // Entries returns a copy, newest play first.
-func (s *Store) Entries() []Entry {
+func (s *Store) Entries() []domain.HistoryEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.entries)
 }
 
 // Record moves track to the top, replacing an earlier play of the same URL.
-func (s *Store) Record(track youtube.Track, at time.Time) error {
+func (s *Store) Record(track domain.Track, at time.Time) error {
 	if track.URL == "" {
 		return errors.New("track URL is empty")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	next := make([]Entry, 0, min(len(s.entries)+1, MaxEntries))
-	next = append(next, Entry{Track: track, PlayedAt: at})
+	next := make([]domain.HistoryEntry, 0, min(len(s.entries)+1, MaxEntries))
+	next = append(next, domain.HistoryEntry{Track: track, PlayedAt: at})
 	for _, e := range s.entries {
 		if len(next) == MaxEntries {
 			break
@@ -110,8 +114,12 @@ func (s *Store) Remove(index int) error {
 	return s.commit(slices.Delete(slices.Clone(s.entries), index, index+1))
 }
 
-func (s *Store) commit(entries []Entry) error {
-	data, err := json.MarshalIndent(state{Version: version, Entries: entries}, "", "  ")
+func (s *Store) commit(entries []domain.HistoryEntry) error {
+	out := file{Version: version, Entries: make([]fileEntry, len(entries))}
+	for i, e := range entries {
+		out.Entries[i] = fileEntry{Track: trackfile.From(e.Track), PlayedAt: e.PlayedAt}
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode history: %w", err)
 	}

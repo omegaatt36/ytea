@@ -13,7 +13,8 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/omegaatt36/ytea/internal/youtube"
+	"github.com/omegaatt36/ytea/domain"
+	"github.com/omegaatt36/ytea/internal/trackfile"
 )
 
 const (
@@ -29,15 +30,19 @@ var (
 	ErrNotFound  = errors.New("playlist or track not found")
 )
 
-// Playlist is a named, ordered collection of YouTube tracks.
-type Playlist struct {
-	Name   string          `json:"name"`
-	Tracks []youtube.Track `json:"tracks"`
+type state struct {
+	Version   int
+	Playlists []domain.Playlist
 }
 
-type state struct {
-	Version   int        `json:"version"`
-	Playlists []Playlist `json:"playlists"`
+type file struct {
+	Version   int            `json:"version"`
+	Playlists []filePlaylist `json:"playlists"`
+}
+
+type filePlaylist struct {
+	Name   string            `json:"name"`
+	Tracks []trackfile.Track `json:"tracks"`
 }
 
 // Store owns the local playlist file. Mutations are persisted before they return.
@@ -66,8 +71,13 @@ func Open(dir string) (*Store, error) {
 		return nil, fmt.Errorf("playlists exceed %d bytes", maxBytes)
 	}
 	dec := json.NewDecoder(io.LimitReader(f, maxBytes+1))
-	if err := dec.Decode(&s.data); err != nil {
+	var onDisk file
+	if err := dec.Decode(&onDisk); err != nil {
 		return nil, fmt.Errorf("decode playlists: %w", err)
+	}
+	s.data = state{Version: onDisk.Version, Playlists: make([]domain.Playlist, len(onDisk.Playlists))}
+	for i, p := range onDisk.Playlists {
+		s.data.Playlists[i] = domain.Playlist{Name: p.Name, Tracks: trackfile.ToAll(p.Tracks)}
 	}
 	var trailing any
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
@@ -80,7 +90,7 @@ func Open(dir string) (*Store, error) {
 }
 
 // Playlists returns a copy safe for the UI to inspect or edit locally.
-func (s *Store) Playlists() []Playlist {
+func (s *Store) Playlists() []domain.Playlist {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return clone(s.data.Playlists)
@@ -92,7 +102,7 @@ func (s *Store) Create(name string) (int, error) {
 }
 
 // CreateWithTracks saves a new playlist and its initial tracks in one write.
-func (s *Store) CreateWithTracks(name string, tracks []youtube.Track) (int, error) {
+func (s *Store) CreateWithTracks(name string, tracks []domain.Track) (int, error) {
 	name, err := cleanName(name)
 	if err != nil {
 		return -1, err
@@ -107,7 +117,7 @@ func (s *Store) CreateWithTracks(name string, tracks []youtube.Track) (int, erro
 	}
 	index := len(s.data.Playlists)
 	next := clone(s.data.Playlists)
-	next = append(next, Playlist{Name: name, Tracks: append([]youtube.Track(nil), tracks...)})
+	next = append(next, domain.Playlist{Name: name, Tracks: append([]domain.Track(nil), tracks...)})
 	if err := s.commit(next); err != nil {
 		return -1, err
 	}
@@ -160,7 +170,7 @@ func (s *Store) MoveTrack(playlistIndex, from, to int) error {
 }
 
 // Add saves a track in the selected playlist, keeping its existing order.
-func (s *Store) Add(index int, track youtube.Track) error {
+func (s *Store) Add(index int, track domain.Track) error {
 	if track.URL == "" {
 		return errors.New("track URL is empty")
 	}
@@ -203,12 +213,16 @@ func (s *Store) Delete(index int) error {
 	return s.commit(next)
 }
 
-func (s *Store) commit(playlists []Playlist) error {
+func (s *Store) commit(playlists []domain.Playlist) error {
 	next := state{Version: version, Playlists: playlists}
 	if err := validate(next); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(next, "", "  ")
+	out := file{Version: next.Version, Playlists: make([]filePlaylist, len(next.Playlists))}
+	for i, p := range next.Playlists {
+		out.Playlists[i] = filePlaylist{Name: p.Name, Tracks: trackfile.FromAll(p.Tracks)}
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode playlists: %w", err)
 	}
@@ -275,10 +289,10 @@ func moved[T any](s []T, from, to int) []T {
 	return slices.Insert(s, to, v)
 }
 
-func clone(playlists []Playlist) []Playlist {
-	copyOf := make([]Playlist, len(playlists))
+func clone(playlists []domain.Playlist) []domain.Playlist {
+	copyOf := make([]domain.Playlist, len(playlists))
 	for i, p := range playlists {
-		copyOf[i] = Playlist{Name: p.Name, Tracks: append([]youtube.Track(nil), p.Tracks...)}
+		copyOf[i] = domain.Playlist{Name: p.Name, Tracks: append([]domain.Track(nil), p.Tracks...)}
 	}
 	return copyOf
 }
