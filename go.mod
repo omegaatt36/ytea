@@ -10,7 +10,7 @@ require (
 	github.com/charmbracelet/ultraviolet v0.0.0-20260928045949-bbf040aedf25
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/godbus/dbus/v5 v5.2.2
-	github.com/urfave/cli/v3 v3.13.0
+	github.com/urfave/cli/v3 v3.14.0
 )
 
 require (
