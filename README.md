@@ -4,6 +4,14 @@ A clean, lightweight YouTube music player for your terminal.
 
 Stream music without opening a browser. Features an interactive queue, local playlists, album art, audio spectrum, and seamless background playback.
 
+<p align="center">
+  <img src="assets/screenshot.png" alt="ytea screenshot in Ghostty">
+</p>
+
+<p align="center">
+  <img src="assets/demo.gif" alt="ytea interactive demo">
+</p>
+
 ## Install
 
 Requires [`mpv`](https://mpv.io) and [`yt-dlp`](https://github.com/yt-dlp/yt-dlp).
