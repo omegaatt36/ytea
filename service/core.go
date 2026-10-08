@@ -18,11 +18,12 @@ type Deps struct {
 	Searcher Searcher
 	Player   Player
 	// Library, History and Account are optional.
-	Library       PlaylistStore
-	History       HistoryStore
-	Account       AccountSource
-	InitialTracks map[string]domain.Track
-	Normalize     bool
+	Library        PlaylistStore
+	History        HistoryStore
+	Account        AccountSource
+	AccountIgnores AccountIgnoreStore
+	InitialTracks  map[string]domain.Track
+	Normalize      bool
 }
 
 // Core holds no cursors, focus or text: those belong to the front end.
@@ -61,6 +62,7 @@ func New(deps Deps) Core {
 		Playlists: Playlists{store: deps.Library},
 		Account: Account{
 			source:       deps.Account,
+			ignoreStore:  deps.AccountIgnores,
 			Tracks:       make(map[string][]domain.Track),
 			TrackLoading: make(map[string]bool),
 			TrackErrors:  make(map[string]error),

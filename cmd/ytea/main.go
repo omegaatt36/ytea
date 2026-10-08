@@ -178,10 +178,15 @@ func run(ctx context.Context, opts options) error {
 	// graph; the pid keeps two running instances from tapping each other.
 	streamName := fmt.Sprintf("%s-%d", appName, os.Getpid())
 
+	configPath, err := configDir()
+	if err != nil {
+		return err
+	}
 	eng, err := engine.New(ctx, engine.Config{
 		MPVBin:      opts.mpvBin,
 		YtDlpBin:    opts.ytdlpBin,
 		StateDir:    stateDir,
+		ConfigDir:   configPath,
 		ClientName:  streamName,
 		AudioDevice: opts.device,
 		Volume:      opts.volume,
@@ -203,6 +208,7 @@ func run(ctx context.Context, opts options) error {
 	core := eng.Deps()
 	deps := tui.Deps{
 		AccountPlaylists: core.Account,
+		AccountIgnores:   core.AccountIgnores,
 		Searcher:         core.Searcher,
 		Player:           core.Player,
 		Thumbnails:       opts.thumbnails,

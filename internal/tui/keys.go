@@ -57,7 +57,7 @@ type queueKeyMap struct {
 
 type playlistKeyMap struct {
 	navKeyMap
-	Browse, PlayAll, Create, Rename, EnqueueAll, MoveUp, MoveDown, Delete, Reload, Back key.Binding
+	Browse, PlayAll, Create, Rename, EnqueueAll, MoveUp, MoveDown, Delete, Ignore, Reload, Back key.Binding
 }
 
 type playlistTrackKeyMap struct {
@@ -169,6 +169,7 @@ func newKeyMap() keyMap {
 			MoveUp:     moveUp,
 			MoveDown:   moveDown,
 			Delete:     key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "delete playlist")),
+			Ignore:     key.NewBinding(key.WithKeys("I"), key.WithHelp("I", "ignore YouTube playlist"), key.WithDisabled()),
 			Reload:     key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "reload YouTube"), key.WithDisabled()),
 			Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 		},
@@ -235,6 +236,8 @@ func (m Model) contextKeys() (string, help.KeyMap) {
 		keys := m.keys.playlists
 		local := !m.accountSelected()
 		keys.Reload.SetEnabled(!local)
+		_, selected := m.selectedAccountPlaylist()
+		keys.Ignore.SetEnabled(!local && selected && m.core.Account.CanIgnore())
 		for _, b := range []*key.Binding{&keys.Create, &keys.Rename, &keys.MoveUp, &keys.MoveDown, &keys.Delete} {
 			b.SetEnabled(local)
 		}
@@ -318,14 +321,14 @@ func (k queueKeyMap) FullHelp() [][]key.Binding {
 }
 
 func (k playlistKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Create, k.Browse, k.PlayAll, k.EnqueueAll, k.Rename, k.Delete, k.Reload}
+	return []key.Binding{k.Create, k.Browse, k.PlayAll, k.EnqueueAll, k.Rename, k.Delete, k.Ignore, k.Reload}
 }
 
 func (k playlistKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		k.bindings(),
 		{k.Browse, k.PlayAll, k.EnqueueAll, k.Back},
-		{k.Create, k.Rename, k.MoveUp, k.MoveDown, k.Delete, k.Reload},
+		{k.Create, k.Rename, k.MoveUp, k.MoveDown, k.Delete, k.Ignore, k.Reload},
 	}
 }
 

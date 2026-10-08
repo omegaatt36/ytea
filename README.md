@@ -48,6 +48,7 @@ ytea
 | `enter` | Play now |
 | `a` | Add to queue |
 | `s` | Save to playlist |
+| `I` | Ignore the selected YouTube playlist (in Playlists) |
 | `o` | Audio output device |
 | `?` | Help |
 | `q` | Quit |

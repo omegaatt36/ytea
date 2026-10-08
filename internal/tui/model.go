@@ -43,6 +43,7 @@ type MPRIS interface {
 // History are optional.
 type Deps struct {
 	AccountPlaylists service.AccountSource
+	AccountIgnores   service.AccountIgnoreStore
 	Searcher         service.Searcher
 	Player           service.Player
 	Tap              Spectrum
@@ -171,13 +172,14 @@ func New(deps Deps) Model {
 		focus:                 focusSearch,
 		deletePlaylistPending: -1,
 		core: service.New(service.Deps{
-			Searcher:      deps.Searcher,
-			Player:        deps.Player,
-			Library:       deps.Library,
-			History:       deps.History,
-			Account:       deps.AccountPlaylists,
-			InitialTracks: deps.InitialTracks,
-			Normalize:     deps.Normalize,
+			Searcher:       deps.Searcher,
+			Player:         deps.Player,
+			Library:        deps.Library,
+			History:        deps.History,
+			Account:        deps.AccountPlaylists,
+			AccountIgnores: deps.AccountIgnores,
+			InitialTracks:  deps.InitialTracks,
+			Normalize:      deps.Normalize,
 		}),
 		thumb:         newThumbImage(deps.Thumbnails, deps.HTTP),
 		showViz:       deps.Tap != nil,

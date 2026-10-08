@@ -185,7 +185,21 @@ func (m Model) handlePlaylistsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := m.keys.playlists
 	if m.accountSelected() {
 		k.Reload.SetEnabled(true)
+		k.Ignore.SetEnabled(m.core.Account.CanIgnore())
 		switch {
+		case key.Matches(msg, k.Ignore):
+			p, ok := m.selectedAccountPlaylist()
+			if !ok {
+				return m, nil
+			}
+			if err := m.core.Account.Ignore(p.Title); err != nil {
+				m.setError(err.Error())
+				return m, nil
+			}
+			m.playlistCur = min(m.playlistCur, max(0, m.playlistCount()-1))
+			m.playlistTrackCur = 0
+			m.setStatus("ignored " + quote(p.Title))
+			return m, nil
 		case key.Matches(msg, k.Reload):
 			return m, m.reloadAccount()
 		case key.Matches(msg, k.Browse):

@@ -31,13 +31,15 @@ var (
 )
 
 type state struct {
-	Version   int
-	Playlists []domain.Playlist
+	Version        int
+	Playlists      []domain.Playlist
+	YouTubeIgnored []string
 }
 
 type file struct {
-	Version   int            `json:"version"`
-	Playlists []filePlaylist `json:"playlists"`
+	Version        int            `json:"version"`
+	Playlists      []filePlaylist `json:"playlists"`
+	YouTubeIgnored []string       `json:"youtube-ignored-playlists,omitempty"`
 }
 
 type filePlaylist struct {
@@ -75,7 +77,7 @@ func Open(dir string) (*Store, error) {
 	if err := dec.Decode(&onDisk); err != nil {
 		return nil, fmt.Errorf("decode playlists: %w", err)
 	}
-	s.data = state{Version: onDisk.Version, Playlists: make([]domain.Playlist, len(onDisk.Playlists))}
+	s.data = state{Version: onDisk.Version, Playlists: make([]domain.Playlist, len(onDisk.Playlists)), YouTubeIgnored: onDisk.YouTubeIgnored}
 	for i, p := range onDisk.Playlists {
 		s.data.Playlists[i] = domain.Playlist{Name: p.Name, Tracks: trackfile.ToAll(p.Tracks)}
 	}
@@ -94,6 +96,13 @@ func (s *Store) Playlists() []domain.Playlist {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return clone(s.data.Playlists)
+}
+
+// IgnoredYouTubePlaylists returns the exact account playlist titles to hide.
+func (s *Store) IgnoredYouTubePlaylists() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.data.YouTubeIgnored)
 }
 
 // Create adds an empty playlist and returns its index.
@@ -214,11 +223,14 @@ func (s *Store) Delete(index int) error {
 }
 
 func (s *Store) commit(playlists []domain.Playlist) error {
-	next := state{Version: version, Playlists: playlists}
+	return s.commitState(state{Version: version, Playlists: playlists, YouTubeIgnored: s.data.YouTubeIgnored})
+}
+
+func (s *Store) commitState(next state) error {
 	if err := validate(next); err != nil {
 		return err
 	}
-	out := file{Version: next.Version, Playlists: make([]filePlaylist, len(next.Playlists))}
+	out := file{Version: next.Version, Playlists: make([]filePlaylist, len(next.Playlists)), YouTubeIgnored: next.YouTubeIgnored}
 	for i, p := range next.Playlists {
 		out.Playlists[i] = filePlaylist{Name: p.Name, Tracks: trackfile.FromAll(p.Tracks)}
 	}

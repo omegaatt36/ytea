@@ -13,6 +13,7 @@ import (
 	"github.com/omegaatt36/ytea/internal/history"
 	"github.com/omegaatt36/ytea/internal/library"
 	"github.com/omegaatt36/ytea/internal/mpv"
+	"github.com/omegaatt36/ytea/internal/playlistignore"
 	"github.com/omegaatt36/ytea/internal/session"
 	"github.com/omegaatt36/ytea/internal/youtube"
 	"github.com/omegaatt36/ytea/service"
@@ -21,7 +22,8 @@ import (
 type Config struct {
 	MPVBin, YtDlpBin string
 	// StateDir must already exist.
-	StateDir string
+	StateDir  string
+	ConfigDir string
 	// ClientName names mpv's audio stream, which spectrum taps find it by.
 	ClientName string
 	// Empty means the system default.
@@ -68,13 +70,19 @@ func New(ctx context.Context, cfg Config) (*Engine, error) {
 		_ = player.Quit()
 		return nil, fmt.Errorf("load local playlists: %w", err)
 	}
+	ignoreStore, err := playlistignore.Open(cfg.ConfigDir, libraryStore.IgnoredYouTubePlaylists())
+	if err != nil {
+		_ = player.Quit()
+		return nil, fmt.Errorf("load ignored YouTube playlists: %w", err)
+	}
 	e.deps = service.Deps{
-		Searcher:      youtube.NewSearcher(cfg.YtDlpBin),
-		Player:        player,
-		Library:       libraryStore,
-		Account:       cfg.Account,
-		InitialTracks: tracksFromSession(saved),
-		Normalize:     cfg.Normalize,
+		Searcher:       youtube.NewSearcher(cfg.YtDlpBin),
+		Player:         player,
+		Library:        libraryStore,
+		Account:        cfg.Account,
+		AccountIgnores: ignoreStore,
+		InitialTracks:  tracksFromSession(saved),
+		Normalize:      cfg.Normalize,
 	}
 	if historyStore, err := history.Open(cfg.StateDir); err != nil {
 		slog.Warn("history disabled", "error", err)

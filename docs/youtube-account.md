@@ -40,3 +40,34 @@ ytea auth logout   # delete the local token
 ```
 
 The token is saved to `~/.config/ytea/google-token.json`. To revoke access, remove ytea from your [Google Account connections](https://myaccount.google.com/connections).
+
+## Ignore playlists
+
+In the Playlists pane, select a YouTube playlist and press `I` (Shift+i).
+
+ytea saves the playlist title to the ignore list and hides all YouTube playlists with that exact title.
+The comparison is case-sensitive.
+The ignore list applies after reloads and restarts, with either cookies or OAuth.
+Local playlists and playlists on YouTube stay unchanged.
+
+The ignore list is in `~/.config/ytea/youtube-ignored-playlists.json`:
+
+```json
+["interview", "練字"]
+```
+
+If `XDG_CONFIG_HOME` is set, the file is at `$XDG_CONFIG_HOME/ytea/youtube-ignored-playlists.json` instead.
+The shortcut does not change `config.toml` or the local playlists.
+
+If the new file is missing, ytea copies the old ignore list from the state directory's `playlists.json`.
+An existing new file takes priority, including an empty array `[]`.
+The old file stays unchanged.
+
+To restore a hidden playlist:
+
+1. Quit ytea.
+2. Open `youtube-ignored-playlists.json`.
+3. Remove the title from the array.
+4. Restart ytea.
+
+To restore all hidden playlists, replace the array with `[]`.

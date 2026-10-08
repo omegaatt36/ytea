@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/omegaatt36/ytea/domain"
 )
@@ -12,8 +13,15 @@ type AccountSource interface {
 	ListTracks(context.Context, string) ([]domain.Track, error)
 }
 
+// AccountIgnoreStore persists account playlist preferences independently of local playlists.
+type AccountIgnoreStore interface {
+	IgnoredYouTubePlaylists() []string
+	IgnoreYouTubePlaylist(string) error
+}
+
 type Account struct {
 	source           AccountSource
+	ignoreStore      AccountIgnoreStore
 	Started, Loading bool
 	Playlists        []domain.AccountPlaylist
 	Err              error
@@ -51,6 +59,34 @@ func (AccountTracksDone) serviceMsg()    {}
 func (AccountQueueFailed) serviceMsg()   {}
 
 func (a Account) Enabled() bool { return a.source != nil }
+
+func (a Account) CanIgnore() bool { return a.ignoreStore != nil }
+
+// Ignore hides every account playlist with this exact title only after saving.
+func (a *Account) Ignore(title string) error {
+	if !a.CanIgnore() {
+		return errors.New("playlist ignore storage is unavailable")
+	}
+	if err := a.ignoreStore.IgnoreYouTubePlaylist(title); err != nil {
+		return err
+	}
+	a.Playlists = a.visiblePlaylists(a.Playlists)
+	return nil
+}
+
+func (a Account) visiblePlaylists(playlists []domain.AccountPlaylist) []domain.AccountPlaylist {
+	if !a.CanIgnore() {
+		return playlists
+	}
+	ignored := a.ignoreStore.IgnoredYouTubePlaylists()
+	visible := make([]domain.AccountPlaylist, 0, len(playlists))
+	for _, p := range playlists {
+		if !slices.Contains(ignored, p.Title) {
+			visible = append(visible, p)
+		}
+	}
+	return visible
+}
 
 func (a *Account) Reload() Cmd {
 	if a.Loading {
@@ -104,7 +140,7 @@ func (a *Account) Update(msg Msg) {
 		if msg.err == nil && len(msg.playlists) == 0 {
 			a.Err = errors.New("no account data")
 		}
-		a.Playlists = msg.playlists
+		a.Playlists = a.visiblePlaylists(msg.playlists)
 	case AccountQueueFailed:
 		// A successful browse supersedes an earlier queue lookup for the same playlist.
 		_, browsed := a.Tracks[msg.id]
