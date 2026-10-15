@@ -68,7 +68,10 @@ type Config struct {
 	CookiesFromBrowser string
 }
 
-const premiumClients = "youtube:player_client=default,web_music"
+// playerClients lists the yt-dlp YouTube clients to resolve streams with. The
+// default set is left out: it resolves to the visionOS client, whose stream
+// URLs googlevideo answers with 403. web_music serves the 256k Premium audio.
+const playerClients = "youtube:player_client=web_embedded,web_music"
 
 // Player owns an mpv process and its IPC connection.
 type Player struct {
@@ -137,6 +140,7 @@ func (cfg Config) args() []string {
 		"--audio-client-name=" + cfg.ClientName,
 		fmt.Sprintf("--input-ipc-client=fd://%d", ipcFD),
 		"--ytdl-format=bestaudio/best",
+		"--ytdl-raw-options-append=extractor-args=" + playerClients,
 		"--prefetch-playlist=yes",
 		"--gapless-audio=weak",
 		"--cache=yes",
@@ -159,10 +163,7 @@ func (cfg Config) args() []string {
 		cookies = "cookies-from-browser=" + cfg.CookiesFromBrowser
 	}
 	if cookies != "" {
-		args = append(args,
-			"--ytdl-raw-options-append="+cookies,
-			"--ytdl-raw-options-append=extractor-args="+premiumClients,
-		)
+		args = append(args, "--ytdl-raw-options-append="+cookies)
 	}
 	return args
 }

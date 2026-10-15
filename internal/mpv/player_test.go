@@ -108,8 +108,8 @@ func TestAudioDevices(t *testing.T) {
 	}
 }
 
-func TestConfigArgsCookies(t *testing.T) {
-	const extractorArgs = "--ytdl-raw-options-append=extractor-args=youtube:player_client=default,web_music"
+func TestConfigArgsYtdlOptions(t *testing.T) {
+	const extractorArgs = "--ytdl-raw-options-append=extractor-args=youtube:player_client=web_embedded,web_music"
 
 	tests := []struct {
 		name string
@@ -119,17 +119,17 @@ func TestConfigArgsCookies(t *testing.T) {
 		{
 			name: "no cookies",
 			cfg:  Config{},
-			want: nil,
+			want: []string{extractorArgs},
 		},
 		{
 			name: "cookies file",
 			cfg:  Config{Cookies: "/home/u/cookies.txt"},
-			want: []string{"--ytdl-raw-options-append=cookies=/home/u/cookies.txt", extractorArgs},
+			want: []string{extractorArgs, "--ytdl-raw-options-append=cookies=/home/u/cookies.txt"},
 		},
 		{
 			name: "cookies from browser",
 			cfg:  Config{CookiesFromBrowser: "chrome:Profile 1"},
-			want: []string{"--ytdl-raw-options-append=cookies-from-browser=chrome:Profile 1", extractorArgs},
+			want: []string{extractorArgs, "--ytdl-raw-options-append=cookies-from-browser=chrome:Profile 1"},
 		},
 	}
 	for _, tt := range tests {
