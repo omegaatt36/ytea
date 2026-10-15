@@ -55,6 +55,10 @@ ytea
 
 *Mouse is also supported: click tabs, search, or list rows, use the scroll wheel to navigate, drag rows to reorder the queue and local playlists, and click the progress bar to seek.*
 
+## Troubleshooting
+
+Nothing plays, or the visualizer stays off? Run `ytea doctor`. It checks `mpv` and `yt-dlp`, opens a real YouTube stream the way playback does, and says what to fix.
+
 ## Configuration (Optional)
 
 `~/.config/ytea/config.toml`:

@@ -97,7 +97,7 @@ func newCommand(action func(context.Context, options) error) *cli.Command {
 			return action(ctx, opts)
 		},
 	}
-	command.Commands = []*cli.Command{authCommand(&opts, command)}
+	command.Commands = []*cli.Command{authCommand(&opts, command), doctorCommand(&opts, command)}
 	return command
 }
 

@@ -139,8 +139,6 @@ func (cfg Config) args() []string {
 		"--load-stats-overlay=no",
 		"--audio-client-name=" + cfg.ClientName,
 		fmt.Sprintf("--input-ipc-client=fd://%d", ipcFD),
-		"--ytdl-format=bestaudio/best",
-		"--ytdl-raw-options-append=extractor-args=" + playerClients,
 		"--prefetch-playlist=yes",
 		"--gapless-audio=weak",
 		"--cache=yes",
@@ -155,15 +153,21 @@ func (cfg Config) args() []string {
 	if cfg.LogFile != "" {
 		args = append(args, "--log-file="+cfg.LogFile)
 	}
-	var cookies string
+	return append(args, cfg.YtdlArgs()...)
+}
+
+// YtdlArgs are the mpv options that decide how a YouTube URL resolves to a
+// stream. They are separate so that diagnostics probe what playback uses.
+func (cfg Config) YtdlArgs() []string {
+	args := []string{
+		"--ytdl-format=bestaudio/best",
+		"--ytdl-raw-options-append=extractor-args=" + playerClients,
+	}
 	switch {
 	case cfg.Cookies != "":
-		cookies = "cookies=" + cfg.Cookies
+		args = append(args, "--ytdl-raw-options-append=cookies="+cfg.Cookies)
 	case cfg.CookiesFromBrowser != "":
-		cookies = "cookies-from-browser=" + cfg.CookiesFromBrowser
-	}
-	if cookies != "" {
-		args = append(args, "--ytdl-raw-options-append="+cookies)
+		args = append(args, "--ytdl-raw-options-append=cookies-from-browser="+cfg.CookiesFromBrowser)
 	}
 	return args
 }
