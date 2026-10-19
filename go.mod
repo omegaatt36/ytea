@@ -4,12 +4,12 @@ go 1.27.0
 
 require (
 	charm.land/bubbles/v2 v2.2.1
-	charm.land/bubbletea/v2 v2.0.10
+	charm.land/bubbletea/v2 v2.1.0
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/BurntSushi/toml v1.6.0
-	github.com/charmbracelet/ultraviolet v0.0.0-20260928045949-bbf040aedf25
-	github.com/charmbracelet/x/ansi v0.11.8
-	github.com/godbus/dbus/v5 v5.2.2
+	github.com/charmbracelet/ultraviolet v0.0.0-20261008173134-6b8d4baf91b4
+	github.com/charmbracelet/x/ansi v0.11.9
+	github.com/godbus/dbus/v5 v5.2.4
 	github.com/urfave/cli/v3 v3.14.0
 )
 
